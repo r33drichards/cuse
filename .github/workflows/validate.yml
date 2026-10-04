@@ -25,4 +25,4 @@ jobs:
       - name: Smoke image runtime and catalog without OAuth or model calls
         run: |
           docker run --rm --entrypoint node cuse:validation --version
-          docker run --rm --entrypoint /app/node_modules/.bin/tsx cuse:validation -e 'import { ModelRuntime } from "/app/packages/coding-agent/src/core/model-runtime.ts"; ModelRuntime.create({modelsPath:null,authPath:"/tmp/synthetic-auth.json",refreshOnCreate:false}).then(r=>{if(!r.getModel("openai-codex","gpt-5.4"))process.exit(1)})'
+          docker run --rm --entrypoint /app/node_modules/.bin/tsx cuse:validation --tsconfig /app/tsconfig.json /app/cuse/image-smoke.mts

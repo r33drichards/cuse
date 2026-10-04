@@ -1,0 +1,8 @@
+node24	Smoke image runtime and catalog without OAuth or model calls	﻿2026-10-04T08:03:25.5423075Z ##[group]Run docker run --rm --entrypoint node cuse:validation --version
+node24	Smoke image runtime and catalog without OAuth or model calls	2026-10-04T08:03:25.5424031Z ^[[36;1mdocker run --rm --entrypoint node cuse:validation --version^[[0m
+node24	Smoke image runtime and catalog without OAuth or model calls	2026-10-04T08:03:25.5426118Z ^[[36;1mdocker run --rm --entrypoint /app/node_modules/.bin/tsx cuse:validation -e 'import { ModelRuntime } from "/app/packages/coding-agent/src/core/model-runtime.ts"; ModelRuntime.create({modelsPath:null,authPath:"/tmp/synthetic-auth.json",refreshOnCreate:false}).then(r=>{if(!r.getModel("openai-codex","gpt-5.4"))process.exit(1)})'^[[0m
+node24	Smoke image runtime and catalog without OAuth or model calls	2026-10-04T08:03:25.7213879Z v24.21.0
+node24	Smoke image runtime and catalog without OAuth or model calls	2026-10-04T08:03:26.1527009Z Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: No "exports" main defined in /app/node_modules/@earendil-works/pi-ai/package.json
+node24	Smoke image runtime and catalog without OAuth or model calls	2026-10-04T08:03:26.1533392Z   code: 'ERR_PACKAGE_PATH_NOT_EXPORTED'
+node24	Smoke image runtime and catalog without OAuth or model calls	2026-10-04T08:03:26.1534084Z Node.js v24.21.0
+node24	Smoke image runtime and catalog without OAuth or model calls	2026-10-04T08:03:26.2349225Z ##[error]Process completed with exit code 1.

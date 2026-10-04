@@ -37,6 +37,7 @@ ENV NODE_ENV=production \
     CUSE_MAX_DESKTOPS=10
 COPY --from=build /app /app
 COPY entrypoint.sh /usr/local/bin/cuse-entrypoint
+COPY scripts/image-smoke.mts /app/cuse/image-smoke.mts
 RUN chmod 0755 /usr/local/bin/cuse-entrypoint && mkdir -p /data/agent /workspace
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/cuse-entrypoint"]
