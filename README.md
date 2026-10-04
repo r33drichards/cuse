@@ -236,3 +236,19 @@ Provision one NEW cuse service/replica and NEW /data/agent volume; never mutate 
 After explicit safe live-validation authorization, join two disposable independent channels A/B. Check distinct desktop IDs, separate session files and independent browser state. Address one harmless prompt in A; B must stay unchanged. irc_send to unjoined target must reject, joined B succeeds only on explicit request. Host read/write/edit/bash/spawn/merge must be absent. Restart process preserving instance/volume; recover SAME IDs/session identities with no extra POST. Remembered404 must fail, never replace. Ambiguous504 must not replay tool calls. Test cap exhaustion without provisioning a third desktop. Current ,fork must fail closed before any target JOIN or effect. Once backend is supported, separate approved E2E must verify copied guest disk/profile/keyring but cold processes, separately copied conversation, independently mutable child storage, source resume under latest intent, lost-response reconciliation and cleanup at bounded quota. Never upload host auth to guests.
 
 Health is sanitized IRC connection+joined channel+controlled response, not merely PID: there is no HTTP endpoint. Check startup errors without credential dumps. Stop cuse immediately on identity leakage, duplicate provisioning, auth fallback, replay, host-tool exposure, or unintended billing. Roll back to the last reviewed IMAGE DIGEST with the same instance and dedicated volume; stop before secure backup/restore to avoid competing writers. Do not delete or replace remembered mappings to hide404. Preserve encrypted private evidence and reconcile desktops by stable namespace. Stop/delete ONLY the recorded disposable cuse desktops after validation via operator approved API/UI; verify billing termination and no foreign resources changed. Remove temporary channels and test service/volume only after secure required state retention. Existing piirc remains untouched.
+
+## Credential/network gates observed in release preparation
+
+Official Computer Use repository docs/api-tokens.md confirms https://api.computeruse.site /v1/me and /v1/sessions use direct Bearer API token; https://app.computeruse.site is the private Pomerium browser UI. Token may alternatively exchange via client credentials, but cuse uses direct Bearer. Provision a dedicated UNBOUND token with sessions:read, sessions:write, sessions:connect ONLY. Do not add policies scopes or give guests the host provisioning token. It acts as its owner, not an admin, and is shown only once. Operator installs it directly into NEW cuse service Railway secret UI; no agent/IRC handling.
+
+Both official origins were tested without credentials using curl --max-time15: API /v1/me and app each timed out (exit28, HTTP000), a separate network gate. No live credential validation is inferred.
+
+Railway intended destination references (read-only inherited identifiers, not newly validated UI): project37a71c12-bee2-43f7-8fad-3ebeaea66789, productionc7e27f4f-f5ef-43ca-9735-7949a42aa33a; existing piirc093b47b5-b69c-4565-935f-cce512b2b98d MUST NOT be changed. Create a separate cuse service/volume only after review authorization. Discovery of existing service variable references remains operator work; never dump environment/resolved compose config.
+
+Do NOT launch IRC until private OAuth onboarding is complete. Local onboarding command in the section above bypasses the public cuse entrypoint; it uses pi's standard /login and no model prompt. For presence/mode only in that same trusted admin container (never print contents):
+
+    test -f /data/agent/auth.json
+    chmod 0600 /data/agent/auth.json
+    stat -c '%a' /data/agent/auth.json # must be600
+
+Do not use cat, token dumps or callbacks in recorded/shared terminals. Live login, refresh and E2E remain explicit manual gates; synthetic tests do not substitute for them.
