@@ -8,3 +8,5 @@ auth.json
 agent-data
 *.log
 *.tap
+
+.tools/

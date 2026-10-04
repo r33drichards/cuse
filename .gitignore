@@ -8,3 +8,5 @@ node_modules/
 *.tap
 auth.json
 agent-data/
+
+.tools/

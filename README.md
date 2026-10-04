@@ -216,7 +216,7 @@ needed for syntax/configuration checks.
 
 ## Reproduce release checks
 
-From this repo on Node24 (local Node22 also validated):
+From this repo on Node24 (actual local Node24.14.0 host and Node22 validated; container validation still gated):
 
     npm ci --ignore-scripts
     npm run bootstrap
@@ -252,3 +252,11 @@ Do NOT launch IRC until private OAuth onboarding is complete. Local onboarding c
     stat -c '%a' /data/agent/auth.json # must be600
 
 Do not use cat, token dumps or callbacks in recorded/shared terminals. Live login, refresh and E2E remain explicit manual gates; synthetic tests do not substitute for them.
+
+## Current shipping gate clarification
+
+See validation/node24-result.md for actual Node24 HOST build/typecheck/38test pass and verified tooling/inputhashes. This does not validate the Docker image. Required Actions run37179062680/job111367722132 never started (steps=[]), due GitHub account payment/spending eligibility per parent inspection, NOT test failure. Operator handles billing privately; do not repeatedly rerun, change billing/visibility, install runners or move workflows without approval.
+
+Remote API/app DNS resolves8.231.155.139 but remote TCP443 times out. Operator reports app loads and is signed in on their own machine, so this is a remote-path connectivity issue, not proof of universal outage. Use operator PRIVATE UI for token creation without passing values to agent. In app token UI: name cuse, UNBOUND to a single session, scopes sessions:read/write/connect ONLY, no policies scopes; choose operator-approved lifetime. Install COMPUTERUSE_API_TOKEN directly into NEW cuse Railway service variables via secret UI, never echo/retrieve it or embed in source/buildargs. On Railway use project/env identifiers above, NEW cuse service sourced from this PRIVATE repo and reviewed image/HEAD, NEW volume at /data/agent, one replica and stable CUSE_INSTANCE_ID. Select existing IRC service/shared secret REFERENCE names privately; current canvas confirms existing pi-irc and pi-irc-agent volume but neither is to be changed/reused. Set provider/model explicitly openai-codex/gpt-5.4 and initiallycap2/small for approved E2E. Do not start public IRC before the private on-volume admin /login procedure above. Service/volume provisioning, merge and deployment are NOT performed by this lane and remain review-authorized future actions.
+
+No independently reviewed fork backend contract exists yet per parent. Keep explicit UnsupportedDesktopForkError. Later adapter/tests require parent-delivered real operation/request/response/idempotency and lost-response reconciliation contract, controlled-pause/admission/drain/lifecycle intent fencing, independent restored disk/profile/keyring and hostauth exclusion, quota/cost/cleanup/error semantics and proven backend restore. No speculative endpoint or fresh-disk fallback.

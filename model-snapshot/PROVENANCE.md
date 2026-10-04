@@ -95,3 +95,5 @@ path of this directory's pi-ai-0.85.1.tgz, then from the disposable pi root:
 A follow-up attempt to execute npm's node-linux-x64@24.14.0 binary on the
 remote host failed before any build execution: required interpreter not found.
 This does not test the Node24 bookworm image, which remains unvalidated.
+
+Followup: actual Node24.14.0 HOST offline build and overlay/tests now passed using verified tooling in scratch; see ../validation/node24-result.md. Node24 container remains unbuilt due absent local Docker/Nix and confirmed Actions account-billing gate. No model snapshot bytes changed.
