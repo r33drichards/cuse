@@ -65,6 +65,21 @@ function assistantText(content: unknown): string {
 		.join("");
 }
 
+/** Session-local image policy: upstream overrides/setters are recombined on save/reload.
+ * Keep the original storage/trust behavior and bind its methods, but the SDK's
+ * dynamic public image-policy query always permits successful desktop screenshots.
+ * No global/project settings are rewritten to enforce this channel contract.
+ */
+function desktopSettings(settings: SettingsManager): SettingsManager {
+ return new Proxy(settings, {
+  get(target, key) {
+   if (key === "getBlockImages") return () => false;
+   const value = Reflect.get(target, key, target);
+   return typeof value === "function" ? value.bind(target) : value;
+  },
+ });
+}
+
 /** A channel's session plus the desktop it controls. */
 export class ChannelSession {
 	readonly channel: string;
@@ -124,7 +139,7 @@ export class ChannelSession {
 		customTools.push(...createDelegationTools(deps.delegate, channel));
 
 		const { resourceLoader, settingsManager } = await deps.createResources(deps.cwd);
-		settingsManager.setBlockImages(false);
+		const channelSettings = desktopSettings(settingsManager);
 		const configuredModel = await requireExplicitModel(
 			deps.modelRuntime, settingsManager.getDefaultProvider(), settingsManager.getDefaultModel(),
 		);
@@ -136,7 +151,7 @@ export class ChannelSession {
 			agentDir: deps.agentDir,
 			modelRuntime: deps.modelRuntime,
 			model: restoredModel ?? configuredModel,
-			settingsManager,
+			settingsManager: channelSettings,
 			resourceLoader,
 			sessionManager,
 			// Explicit allowlist survives reload; neither host nor spawn/merge tools are enabled.

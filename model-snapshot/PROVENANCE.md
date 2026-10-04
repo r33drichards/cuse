@@ -12,10 +12,12 @@ Original tarball retained unchanged as pi-ai-0.85.1.tgz.
 - Artifact manifest generatedAt: 2026-09-05T11:58:56.761Z
 - Artifact structureHash: ff87cfcb3c1decb7ceeb4a5d71282696e108d093b7098f372d6f8a442dfed40d
 
-Docker build invokes scripts/bootstrap.sh, which verifies SHA256 before extracting only
-package/dist/providers/data into the disposable .runtime/pi/packages/ai/src/providers/data
-under /workspace. The built runtime is then copied to /app, so the final-image paths
-listed below are /app/packages/ai/src/providers/data (not the initial extraction root).
+Dockerfile builds directly in /app: it copies the archive to /opt/pi-ai-0.85.1.tgz,
+verifies SHA256, and extracts only package/dist/providers/data into
+/app/packages/ai/src/providers/data. This build does NOT invoke scripts/bootstrap.sh.
+For host/CI source checks, scripts/bootstrap.sh instead hydrates the disposable
+.runtime/pi/packages/ai/src/providers/data under the repository; these are distinct
+execution paths with the same verified archive and pinned source.
 No published JS, declaration files, wrappers, generated TS metadata or image
 model metadata replaces pinned source. This hydrates ignored data only.
 
@@ -101,4 +103,4 @@ Followup: actual Node24.14.0 HOST offline build and overlay/tests now passed usi
 
 ## Current status
 
-The model archive SHA256 and pinned pi are unchanged. Single-repository build context copies model-snapshot/pi-ai-0.85.1.tgz; scripts/bootstrap.sh hydrates disposable .runtime/pi before maintained overlay. Actual d842679 public CI37188937272/37188934400 passed Node24 Docker build/container runtime+catalog, including Codexgpt-5.4,kimi-coding,40runtime providers and zero network requests in smoke. That settled predecessor evidence does not approve newer corrections; parent owns settled exact-new-HEAD CI. Historical unperformed/billing statements above are chronology only, not current prerequisites. No full disk-fork support or live auth validation is claimed.
+The model archive SHA256 and pinned pi are unchanged. Single-repository Docker context copies model-snapshot/pi-ai-0.85.1.tgz to /opt and hydrates /app directly; separate host/CI bootstrap hydrates disposable .runtime/pi before maintained overlay. Settled public CI atd842679 (37188937272/37188934400) and06b214e (37221827152/37221830888) passed Node24 Docker build/container runtime+catalog, including Codexgpt-5.4,kimi-coding,40runtime providers and zero network requests in smoke. That settled predecessor evidence does not approve newer corrections; parent owns settled exact-new-HEAD CI. Historical unperformed/billing statements above are chronology only, not current prerequisites. No full disk-fork support or live auth validation is claimed.

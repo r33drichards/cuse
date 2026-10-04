@@ -197,7 +197,7 @@ sessions and billing regularly; max10 does not cap remote account spend.
 
 ## Validation boundaries
 
-Run `bash -n entrypoint.sh` and `node --test tests/entrypoint.test.cjs`.
+Run `bash -n entrypoint.sh` and `node --test test/packaging/entrypoint.test.cjs`.
 The tests use ONLY synthetic OAuth data in disposable packaging-root folders:
 they check byte preservation across three simulated starts, mode0600, codex
 defaults, explicit migration of persisted provider settings and volume/agent-dir
@@ -209,15 +209,17 @@ model-snapshot/PROVENANCE.md for artifact provenance, hashes and exact paths
 added upstream. The snapshot preserves the pinned provider/model catalog,
 including kimi-coding; published availability may change even though build
 data is fixed. npm install scripts are intentionally skipped, so unrelated
-native pi features are not guaranteed. Full offline build passed in an
-isolated pinned source clone on host Node22.23.3. Docker/Compose binaries were
-unavailable; Node24 container validation is still required. No actual IRC,
+native pi features are not guaranteed. Historical offline build passed in an isolated pinned clone on Node22.23.3.
+Actual Node24 host builds and public container CI have since passed:06b214e
+push37221827152 and PR37221830888 include all82tests, Docker and container smoke.
+Local Docker/Compose remain unavailable; newer source requires its own settled
+exact-HEAD CI at the parent barrier, not a new billing/runner change. No actual IRC,
 provider API, Computer Use API, Railway deployment or secret inspection is
 needed for syntax/configuration checks.
 
 ## Reproduce release checks
 
-From this repo on Node24 (actual local Node24.14.0 host and Node22 validated; container validation still gated):
+From this repo on Node24 (actual host Node24.14.0 and settled predecessor06b214e container validated; newer source requires exact-HEAD CI):
 
     npm ci --ignore-scripts
     npm run bootstrap
@@ -272,7 +274,7 @@ Standard pinned pi AuthStorage/ModelRuntime OAuth remains unchanged. Its locked 
 
 Normal trusted host resource/extension loading is NOT a security sandbox. Disabled host builtin model tools do not prevent trusted installed extension code, resource loading or direct host stdout from accessing/logging host data. Use a fresh dedicated agent volume and only trusted extensions/resources; controlled cuse error catches do not sandbox extension code or sanitize arbitrary intentional model/user/guest output. Host auth is never copied to guests/snapshots by cuse.
 
-## Current recovery corrections (not release approval)
+## Prior recovery corrections (06b214e; not release approval)
 
 Default BOT nick is cuse and control/startup channel is #cuse; actual registration/JOIN and executed entrypoint export tests exercise this, while explicit IRC_NICK/IRC_CONTROL_CHANNEL overrides remain supported. Other joined channels keep independent desktop/session identities. This changes no host coding-agent IRC integration or existing pi-irc service.
 
@@ -280,4 +282,17 @@ Entrypoint configuration JSON/filesystem failures now have a controlled outer ca
 
 Remote adapter failures now throw a controlled failed-tool outcome before raw remote content can enter model context. SDK isError is true, raw text/images/structured error data are withheld from model/IRC/transcript, and each adapter invocation calls the remote exactly once, including transport rejection. Normal successful guest stdout/images remain intact. The regression actually drives adapter -> real SDK/session -> model context -> IRC relay with only synthetic model generation, no live model, OAuth refresh or desktop connection.
 
-State get/entries/set use detached deep snapshots, including nested data and mutation during a write; caller aliases cannot change committed state outside transaction. Prior write/rename failure/concurrency semantics remain. Current local Node24.14.0 build/typecheck and all82 maintained tests passed (zero failed/skipped); exact-input hashes/logs are recorded in validation/recovery-boundary-inputs.json and validation/recovery-boundary-result.md. historical63/65 evidence is preserved. Current CI is parent-owned at the dependency barrier; pending jobs are not satisfied and this document does not grant feature acceptance. Unsupported disk fork, private ADMIN auth/token and independent live/release review gates remain.
+State get/entries/set use detached deep snapshots, including nested data and mutation during a write; caller aliases cannot change committed state outside transaction. Prior write/rename failure/concurrency semantics remain. At06b214e, local Node24.14.0 build/typecheck and all82 maintained tests passed (zero failed/skipped); exact-input hashes/logs are recorded in validation/recovery-boundary-inputs.json and validation/recovery-boundary-result.md. Historical63/65 evidence is preserved. Its public CI subsequently passed (IDs above); newer exact-HEAD CI is parent-owned at the dependency barrier, and pending jobs are not satisfied and this document does not grant feature acceptance. Unsupported disk fork, private ADMIN auth/token and independent live/release review gates remain.
+
+## Effective channel screenshots (current correction, not approval)
+
+Cuse uses a session-local controlled SettingsManager view: the SDK's public
+getBlockImages query always returns false, while all other methods are bound
+to the original manager. Supported applyOverrides is transient and ordinary
+save/reload merges can discard it; cuse no longer rewrites the GLOBAL image
+preference to enforce this policy. Trusted project/global settings retain
+their own persisted values. Actual file-backed precedence plus real SDK model
+conversion tests preserve successful screenshots before and after reload/save.
+All83 maintained tests and actual Node24.14.0 overlay build/typecheck passed;
+see validation/effective-images-inputs.json and effective-images-result.md.
+New exact-HEAD CI and independent source approval remain parent barriers.
