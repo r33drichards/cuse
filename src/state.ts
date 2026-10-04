@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface ChannelRecord {
@@ -12,9 +12,11 @@ export interface ChannelRecord {
 
 export class ChannelSessionStore {
  readonly #path: string;
+ readonly #commitIO: { write?: typeof writeFileSync; rename?: typeof renameSync };
  #channels = new Map<string, ChannelRecord>();
- constructor(path: string) {
+ constructor(path: string, commitIO: { write?: typeof writeFileSync; rename?: typeof renameSync } = {}) {
   this.#path = path;
+  this.#commitIO = commitIO;
   let text: string;
   try { text = readFileSync(path, "utf8"); } catch (error) {
    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
@@ -35,11 +37,26 @@ export class ChannelSessionStore {
  }
  get(room: string): ChannelRecord | undefined { return this.#channels.get(room.toLowerCase()); }
  set(room: string, record: ChannelRecord): void {
-  this.#channels.set(room.toLowerCase(), record);
+  // Synchronous file operations serialize calls in this process; no await gap.
+  // Publish a candidate only after write/flush/atomic rename succeeds.
+  const next = new Map(this.#channels);
+  next.set(room.toLowerCase(), { ...record });
   mkdirSync(dirname(this.#path), { recursive: true });
   const tmp = this.#path + ".tmp";
-  writeFileSync(tmp, JSON.stringify({ version: 1, channels: Object.fromEntries(this.#channels) }, null, 2) + "\n", { mode: 0o600 });
-  renameSync(tmp, this.#path);
+  let fd: number | undefined;
+  try {
+   fd = openSync(tmp, "w", 0o600);
+   fchmodSync(fd, 0o600);
+   (this.#commitIO.write ?? writeFileSync)(fd, JSON.stringify({ version: 1, channels: Object.fromEntries(next) }, null, 2) + "\n");
+   fsyncSync(fd);
+   closeSync(fd); fd = undefined;
+   (this.#commitIO.rename ?? renameSync)(tmp, this.#path);
+   this.#channels = next;
+  } catch (error) {
+   if (fd !== undefined) closeSync(fd);
+   try { unlinkSync(tmp); } catch { /* No diagnostics from raw filesystem errors. */ }
+   throw error;
+  }
  }
  entries(): Array<[string, ChannelRecord]> { return [...this.#channels.entries()]; }
 }

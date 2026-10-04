@@ -1,3 +1,4 @@
+import { PublicError } from "./public-error.ts";
 import { createHash } from "node:crypto";
 
 export interface Desktop {
@@ -12,9 +13,9 @@ export class HttpError extends Error {
   super(message); this.status = status; this.retryAfter = retryAfter;
  }
 }
-export class UnsupportedDesktopForkError extends Error {
+export class UnsupportedDesktopForkError extends PublicError {
  constructor() {
-  super("Disk snapshot fork is unavailable: Computer Use has no validated backend fork API yet. No desktop or conversation was copied.");
+  super("forkUnavailable");
   this.name = "UnsupportedDesktopForkError";
  }
 }
@@ -32,9 +33,9 @@ export class ComputerUseClient {
  readonly fetch: typeof fetch;
  #provisioning: Promise<unknown> = Promise.resolve();
  constructor(options: ComputerUseOptions) {
-  if (!options.token) throw new Error("COMPUTERUSE_API_TOKEN is required");
+  if (!options.token) throw new PublicError("tokenRequired");
   if (!Number.isInteger(options.maxDesktops ?? 10) || (options.maxDesktops ?? 10) < 1 || (options.maxDesktops ?? 10) > 10) {
-   throw new Error("maxDesktops must be an integer from 1 to 10");
+   throw new PublicError("maxDesktops");
   }
   this.options = options;
   this.base = (options.baseUrl ?? "https://api.computeruse.site").replace(/\/+$/, "");
@@ -42,7 +43,7 @@ export class ComputerUseClient {
   for (const base of [this.base, this.app]) {
    const url = new URL(base);
    if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
-    throw new Error("Computer Use URLs must use HTTPS");
+    throw new PublicError("httpsRequired");
    }
   }
   this.prefix = "cuse-" + createHash("sha256").update(options.namespace).digest("hex").slice(0, 10) + "-";
@@ -83,13 +84,13 @@ export class ComputerUseClient {
    const sessions = await this.list();
    const name = this.name(room);
    const existing = sessions.filter(s => s.name === name);
-   if (existing.length > 1) throw new Error("Multiple desktops match this channel; resolve them in Computer Use");
+   if (existing.length > 1) throw new PublicError("duplicate");
    if (existing[0]) {
-    if (fresh) throw new Error("A desktop already exists for this target; choose a new channel");
+    if (fresh) throw new PublicError("targetExists");
     return existing[0];
    }
    if (sessions.filter(s => s.name.startsWith(this.prefix)).length >= (this.options.maxDesktops ?? 10)) {
-    throw new Error("cuse desktop limit reached; remove unused desktops in Computer Use");
+    throw new PublicError("quota");
    }
    const response = await this.request("/v1/sessions", {
     method: "POST", body: JSON.stringify({ name, size: this.options.size ?? "small" }),

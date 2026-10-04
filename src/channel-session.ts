@@ -1,3 +1,4 @@
+import { publicError } from "./public-error.ts";
 /**
  * One IRC channel's agent session.
  *
@@ -160,7 +161,7 @@ export class ChannelSession {
 				navigateTree: async () => ({ cancelled: true }),
 				switchSession: async () => ({ cancelled: true }),
 			},
-			onError: (error: unknown) => deps.log(`IRC: ${channel}: extension error: ${String(error)}`),
+			onError: (error: unknown) => deps.log(`IRC: ${channel}: extension error: ${publicError(error)}`),
 		});
 
 		const channelSession = new ChannelSession(channel, sessionId, sessionFile, session);
@@ -178,9 +179,9 @@ export class ChannelSession {
 			if (this.#relays.size === 0) return;
 			switch (event.type) {
 				case "message_end": {
-					const message = event.message as { role?: string; content?: unknown };
+					const message = event.message as { role?: string; content?: unknown; stopReason?: string };
 					if (message.role !== "assistant") return;
-					const lines = toIrcLines(assistantText(message.content));
+					const lines = toIrcLines(message.stopReason === "error" || message.stopReason === "aborted" ? publicError(undefined) : assistantText(message.content));
 					if (lines.length > 0) for (const relay of this.#relays) relay.text(lines);
 					return;
 				}
@@ -191,7 +192,7 @@ export class ChannelSession {
 				}
 				case "tool_execution_end": {
 					const result = event.result as { content?: unknown } | undefined;
-					const line = describeToolResult(event.toolName, assistantText(result?.content), event.isError);
+					const line = describeToolResult(event.toolName, event.isError ? publicError(undefined) : assistantText(result?.content), event.isError);
 					for (const relay of this.#relays) relay.tool(line);
 					return;
 				}

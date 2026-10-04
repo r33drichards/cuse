@@ -1,3 +1,4 @@
+import { PublicError, publicError, type PublicErrorCode } from "./public-error.ts";
 /**
  * Channel membership, tracked against what the server actually confirms.
  *
@@ -39,29 +40,28 @@ export function isJoinFailure(error: string): boolean {
 
 /** Why a join failed, in words, with what to do about it. Never names the channel. */
 export function joinFailureDetail(error: string, reason?: string): string {
-	return `${reason ?? JOIN_FAILURES[error] ?? error}${JOIN_REMEDIES[error] ?? ""}`;
+	return `${JOIN_FAILURES[error] ?? "join refused"}${JOIN_REMEDIES[error] ?? ""}`;
 }
 
 /**
  * A join the server refused. `detail` is the reason alone, so a caller can say
  * "cannot post to #x: …" without the word "join" appearing in the middle of it.
  */
-export class JoinRefusedError extends Error {
+export class JoinRefusedError extends PublicError {
 	readonly channel: string;
 	readonly detail: string;
 
-	constructor(channel: string, detail: string) {
-		super(`cannot join ${channel}: ${detail}`);
+	constructor(channel: string, _detail: string, code: PublicErrorCode = "joinRefused") {
+		super(code);
 		this.name = "JoinRefusedError";
 		this.channel = channel;
-		this.detail = detail;
+		this.detail = publicError(this);
 	}
 }
 
 /** The reason on its own, whatever kind of failure it was. */
 export function failureDetail(error: unknown): string {
-	if (error instanceof JoinRefusedError) return error.detail;
-	return error instanceof Error ? error.message : String(error);
+	return publicError(error);
 }
 
 interface Waiter {
@@ -115,7 +115,10 @@ export class JoinTracker {
 			this.#waiters.set(key, [...(this.#waiters.get(key) ?? []), { resolve, reject, timer }]);
 		});
 		// One JOIN per channel however many callers are waiting on it.
-		if (first) this.#issue(channel);
+		if (first) {
+			try { this.#issue(channel); }
+			catch { this.#settle(key, new PublicError("joinRefused")); }
+		}
 		return pending;
 	}
 
@@ -136,7 +139,7 @@ export class JoinTracker {
 		if (event.channel === undefined || !isJoinFailure(event.error)) return false;
 		const key = event.channel.toLowerCase();
 		if (!this.#waiters.has(key)) return false;
-		this.#settle(key, new JoinRefusedError(event.channel, joinFailureDetail(event.error, event.reason)));
+		this.#settle(key, new JoinRefusedError(event.channel, joinFailureDetail(event.error), event.error === "too_many_channels" ? "joinLimit" : "joinRefused"));
 		return true;
 	}
 

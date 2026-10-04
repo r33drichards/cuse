@@ -1,3 +1,4 @@
+import { PublicError, publicError } from "./public-error.ts";
 /**
  * `cuse`: connect the agent to an IRC network, one session per channel.
  * Configuration comes from flags, then `IRC_*` environment variables.
@@ -95,7 +96,7 @@ export function containFault(
 			return;
 		}
 		log(
-			`IRC: uncaught ${kind} outside any channel (continuing): ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+			`IRC: uncaught ${kind} outside any channel (continuing): ${publicError(error)}`,
 		);
 	};
 }
@@ -127,12 +128,12 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	if (extensions.extensions.length > 0) {
 		log(`Extensions: ${extensions.extensions.length} loaded`);
 	}
-	for (const failure of extensions.errors) log(`Extension failed: ${failure.path}: ${failure.error}`);
+	for (const failure of extensions.errors) log(`Extension failed: ${publicError(failure.error)}`);
 	const modelRuntime = await ModelRuntime.create();
 	await requireExplicitModel(modelRuntime, settingsManager.getDefaultProvider(), settingsManager.getDefaultModel());
 
 	const maxDesktops = Number(env.CUSE_MAX_DESKTOPS ?? 10);
-	if (!Number.isInteger(maxDesktops) || maxDesktops < 1 || maxDesktops > 10) throw new Error("CUSE_MAX_DESKTOPS must be an integer from 1 to 10");
+	if (!Number.isInteger(maxDesktops) || maxDesktops < 1 || maxDesktops > 10) throw new PublicError("maxDesktops");
 	const desktops = new ComputerUseClient({
 		token: env.COMPUTERUSE_API_TOKEN ?? "",
 		baseUrl: env.COMPUTERUSE_API_URL,

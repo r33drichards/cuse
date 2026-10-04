@@ -17,6 +17,7 @@ import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { ChannelSession, ChannelSessionDeps, OpenChannelSession } from "./channel-session.ts";
 import { HELP_LINES, type IrcCommand, isChannel, mentionText, parseCommand } from "./commands.ts";
 import { ComputerUseClient, DesktopMcp, type Desktop } from "./computer-use.ts";
+import { PublicError, publicError } from "./public-error.ts";
 import { framePrompt } from "./format.ts";
 import { JoinTracker } from "./join.ts";
 
@@ -64,9 +65,7 @@ export interface IrcBotOptions {
 	joinTimeoutMs?: number;
 }
 
-function message(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
+
 
 /** A faulting extension usually faults on a timer, so its noise is capped. */
 const FAULT_WINDOW_MS = 60_000;
@@ -205,8 +204,8 @@ export class IrcPiBot implements ChannelDelegate {
 			if (this.#forking.has(event.channel.toLowerCase())) return;
 			// Provision a desktop on join, but do not connect MCP/wake remembered desktops.
 			void this.#desktopFor(event.channel).catch((error) => {
-				log(`IRC: ${event.channel}: ${message(error)}`);
-				this.say(event.channel, `desktop unavailable: ${message(error)}`);
+				log(`IRC: ${event.channel}: ${publicError(error)}`);
+				this.say(event.channel, `desktop unavailable: ${publicError(error)}`);
 			});
 		});
 		this.#irc.on("part", (event) => {
@@ -220,8 +219,8 @@ export class IrcPiBot implements ChannelDelegate {
 		});
 		this.#irc.on("privmsg", (event) => {
 			void this.#onMessage(event).catch((error) => {
-				log(`IRC: message handling failed: ${message(error)}`);
-				this.say(event.target === this.#nick ? event.nick : event.target, `error: ${message(error)}`);
+				log(`IRC: message handling failed: ${publicError(error)}`);
+				this.say(event.target === this.#nick ? event.nick : event.target, `error: ${publicError(error)}`);
 			});
 		});
 		// `close` only fires once auto-reconnect gives up; `socket close` fires on
@@ -235,7 +234,7 @@ export class IrcPiBot implements ChannelDelegate {
 			log(`IRC: reconnecting (attempt ${event.attempt}, wait ${event.wait}ms)`),
 		);
 		this.#irc.on("irc error", (event) => {
-			log(`IRC: server error ${event.error}${event.reason ? `: ${event.reason}` : ""}`);
+			log("IRC: server error; details withheld");
 			// A refusal answers whoever is waiting on that JOIN.
 			if (this.#joins.onError(event)) return;
 			// `+n` rejects messages from outside the channel, so a send that hits it
@@ -268,7 +267,7 @@ export class IrcPiBot implements ChannelDelegate {
 		const wanted = this.#wantedChannels();
 		const results = await Promise.allSettled(wanted.map((channel) => this.#joins.join(channel)));
 		const refused = results.flatMap((result, index) =>
-			result.status === "rejected" ? [{ channel: wanted[index]!, reason: message(result.reason) }] : [],
+			result.status === "rejected" ? [{ channel: wanted[index]!, reason: publicError(result.reason) }] : [],
 		);
 		if (refused.length === 0) return;
 		for (const { reason } of refused) this.#options.log(`IRC: ${reason}`);
@@ -289,7 +288,7 @@ export class IrcPiBot implements ChannelDelegate {
 			queue = createSendQueue(
 				(line) => this.#irc.say(target, line),
 				this.#options.sendSpacingMs ?? 350,
-				(error) => this.#options.log(`IRC: send to ${target} failed: ${message(error)}`),
+				(error) => this.#options.log(`IRC: send to ${target} failed: ${publicError(error)}`),
 				() => this.#closed,
 			);
 			this.#sendQueues.set(target, queue);
@@ -319,7 +318,7 @@ export class IrcPiBot implements ChannelDelegate {
 		// Report the first few and then go quiet: a widget that refreshes on a
 		// timer faults on every tick, and the log is not the place for that.
 		if (recent.length <= MAX_REPORTED_FAULTS) {
-			this.#options.log(`IRC: ${key}: extension fault contained: ${message(error)}`);
+			this.#options.log(`IRC: ${key}: extension fault contained: ${publicError(error)}`);
 			if (recent.length === MAX_REPORTED_FAULTS) {
 				this.#options.log(`IRC: ${key}: further extension faults in this channel will not be logged`);
 			}
@@ -333,7 +332,7 @@ export class IrcPiBot implements ChannelDelegate {
 	/** Open (or reuse) a channel's session, creating it on first use. */
 	async #sessionFor(name: string): Promise<BotSession> {
 		const key = name.toLowerCase();
-		if (this.#forking.has(key)) throw new Error("Conversation fork is still being prepared; try again shortly");
+		if (this.#forking.has(key)) throw new PublicError("preparing");
 		const existing = this.#sessions.get(key);
 		if (existing) return existing;
 		const pending = this.#opening.get(key);
@@ -346,7 +345,7 @@ export class IrcPiBot implements ChannelDelegate {
 				record.sessionFile ? { sessionFile: record.sessionFile } : {});
 			if (record.sessionId && record.sessionId !== created.sessionId) {
 				await created.abort();
-				throw new Error(`Remembered session identity mismatch for ${key}`);
+				throw new PublicError("recovery");
 			}
 			this.#store.set(key, { ...record, sessionId: created.sessionId, sessionFile: created.sessionFile });
 			return created;
@@ -535,7 +534,7 @@ export class IrcPiBot implements ChannelDelegate {
 				try {
 					await this.#forkConversation(room, target);
 					this.say(room, `forked conversation + independent disk snapshot to ${target}: cold-start child, no live process clone or merge`);
-				} catch (error) { this.say(room, `could not fork to ${target}: ${message(error)}`); }
+				} catch (error) { this.say(room, `could not fork to ${target}: ${publicError(error)}`); }
 			}
 			return;
 		}
@@ -551,7 +550,7 @@ export class IrcPiBot implements ChannelDelegate {
 						record ? `joined ${channel} (session ${record.sessionId})` : `joined ${channel} with a new session`,
 					);
 				} catch (error) {
-					this.say(room, `could not join ${channel}: ${message(error)}`);
+					this.say(room, `could not join ${channel}: ${publicError(error)}`);
 				}
 			}
 			return;
@@ -581,7 +580,7 @@ export class IrcPiBot implements ChannelDelegate {
 		const channel = isChannel(request.channel) ? request.channel.toLowerCase() : request.channel;
 		// Tool calls must never join or provision a channel implicitly.
 		if (!isChannel(channel) || !this.#joins.has(channel)) {
-			throw new Error("irc_send requires an already joined IRC channel");
+			throw new PublicError("joinedOnly");
 		}
 		this.say(channel, request.text.split("\n"));
 		// The bot never hears its own lines, so a mention in the text prompts the
@@ -592,7 +591,7 @@ export class IrcPiBot implements ChannelDelegate {
 				.then(async (session) => {
 					await this.#promptWithNotice(session, channel, channel, room, mentioned);
 				})
-				.catch((error) => this.say(channel, `error: ${message(error)}`));
+				.catch((error) => this.say(channel, `error: ${publicError(error)}`));
 		}
 	}
 
@@ -614,12 +613,12 @@ export class IrcPiBot implements ChannelDelegate {
 		const channel = target.toLowerCase();
 		if (channel === room || this.#store.get(channel) || this.#joins.has(channel) || this.#forking.has(channel)
 			|| this.#provisioning.has(channel) || this.#opening.has(channel)) {
-			throw new Error("Target already exists or is being provisioned; choose a new channel");
+			throw new PublicError("targetExists");
 		}
 		this.#forking.add(channel);
 		try {
 			const source = await this.#sessionFor(room);
-			if (source.busy) throw new Error("A source turn is running; wait before forking");
+			if (source.busy) throw new PublicError("busy");
 			await this.#joins.join(channel);
 			const desktop = await this.#options.desktops.fork(this.#store.get(room)!.desktopId, channel);
 			// Retain the child identity if conversation copying fails; never fall back to a fresh disk.

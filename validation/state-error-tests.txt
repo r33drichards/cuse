@@ -1,0 +1,111 @@
+
+> cuse@0.1.0 test
+> node --experimental-strip-types --test test/runtime-primitives.test.ts test/model-selection.test.ts test/state-commit.test.ts && npm run test:regression && node --test test/packaging/*.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/session-oauth.test.ts && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/public-boundary.test.ts
+
+✔ explicit invalid catalog/auth never chooses another provider (2.92222ms)
+✔ snapshot fork fails explicitly without any backend/create request (1.30128ms)
+✔ ChatGPT auth errors request private reauthentication without raw token detail or fallback (0.8021ms)
+✔ only supported commands and cuse mentions are recognized (4.7662ms)
+✔ provisioning is serialized with stable names and an absolute cap (52.623584ms)
+✔ remembered 404 or outage never provisions or changes persisted identity (2.71311ms)
+✔ write failure leaves memory/disk unchanged and permits later commit (4.40879ms)
+✔ rename failure leaves memory/disk unchanged and permits later commit (1.58758ms)
+✔ initial write failure creates no phantom identity (0.82397ms)
+✔ concurrent queued sets serialize successful updates around failed update without rollback loss (3.999439ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 703.625517
+
+> cuse@0.1.0 test:regression
+> .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/regression.test.ts test/after-fixes.test.ts
+
+✔ client unsupported snapshot fork rejects synchronously/asynchronously with zero fetch calls (3.672139ms)
+✔ only explicit pre-execution425 retries; same RPC request is reused (53.002745ms)
+✔ malformed optional state metadata rejects; valid fork metadata roundtrips (2.744409ms)
+✔ actual bot rejects bare/explicit/multiple/existing/concurrent forks before JOIN, source opening, mappings or fetch (18.386229ms)
+✔ explicit OAuth provider/model succeeds through standard getAuth surface without fallback (0.69662ms)
+✔ configured or resumed explicit model failures never select available API-key alternative (5.267919ms)
+✔ partial explicit configuration fails rather than invoking default provider (0.92718ms)
+✔ source-wiring guard: configured/resumed requireExplicitModel precede SDK; standard AuthStorage preserved (1.05486ms)
+✔ names are stable, case-normalized, isolated and bounded (2.50672ms)
+✔ concurrent provisioning serializes and deduplicates normalized room (71.268472ms)
+✔ ambiguous creation reconciles on next ensure without another POST (2.06101ms)
+✔ cap counts only namespace-owned desktops, existing remains accessible (1.5016ms)
+✔ foreign desktops do not consume cap (1.307131ms)
+✔ duplicate stable names fail closed (0.60735ms)
+✔ existing ID 404 never provisions replacement (3.50428ms)
+✔ request authenticates all calls, rejects redirects, preserves abort, overrides injected auth (2.00105ms)
+✔ JSON RPC parses matching result and rejects wrong ID/error/notification/malformed (0.49555ms)
+✔ SSE handles CRLF, comments, notifications, wrong IDs and multiline data (0.40895ms)
+✔ initialize is shared; paginated list and call use negotiated protocol/session/auth (3.118869ms)
+✔ MCP SSE response accepted end to end (1.29077ms)
+✔ network ambiguity never replays tool call (0.79482ms)
+✔ tool isError is returned without replay (0.87822ms)
+✔ RPC error/wrong-ID response never replays tool call (4.449529ms)
+✔ ambiguous HTTP 504 tool failure must not replay (1.337829ms)
+✔ abort cancels in-flight fake fetch without replay (1.79619ms)
+✔ abort cancels explicit wake-retry delay without replay (20.402828ms)
+✔ state roundtrip case-normalized records, secure file and atomic rename (1.89935ms)
+✔ corrupt JSON/version/record state errors surface rather than silently reset (2.3499ms)
+✔ corrupt state channels array is rejected (1.552819ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1224.876512
+✔ persistent OAuth bytes preserved, mode0600 enforced, codex defaults without generated API-key entries (334.282385ms)
+✔ persistent volume and shared agent-directory configuration are explicit (0.80208ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 468.884991
+✔ full ChannelSession uses catalog Codex, refreshes standard persistent OAuth, disables host tools and reopens (120.416557ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8301.986307
+✔ public command boundary withholds prompt (32.623246ms)
+✔ public command boundary withholds open (12.860729ms)
+✔ public command boundary withholds available (25.478877ms)
+✔ public command boundary withholds setModel (12.133579ms)
+✔ public command boundary withholds reload (12.663039ms)
+✔ public command boundary withholds compact (12.906789ms)
+✔ public command boundary withholds thinking (12.855959ms)
+✔ public command boundary withholds get (12.996038ms)
+✔ public command boundary withholds lifecycle (12.310618ms)
+✔ public command boundary withholds fork (12.770539ms)
+✔ public command boundary withholds join (13.387138ms)
+✔ public command boundary withholds joinRefused (13.949369ms)
+✔ public command boundary withholds part (12.210109ms)
+✔ event/log boundary withholds ensure (12.348228ms)
+✔ event/log boundary withholds send (12.224619ms)
+✔ event/log boundary withholds join (12.367689ms)
+✔ cross-channel catch withholds prompt (25.054557ms)
+✔ cross-channel catch withholds open (24.060928ms)
+✔ runtime channel/outside faults and server reasons never stringify secret failures (1.238209ms)
+✔ only owned codes provide safe guidance; mutated messages, names, stacks, causes and stringification ignored (0.61024ms)
+✔ startup, extension and failed agent/tool event wiring use controlled boundaries (0.839131ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9076.599133
