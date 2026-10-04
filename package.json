@@ -1,0 +1,17 @@
+{
+  "name": "cuse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bootstrap": "bash scripts/bootstrap.sh",
+    "test": "node --experimental-strip-types --test test/runtime-primitives.test.ts test/model-selection.test.ts && npm run test:regression && node --test test/packaging/*.test.cjs && .runtime/pi/node_modules/.bin/tsx --test test/session-oauth.test.ts",
+    "test:regression": ".runtime/pi/node_modules/.bin/tsx --test test/regression.test.ts test/after-fixes.test.ts",
+    "check": "npm --prefix .runtime/pi/packages/coding-agent run build",
+    "prepareRuntime": "python3 scripts/prepare.py"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}

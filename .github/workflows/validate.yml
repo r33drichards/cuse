@@ -1,0 +1,26 @@
+name: Release preparation (no deployment)
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  node24:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run bootstrap
+      - run: npm run check
+      - run: npm test
+      - name: Build Node24 image without publishing or credentials
+        run: docker build --tag cuse:validation .
+      - name: Smoke image runtime and catalog without OAuth or model calls
+        run: |
+          docker run --rm --entrypoint node cuse:validation --version
+          docker run --rm --entrypoint /app/node_modules/.bin/tsx cuse:validation -e 'import { ModelRuntime } from "/app/packages/coding-agent/src/core/model-runtime.ts"; ModelRuntime.create({modelsPath:null,authPath:"/tmp/synthetic-auth.json",refreshOnCreate:false}).then(r=>{if(!r.getModel("openai-codex","gpt-5.4"))process.exit(1)})'
