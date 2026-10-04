@@ -35,12 +35,12 @@ export class ChannelSessionStore {
    this.#channels.set(room.toLowerCase(), record);
   }
  }
- get(room: string): ChannelRecord | undefined { return this.#channels.get(room.toLowerCase()); }
+ get(room: string): ChannelRecord | undefined { const record = this.#channels.get(room.toLowerCase()); return record === undefined ? undefined : structuredClone(record); }
  set(room: string, record: ChannelRecord): void {
   // Synchronous file operations serialize calls in this process; no await gap.
   // Publish a candidate only after write/flush/atomic rename succeeds.
   const next = new Map(this.#channels);
-  next.set(room.toLowerCase(), { ...record });
+  next.set(room.toLowerCase(), structuredClone(record));
   mkdirSync(dirname(this.#path), { recursive: true });
   const tmp = this.#path + ".tmp";
   let fd: number | undefined;
@@ -58,5 +58,5 @@ export class ChannelSessionStore {
    throw error;
   }
  }
- entries(): Array<[string, ChannelRecord]> { return [...this.#channels.entries()]; }
+ entries(): Array<[string, ChannelRecord]> { return [...this.#channels.entries()].map(([room, record]) => [room, structuredClone(record)]); }
 }

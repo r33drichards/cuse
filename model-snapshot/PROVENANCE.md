@@ -12,8 +12,10 @@ Original tarball retained unchanged as pi-ai-0.85.1.tgz.
 - Artifact manifest generatedAt: 2026-09-05T11:58:56.761Z
 - Artifact structureHash: ff87cfcb3c1decb7ceeb4a5d71282696e108d093b7098f372d6f8a442dfed40d
 
-Dockerfile verifies SHA256 before extraction and only extracts
-package/dist/providers/data into /app/packages/ai/src/providers/data.
+Docker build invokes scripts/bootstrap.sh, which verifies SHA256 before extracting only
+package/dist/providers/data into the disposable .runtime/pi/packages/ai/src/providers/data
+under /workspace. The built runtime is then copied to /app, so the final-image paths
+listed below are /app/packages/ai/src/providers/data (not the initial extraction root).
 No published JS, declaration files, wrappers, generated TS metadata or image
 model metadata replaces pinned source. This hydrates ignored data only.
 
@@ -31,10 +33,9 @@ npm ci --ignore-scripts. No fabricated definitions or weakened types.
 This preserves the exact published catalog; no provider is added/removed by
 regeneration. Model availability at providers can nevertheless change. The
 upstream npm SHA512 integrity was compared to downloaded bytes, but no
-independent provenance/signature verification was performed. Node24 container
-build remains unperformed; Docker is unavailable remotely.
+independent provenance/signature verification was performed. At that historical check, Node24 container build was unperformed and local Docker unavailable. Later d842679 public CI successfully built/smoked the actual Node24 container; see Current status below.
 
-## Exact upstream files added (none replaced)
+## Exact data files added (final-image paths; no pinned source replaced)
 
 - /app/packages/ai/src/providers/data/.manifest.json
 - /app/packages/ai/src/providers/data/amazon-bedrock.json
@@ -94,6 +95,10 @@ path of this directory's pi-ai-0.85.1.tgz, then from the disposable pi root:
 
 A follow-up attempt to execute npm's node-linux-x64@24.14.0 binary on the
 remote host failed before any build execution: required interpreter not found.
-This does not test the Node24 bookworm image, which remains unvalidated.
+That historical binary attempt did not test the Node24 bookworm image; later actual container CI evidence is separate.
 
-Followup: actual Node24.14.0 HOST offline build and overlay/tests now passed using verified tooling in scratch; see ../validation/node24-result.md. Node24 container remains unbuilt due absent local Docker/Nix and confirmed Actions account-billing gate. No model snapshot bytes changed.
+Followup: actual Node24.14.0 HOST offline build and overlay/tests now passed using verified tooling in scratch; see ../validation/node24-result.md. That historical private Actions billing gate was superseded by actual public CI at d842679; local Docker/Nix remain absent. No model snapshot bytes changed.
+
+## Current status
+
+The model archive SHA256 and pinned pi are unchanged. Single-repository build context copies model-snapshot/pi-ai-0.85.1.tgz; scripts/bootstrap.sh hydrates disposable .runtime/pi before maintained overlay. Actual d842679 public CI37188937272/37188934400 passed Node24 Docker build/container runtime+catalog, including Codexgpt-5.4,kimi-coding,40runtime providers and zero network requests in smoke. That settled predecessor evidence does not approve newer corrections; parent owns settled exact-new-HEAD CI. Historical unperformed/billing statements above are chronology only, not current prerequisites. No full disk-fork support or live auth validation is claimed.

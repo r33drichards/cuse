@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "bootstrap": "bash scripts/bootstrap.sh",
-    "test": "node --experimental-strip-types --test test/runtime-primitives.test.ts test/model-selection.test.ts test/state-commit.test.ts && npm run test:regression && node --test test/packaging/*.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/session-oauth.test.ts && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/public-boundary.test.ts && node --test test/image-smoke.test.cjs",
+    "test": "node --experimental-strip-types --test test/runtime-primitives.test.ts test/model-selection.test.ts test/state-commit.test.ts && npm run test:regression && node --test test/packaging/*.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/session-oauth.test.ts && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/public-boundary.test.ts && node --test test/image-smoke.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/remote-adapter-session.test.ts && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/default-startup.test.ts",
     "test:regression": ".runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/regression.test.ts test/after-fixes.test.ts",
     "check": "npm --prefix .runtime/pi/packages/coding-agent run build",
     "prepareRuntime": "python3 scripts/prepare.py"

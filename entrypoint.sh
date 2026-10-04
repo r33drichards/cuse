@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
-: "${COMPUTERUSE_API_TOKEN:?COMPUTERUSE_API_TOKEN is required}"
-: "${IRC_SERVER:?IRC_SERVER is required}"
+# Keep only controlled diagnostics for shell/config startup failures.
+exec 2>/dev/null
+startup_failed() { printf '%s\n' 'cuse startup failed; ask the private administrator to verify configuration.'; exit 1; }
+set -E
+trap startup_failed ERR
+shopt -s execfail
+[[ -n "${COMPUTERUSE_API_TOKEN:-}" && -n "${IRC_SERVER:-}" ]] || startup_failed
 export PI_CODING_AGENT_DIR=/data/agent
+export IRC_NICK="${IRC_NICK:-cuse}" IRC_CONTROL_CHANNEL="${IRC_CONTROL_CHANNEL:-#cuse}"
 mkdir -p /data/agent
 # OAuth file belongs to pi AuthStorage: preserve its bytes, only restrict mode.
 if [[ -f /data/agent/auth.json ]]; then chmod 0600 /data/agent/auth.json; fi
 # Do not interpolate secrets into JSON or echo them. Mounted models win;
 # absent both inputs, retain the volume's existing custom model definitions.
 node --input-type=commonjs <<'NODE'
+try {
 const fs = require('node:fs');
 const path = '/data/agent';
 function object(value, label) {
@@ -37,5 +44,10 @@ settings.defaultModel = process.env.PI_DEFAULT_MODEL || settings.defaultModel ||
 // cuse talks directly to Computer Use; never inherit pi-irc's coordinator.
 delete settings.mcpJs;
 write(file, settings);
+} catch {
+ console.error("cuse configuration failed; ask the private administrator to verify configuration.");
+ process.exitCode = 1;
+}
 NODE
-exec /app/node_modules/.bin/tsx --tsconfig /app/tsconfig.json /app/packages/coding-agent/src/cuse/main.ts "$@"
+[[ -x /app/node_modules/.bin/tsx ]] || startup_failed
+exec /app/node_modules/.bin/tsx --tsconfig /app/tsconfig.json /app/packages/coding-agent/src/cuse/main.ts "$@" || startup_failed

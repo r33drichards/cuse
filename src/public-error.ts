@@ -3,6 +3,7 @@ const GUIDANCE = {
  tokenRequired: "COMPUTERUSE_API_TOKEN is required; ask the private administrator to configure it privately.",
  maxDesktops: "CUSE_MAX_DESKTOPS must be an integer from 1 to 10",
  httpsRequired: "Computer Use URLs must use HTTPS",
+ remoteTool: "Computer Use tool failed; remote details were withheld. No automatic replay was attempted.",
  generic: "Operation failed. Ask the private administrator to check configuration; details were withheld.",
  forkUnavailable: "Disk snapshot fork is unavailable: Computer Use has no validated backend fork API yet. No desktop or conversation was copied.",
  modelSettings: "Explicit model settings require both provider and model; ask the private administrator to correct configuration. No fallback was selected.",

@@ -1,3 +1,4 @@
+import { PublicError } from "./public-error.ts";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type TSchema, Type } from "typebox";
 import { defineTool, type ToolDefinition } from "../core/extensions/index.ts";
@@ -34,10 +35,13 @@ export async function createDesktopTools(desktop: DesktopMcp): Promise<ToolDefin
   parameters: tool.inputSchema as TSchema,
   executionMode: "sequential",
   async execute(_id, params, signal) {
-   const result = await desktop.call(tool.name, params, signal);
-   const content = modelContent(result);
-   if (result.isError) content.unshift({ type: "text", text: "Computer Use tool reported an error:" });
-   return { content, details: { remoteError: result.isError ?? false } };
+   // One call only. SDK turns this controlled exception into isError=true.
+   // Never place arbitrary remote failures (including structured/image data) in model context.
+   let result: RemoteResult;
+   try { result = await desktop.call(tool.name, params, signal); }
+   catch { throw new PublicError("remoteTool"); }
+   if (result.isError) throw new PublicError("remoteTool");
+   return { content: modelContent(result), details: { remoteError: false } };
   },
  })) as ToolDefinition[];
 }
