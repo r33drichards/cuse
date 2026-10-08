@@ -296,3 +296,7 @@ conversion tests preserve successful screenshots before and after reload/save.
 All83 maintained tests and actual Node24.14.0 overlay build/typecheck passed;
 see validation/effective-images-inputs.json and effective-images-result.md.
 New exact-HEAD CI and independent source approval remain parent barriers.
+
+### Mention toggle
+
+Send `,toggle mention` in a channel to switch between requiring `cuse:` and responding to every message. The bot confirms whether mentions are ON (required) or OFF. The setting is per channel and survives restarts; channels without an override use `IRC_RESPOND_TO_ALL`. The toggle works without a bot prefix in any channel. DMs always accept messages.

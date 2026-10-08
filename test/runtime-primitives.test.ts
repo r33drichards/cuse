@@ -10,6 +10,8 @@ import { ChannelSessionStore } from "../src/state.ts";
 test("only supported commands and cuse mentions are recognized", () => {
  for (const name of ["desktop", "sleep", "wake", "sessions", "help", "reload"]) assert.equal(parseCommand("," + name)?.kind, name);
  for (const name of ["merge", "spawn"]) assert.equal(parseCommand("," + name)?.kind, "error");
+ assert.deepEqual(parseCommand(",toggle mention"), {kind: "toggle-mention"});
+ assert.equal(parseCommand(",toggle other")?.kind, "error");
  assert.equal(mentionText("CUse: inspect screenshot", "cuse"), "inspect screenshot");
  assert.equal(mentionText("excuse me", "cuse"), undefined);
  assert.equal(parseCommand(",join #A,b")?.kind, "join");

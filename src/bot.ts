@@ -347,7 +347,7 @@ export class IrcPiBot implements ChannelDelegate {
 				await created.abort();
 				throw new PublicError("recovery");
 			}
-			this.#store.set(key, { ...record, sessionId: created.sessionId, sessionFile: created.sessionFile });
+			this.#store.set(key, { ...(this.#store.get(key) ?? record), sessionId: created.sessionId, sessionFile: created.sessionFile });
 			return created;
 		})();
 		this.#opening.set(key, open);
@@ -371,7 +371,13 @@ export class IrcPiBot implements ChannelDelegate {
 		// Channel lines are prompts only when they mention the bot. DMs are
 		// addressed by nature. Responding to everything is an explicit opt-in.
 		const mentioned = mentionText(event.message, this.#nick);
-		const body = isDm || !this.#options.addressedOnly ? (mentioned ?? event.message.trim()) : mentioned;
+		const mentionRequired = this.#store.get(room)?.mentionRequired ?? this.#options.addressedOnly;
+		const toggle = parseCommand(event.message);
+		if (toggle?.kind === "toggle-mention") {
+			await this.#onCommand(toggle, room, control);
+			return;
+		}
+		const body = isDm || !mentionRequired ? (mentioned ?? event.message.trim()) : mentioned;
 		// `pi ,model astra` is a command in a mention; a bare `,command` counts in the control channel and DMs.
 		const command = body !== undefined ? parseCommand(body) : undefined;
 		if (command) {
@@ -418,7 +424,7 @@ export class IrcPiBot implements ChannelDelegate {
 		const work = (async () => {
 			const record = this.#store.get(key);
 			const desktop = await this.#options.desktops.ensure(key, record?.desktopId);
-			this.#store.set(key, { ...record, desktopId: desktop.id, createdAt: record?.createdAt ?? Date.now() });
+			this.#store.set(key, { ...(this.#store.get(key) ?? record), desktopId: desktop.id, createdAt: record?.createdAt ?? Date.now() });
 			return desktop;
 		})();
 		this.#provisioning.set(key, work);
@@ -495,6 +501,18 @@ export class IrcPiBot implements ChannelDelegate {
 	async #onCommand(command: IrcCommand, room: string, control: boolean): Promise<void> {
 		if (await this.#onSessionCommand(command, room)) return;
 		switch (command.kind) {
+			case "toggle-mention": {
+				if (!isChannel(room)) {
+					this.say(room, "Use ,toggle mention in a channel. DMs always accept messages.");
+					return;
+				}
+				if (!this.#store.get(room)) await this.#desktopFor(room);
+				const record = this.#store.get(room)!;
+				const mentionRequired = !(record.mentionRequired ?? this.#options.addressedOnly);
+				this.#store.set(room, { ...record, mentionRequired });
+				this.say(room, mentionRequired ? `Mention required: ON — use ${this.#nick}: …` : "Mention required: OFF — responding to all messages in this channel.");
+				return;
+			}
 			case "help":
 				this.say(room, HELP_LINES);
 				return;
