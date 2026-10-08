@@ -19,6 +19,7 @@
 import { parseSessionCommand, SESSION_COMMANDS, type SessionCommandAction } from "./session-commands.ts";
 
 export type ControlCommand =
+ | { kind: "toggle-mention" }
  | { kind: "join"; channels: string[] }
  | { kind: "part"; channel: string }
  | { kind: "fork"; channels: string[] }
@@ -29,6 +30,7 @@ export type IrcCommand = ControlCommand | SessionCommandAction;
 export const COMMAND_PREFIX = ",";
 
 const CONTROL_COMMANDS = [
+ { usage: "toggle mention", description: "toggle requiring a mention in this channel; saved across restarts" },
  { usage: "fork [#a,#b]", description: "copy conversation + independent disk snapshot; cold-start child, no live process clone or merge (currently unsupported)" },
  { usage: "join #a,#b", description: "join channels, one independent desktop each" },
  { usage: "part #chan", description: "leave, retaining conversation and desktop" },
@@ -42,7 +44,7 @@ const CONTROL_COMMANDS = [
 export const HELP_LINES = [
 	...SESSION_COMMANDS.map((command) => `,${command.usage} — ${command.description}`),
 	...CONTROL_COMMANDS.map((command) => `,${command.usage} — ${command.description}`),
-	"Mention cuse to talk (cuse: …) or DM cuse. Use cuse ,join #name in the control channel or a DM. Each room has its own desktop and conversation; Fork copies conversation + an independent desktop disk snapshot; the child cold-starts, not a live process clone. No merge or spawn. Snapshot fork is currently unavailable until the backend API is validated. Delete desktops only in the Computer Use web app.",
+	"Mention cuse to talk (cuse: …) or DM cuse. Use ,toggle mention in a channel to switch mention requirements. Use cuse ,join #name in the control channel or a DM. Each room has its own desktop and conversation; Fork copies conversation + an independent desktop disk snapshot; the child cold-starts, not a live process clone. No merge or spawn. Snapshot fork is currently unavailable until the backend API is validated. Delete desktops only in the Computer Use web app.",
 ];
 
 const CHANNEL = /^[#&][^\s,\x07]{1,63}$/;
@@ -84,6 +86,7 @@ export function parseCommand(line: string): IrcCommand | undefined {
 	const session = parseSessionCommand(name!, argument);
 	if (session) return session;
 	switch (name!.toLowerCase()) {
+		case "toggle": return argument.toLowerCase() === "mention" ? { kind: "toggle-mention" } : { kind: "error", message: "Usage: ,toggle mention" };
 		case "join": {
 			const { channels, invalid } = parseChannelList(argument);
 			if (invalid.length > 0) return { kind: "error", message: `Not a channel: ${invalid.join(", ")}` };

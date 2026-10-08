@@ -92,3 +92,27 @@ test('source-wiring guard: configured/resumed requireExplicitModel precede SDK; 
  assert.ok(source.indexOf('const restoredModel')<source.indexOf('await createAgentSession('));assert.match(source,/model: restoredModel \?\? configuredModel/);
  const modelRuntime=readFileSync(new URL('../.runtime/pi/packages/coding-agent/src/core/model-runtime.ts', import.meta.url),'utf8');assert.match(modelRuntime,/AuthStorage as DefaultAuthStorage/);assert.match(modelRuntime,/DefaultAuthStorage.create\(options.authPath\)/);
 });
+
+test('mention toggle is channel-local, accepts bare commands, and survives restart', async () => {
+ const dir=mkdtempSync('/tmp/cuse-mention-');const prompts:string[]=[];
+ const make=()=>{
+  const irc=new FakeIrc();
+  const bot=new IrcPiBot({server:'synthetic.invalid',port:6667,tls:false,nick:'cuse',channels:[],controlChannel:'#control',addressedOnly:true,statePath:dir+'/state.json',workspaceRoot:dir+'/work',cwd:dir,agentDir:dir,sessionDir:dir+'/sessions',desktops:{ensure:async(room:string)=>({id:room,name:room,state:'running'})} as any,modelRuntime:{} as any,createResources:async()=>{throw Error('unused');},openSession:async(room:string)=>({sessionId:room,sessionFile:dir+'/'+room+'.jsonl',busy:false,watch:()=>()=>{},prompt:async(text:string)=>{prompts.push(text);return {text:'',steered:false};},abort:async()=>{}}) as any,forkSession:()=>{throw Error('unused');},log:()=>{},createClient:()=>irc as any,sendSpacingMs:0});
+  const send=async(target:string,message:string)=>{irc.emit('privmsg',{nick:'tester',target,message});await new Promise(r=>setTimeout(r,30));};
+  return {bot,irc,send};
+ };
+ let app=make();
+ try {
+  app.bot.store.set('#room',{desktopId:'#room',createdAt:1});app.bot.store.set('#other',{desktopId:'#other',createdAt:1});await app.bot.start();
+  await app.send('#room','ignored');assert.equal(prompts.length,0);
+  await app.send('#room',',toggle mention');assert.equal(app.bot.store.get('#room')?.mentionRequired,false);
+  await app.send('#room','hello without prefix');assert.equal(prompts.length,1);
+  await app.send('#other','ignored elsewhere');assert.equal(prompts.length,1);
+  await app.bot.close();app=make();await app.bot.start();
+  await app.send('#room','after restart');assert.equal(prompts.length,2);
+  await app.send('#room',',toggle mention');assert.equal(app.bot.store.get('#room')?.mentionRequired,true);
+  await app.send('#room','ignored again');assert.equal(prompts.length,2);
+  await app.send('#room','cuse: addressed');assert.equal(prompts.length,3);
+  await app.send('cuse',',toggle mention');assert.ok(app.irc.messages.some(m=>m.text.includes('DMs always accept')));
+ } finally {await app.bot.close();rmSync(dir,{recursive:true,force:true});}
+});
