@@ -235,3 +235,51 @@ test('unrelated streaming 404 is cancelled without buffering its full body', asy
  await assert.rejects(h.mcp.call('x', {}), (e: any) => e instanceof HttpError && e.status === 404);
  assert.equal(cancelled, true); assert.ok(pulls <= 2); assert.equal(h.handshakes(), 1);
 });
+
+for (const retained of [true, false]) {
+ test(`wake-on-connect after scale-to-zero ${retained ? 'retains' : 'replaces'} the MCP session without duplicate execution`, async () => {
+  let attempts = 0, executions = 0;
+  const ids: number[] = [];
+  const h = expiryHarness((body, session) => {
+   ids.push(body.id);
+   if (++attempts <= 2) return new Response('waking', { status: 425, headers: { 'Retry-After': '0.001' } });
+   if (!retained && session === 'session-1') return expiredSession();
+   executions++;
+   return json({ id: body.id, result: { content: [{ type: 'text', text: 'awake' }] } });
+  });
+  await h.mcp.initialize(); // Desktop scales to zero after a usable connection.
+  assert.deepEqual(await h.mcp.call('run_js', { code: 'harmless' }), { content: [{ type: 'text', text: 'awake' }] });
+  assert.equal(executions, 1);
+  assert.equal(h.handshakes(), retained ? 1 : 2);
+  assert.equal(ids[0], ids[1]); assert.equal(ids[1], ids[2]);
+  if (!retained) assert.notEqual(ids[2], ids[3]);
+ });
+}
+
+test('first connection wakes a scaled-to-zero desktop before initializing and dispatching', async () => {
+ let initializeAttempts = 0, executions = 0;
+ const c = client((_url, init) => {
+  const body = JSON.parse(String(init.body));
+  if (body.method === 'initialize') {
+   if (++initializeAttempts === 1) return new Response('waking', { status: 425, headers: { 'Retry-After': '0.001' } });
+   return json({ id: body.id, result: {} }, 200, { 'Mcp-Session-Id': 'awake' });
+  }
+  if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+  assert.equal(new Headers(init.headers).get('Mcp-Session-Id'), 'awake');
+  executions++;
+  return json({ id: body.id, result: { content: [] } });
+ });
+ await new DesktopMcp(c, 'desktop').call('run_js', {});
+ assert.equal(initializeAttempts, 2); assert.equal(executions, 1);
+});
+
+test('wake deadline expires without dispatching or provisioning a desktop', async () => {
+ let requests = 0;
+ const c = client((_url, init) => {
+  requests++;
+  assert.equal(JSON.parse(String(init.body)).method, 'initialize');
+  return new Response('waking', { status: 425 });
+ }, { wakeTimeoutMs: 0 });
+ await assert.rejects(new DesktopMcp(c, 'desktop').call('run_js', {}), (e: any) => e instanceof HttpError && e.status === 425);
+ assert.equal(requests, 1);
+});
