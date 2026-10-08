@@ -131,3 +131,107 @@ test('corrupt JSON/version/record state errors surface rather than silently rese
 test('corrupt state channels array is rejected', () => stateCase(path => {
  writeFileSync(path, '{"version":1,"channels":[]}'); assert.throws(() => new ChannelSessionStore(path), /Invalid cuse state/);
 }));
+
+function expiryHarness(handler: (body: any, session: string | null) => Promise<Response> | Response) {
+ let handshakes = 0;
+ const requests: { method: string; session: string | null }[] = [];
+ const c = client((_url, init) => {
+  const body = JSON.parse(String(init.body));
+  const session = new Headers(init.headers).get('Mcp-Session-Id');
+  requests.push({ method: body.method, session });
+  if (body.method === 'initialize') {
+   assert.equal(session, null, 'new handshake must not send expired session');
+   return json({ id: body.id, result: {} }, 200, { 'Mcp-Session-Id': 'session-' + ++handshakes });
+  }
+  if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+  return handler(body, session);
+ });
+ return { mcp: new DesktopMcp(c, 'desktop'), requests, handshakes: () => handshakes };
+}
+const expiredSession = () => new Response('Not Found: Session not found', { status: 404 });
+for (const method of ['tools/list', 'tools/call']) {
+ test(method + ' recovers an expired cached session with one fresh handshake', async () => {
+  const h = expiryHarness((body, session) => session === 'session-1' ? expiredSession() : json({ id: body.id, result: { tools: [{ name: 'recovered' }], content: [] } }));
+  await h.mcp.initialize(); // Session may idle before the next operation.
+  if (method === 'tools/list') assert.equal((await h.mcp.tools())[0].name, 'recovered');
+  else assert.deepEqual((await h.mcp.call('x', {})).content, []);
+  assert.equal(h.handshakes(), 2);
+  assert.deepEqual(h.requests.filter(r => r.method === method).map(r => r.session), ['session-1', 'session-2']);
+ });
+}
+test('concurrent expired calls share recovery and late old rejection cannot reset new session', async () => {
+ let oldCalls = 0;
+ let releaseOld!: () => void;
+ const oldReady = new Promise<void>(resolve => { releaseOld = resolve; });
+ let releaseLate!: () => void;
+ const late = new Promise<void>(resolve => { releaseLate = resolve; });
+ const h = expiryHarness(async (body, session) => {
+  if (session === 'session-1') {
+   const first = ++oldCalls === 1;
+   if (oldCalls === 3) releaseOld();
+   await oldReady;
+   if (!first) await late;
+   return expiredSession();
+  }
+  // The other expired requests resolve only after the replacement is usable.
+  releaseLate();
+  return json({ id: body.id, result: { content: [] } });
+ });
+ await Promise.all([h.mcp.call('a', {}), h.mcp.call('b', {}), h.mcp.call('c', {})]);
+ assert.equal(h.handshakes(), 2);
+ assert.equal(h.requests.filter(r => r.method === 'tools/call').length, 6);
+});
+test('repeated expired-session rejection stops after one retry', async () => {
+ const h = expiryHarness(() => expiredSession());
+ await assert.rejects(h.mcp.call('x', {}), (e: any) => e instanceof HttpError && e.status === 404);
+ assert.equal(h.handshakes(), 2);
+ assert.equal(h.requests.filter(r => r.method === 'tools/call').length, 2);
+});
+test('unrelated 404 and ambiguous server errors never reinitialize or replay', async () => {
+ for (const [status, body] of [[404, 'Not Found'], [404, 'Not Found: Session not found\n'], [500, 'Not Found: Session not found'], [504, 'Not Found: Session not found']] as const) {
+  const h = expiryHarness(() => new Response(body, { status }));
+  await assert.rejects(h.mcp.call('x', {}), (e: any) => e instanceof HttpError && e.status === status);
+  assert.equal(h.handshakes(), 1);
+  assert.equal(h.requests.filter(r => r.method === 'tools/call').length, 1);
+ }
+});
+test('session-not-found without a cached session is not retried', async () => {
+ let calls = 0, handshakes = 0;
+ const c = client((_url, init) => {
+  const body = JSON.parse(String(init.body));
+  if (body.method === 'initialize') { handshakes++; return json({ id: body.id, result: {} }); }
+  if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+  calls++; return expiredSession();
+ });
+ await assert.rejects(new DesktopMcp(c, 'desktop').call('x', {}), (e: any) => e instanceof HttpError && e.status === 404);
+ assert.equal(calls, 1); assert.equal(handshakes, 1);
+});
+test('failed initialized notification clears the partial session before a later handshake', async () => {
+ let handshakes = 0, notifications = 0, calls = 0;
+ const c = client((_url, init) => {
+  const body = JSON.parse(String(init.body));
+  if (body.method === 'initialize') {
+   assert.equal(new Headers(init.headers).get('Mcp-Session-Id'), null);
+   return json({ id: body.id, result: {} }, 200, { 'Mcp-Session-Id': 'partial-' + ++handshakes });
+  }
+  if (body.method === 'notifications/initialized') {
+   if (++notifications === 1) return new Response('failed', { status: 500 });
+   return new Response(null, { status: 202 });
+  }
+  calls++; return json({ id: body.id, result: { content: [] } });
+ });
+ const mcp = new DesktopMcp(c, 'desktop');
+ await assert.rejects(mcp.call('x', {}));
+ assert.equal(calls, 0);
+ await mcp.call('x', {});
+ assert.equal(handshakes, 2); assert.equal(calls, 1);
+});
+test('unrelated streaming 404 is cancelled without buffering its full body', async () => {
+ let cancelled = false, pulls = 0;
+ const h = expiryHarness(() => new Response(new ReadableStream({
+  pull(controller) { pulls++; controller.enqueue(new TextEncoder().encode('Unrelated large proxy response')); },
+  cancel() { cancelled = true; },
+ }), { status: 404 }));
+ await assert.rejects(h.mcp.call('x', {}), (e: any) => e instanceof HttpError && e.status === 404);
+ assert.equal(cancelled, true); assert.ok(pulls <= 2); assert.equal(h.handshakes(), 1);
+});

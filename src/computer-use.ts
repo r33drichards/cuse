@@ -13,6 +13,29 @@ export class HttpError extends Error {
   super(message); this.status = status; this.retryAfter = retryAfter;
  }
 }
+// rmcp emits this exact verdict before dispatch when an MCP session expired.
+// Keep the raw body private and do not classify arbitrary proxy/API 404s.
+class McpSessionNotFoundError extends HttpError {
+ generation = -1;
+ constructor() { super(404, "Computer Use MCP session expired"); }
+}
+async function isExpiredSessionResponse(response: Response): Promise<boolean> {
+ const expected = new TextEncoder().encode("Not Found: Session not found");
+ const reader = response.body?.getReader();
+ if (!reader) return false;
+ let offset = 0;
+ try {
+  for (;;) {
+   const { done, value } = await reader.read();
+   if (done) return offset === expected.length;
+   if (offset + value.length > expected.length || value.some((byte: number, index: number) => byte !== expected[offset + index])) {
+    await reader.cancel();
+    return false;
+   }
+   offset += value.length;
+  }
+ } finally { reader.releaseLock(); }
+}
 export class UnsupportedDesktopForkError extends PublicError {
  constructor() {
   super("forkUnavailable");
@@ -60,6 +83,10 @@ export class ComputerUseClient {
    signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
+   if (response.status === 404 && path.endsWith("/mcp") && new Headers(init.headers).has("Mcp-Session-Id")
+    && await isExpiredSessionResponse(response)) {
+    throw new McpSessionNotFoundError();
+   }
    // API responses can carry arbitrary text. Never relay credentials or raw response bodies to IRC.
    throw new HttpError(response.status, "Computer Use HTTP " + response.status + " on " + path, Number(response.headers.get("Retry-After")) || 1);
   }
@@ -127,11 +154,14 @@ export class DesktopMcp {
  readonly client: ComputerUseClient;
  readonly id: string;
  #nextId = 1;
+ #generation = 0;
  #session?: string;
  #protocol = "2025-06-18";
  #handshake?: Promise<void>;
  constructor(client: ComputerUseClient, id: string) { this.client = client; this.id = id; }
  async #post(method: string, params: unknown, signal?: AbortSignal, notification = false): Promise<unknown> {
+  const generation = this.#generation;
+  const sessionId = this.#session;
   const id = this.#nextId++;
   const body = JSON.stringify({ jsonrpc: "2.0", ...(notification ? {} : { id }), method, ...(params === undefined ? {} : { params }) });
   const deadline = Date.now() + (this.client.options.wakeTimeoutMs ?? 180_000);
@@ -140,14 +170,15 @@ export class DesktopMcp {
     const response = await this.client.request("/" + encodeURIComponent(this.id) + "/mcp", {
      method: "POST", body, signal,
      headers: { Accept: "application/json, text/event-stream", "MCP-Protocol-Version": this.#protocol,
-      ...(this.#session ? { "Mcp-Session-Id": this.#session } : {}) },
+      ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}) },
     }, 360_000);
     const session = response.headers.get("Mcp-Session-Id");
-    if (session) this.#session = session;
+    if (session && generation === this.#generation) this.#session = session;
     if (notification) { await response.arrayBuffer(); return undefined; }
     const text = await response.text();
     return parseRpc(text, id, response.headers.get("Content-Type")?.includes("text/event-stream") ?? false).result;
    } catch (error) {
+    if (error instanceof McpSessionNotFoundError) error.generation = generation;
     // HTTP 425 is the explicit pre-execution wake verdict. A generic 504
     // may occur after execution: never retry it or any network/timeout failure.
     if (!(error instanceof HttpError) || error.status !== 425 || Date.now() >= deadline) throw error;
@@ -163,26 +194,49 @@ export class DesktopMcp {
  }
  async initialize(signal?: AbortSignal): Promise<void> {
   if (!this.#handshake) {
+   const generation = this.#generation;
    this.#handshake = (async () => {
     const result = await this.#post("initialize", { protocolVersion: this.#protocol, capabilities: {}, clientInfo: { name: "cuse", version: "0.1.0" } }, signal) as { protocolVersion?: string };
     this.#protocol = result.protocolVersion ?? this.#protocol;
     await this.#post("notifications/initialized", undefined, signal, true);
-   })().catch(error => { this.#handshake = undefined; throw error; });
+   })().catch(error => {
+    if (generation === this.#generation) {
+     this.#generation++;
+     this.#session = undefined;
+     this.#handshake = undefined;
+    }
+    throw error;
+   });
   }
   await this.#handshake;
  }
- async tools(signal?: AbortSignal): Promise<RemoteTool[]> {
+ /** Replay only an explicit pre-dispatch session rejection, at most once. */
+ async #toolRequest(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
   await this.initialize(signal);
+  try { return await this.#post(method, params, signal); }
+  catch (error) {
+   if (!(error instanceof McpSessionNotFoundError)) throw error;
+   // A delayed rejection from an old request must not discard a newer handshake.
+   // Reset synchronously before awaiting, so concurrent callers share initialize().
+   if (error.generation === this.#generation) {
+    this.#generation++;
+    this.#session = undefined;
+    this.#handshake = undefined;
+   }
+   await this.initialize(signal);
+   return this.#post(method, params, signal);
+  }
+ }
+ async tools(signal?: AbortSignal): Promise<RemoteTool[]> {
   const tools: RemoteTool[] = [];
   let cursor: string | undefined;
   do {
-   const result = await this.#post("tools/list", cursor ? { cursor } : {}, signal) as { tools: RemoteTool[]; nextCursor?: string };
+   const result = await this.#toolRequest("tools/list", cursor ? { cursor } : {}, signal) as { tools: RemoteTool[]; nextCursor?: string };
    tools.push(...result.tools); cursor = result.nextCursor;
   } while (cursor);
   return tools;
  }
  async call(name: string, args: unknown, signal?: AbortSignal): Promise<RemoteResult> {
-  await this.initialize(signal);
-  return await this.#post("tools/call", { name, arguments: args }, signal) as RemoteResult;
+  return await this.#toolRequest("tools/call", { name, arguments: args }, signal) as RemoteResult;
  }
 }
