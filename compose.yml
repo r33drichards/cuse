@@ -1,0 +1,18 @@
+services:
+  cuse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      PI_CODING_AGENT_DIR: /data/agent
+    volumes:
+      - agent-data:/data/agent
+      # Optional read-only overrides (create files before enabling):
+      # - ./config/settings.json:/config/settings.json:ro
+      # - ./config/models.json:/config/models.json:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+volumes:
+  agent-data:

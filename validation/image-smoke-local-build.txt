@@ -1,0 +1,17 @@
+
+> cuse@0.1.0 check
+> npm --prefix .runtime/pi/packages/coding-agent run build
+
+
+> @earendil-works/pi-coding-agent@0.85.1 build
+> npm run build:unbundled && node ../../scripts/build-coding-agent-bundle.mjs
+
+
+> @earendil-works/pi-coding-agent@0.85.1 build:unbundled
+> tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && npm run copy-assets
+
+
+> @earendil-works/pi-coding-agent@0.85.1 copy-assets
+> shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/
+
+Built packages/coding-agent/dist/bundle (51 files, 7.5 MiB)
