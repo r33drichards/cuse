@@ -377,3 +377,12 @@ test("unclassified open failures and typed failures after dispatch do not auto r
   await controller.close();
  }
 });
+
+test("pause during own turn prevents next queued message from starting", async t => {
+ let paused=false,calls=0;
+ const gate=deferred<void>();
+ const {controller,store}=setup(t,{canOpen:()=>!paused,open:async()=>({abort:async()=>{},promptDurable:async()=>{calls++;await gate.promise;paused=true;return{text:"paused",steered:false};}})});
+ controller.enqueue(message);controller.enqueue({...message,id:"two"});
+ gate.resolve();await controller.startChannel(message.channel);
+ assert.equal(calls,1);assert.equal(store.listInbox().find(x=>x.id==="two")?.state,"pending");
+});

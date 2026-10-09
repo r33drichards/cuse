@@ -399,7 +399,8 @@ export class IrcPiBot implements ChannelDelegate {
 		const pending = this.#opening.get(key);
 		if (pending) return pending;
 		const open = (async () => {
-			const desktop = await this.#desktopFor(key);
+			const remembered = this.#store.get(key);
+            const desktop = remembered ? {id: remembered.desktopId} : await this.#desktopFor(key);
 			const record = this.#store.get(key)!;
 			// Recovery failures are surfaced, never replaced with a fresh conversation/desktop.
 			const created = await this.#options.openSession(key, this.#deps(key, desktop.id),
@@ -766,6 +767,29 @@ export class IrcPiBot implements ChannelDelegate {
    this.#store.set(room, {...this.#store.get(room)!, desktopOperation: undefined, desktopDeleted: false, desktopPaused: false});
    this.say(room, `desktop recreated: ${targetId} — ${this.#options.desktops.viewer(targetId)}; old disk deleted, conversation kept, pending messages resuming.`);
   } finally {
+   this.#desktopChanging.delete(room);
+   if (!this.#store.get(room)?.desktopPaused) this.#delivery?.resumePending(room);
+  }
+ }
+
+ /** Channel-bound control called from the active agent; never close or await that same agent. */
+ async desktopControl(room: string, action: string): Promise<unknown> {
+  room = room.toLowerCase();
+  if (!["status", "start", "stop", "sleep"].includes(action)) throw new Error("Unsupported desktop action");
+  const record = this.#store.get(room);
+  if (!record || record.desktopDeleted || record.desktopOperation || this.#desktopChanging.has(room)) throw new PublicError("preparing");
+  if (action === "status") {
+   const desktop = await this.#options.desktops.get(record.desktopId);
+   return {id: desktop.id, state: desktop.state, message: desktop.message, queuePaused: !!record.desktopPaused, viewer: this.#options.desktops.viewer(desktop.id)};
+  }
+  this.#desktopChanging.add(room);
+  try {
+   if (action === "stop") this.#store.set(room, {...record, desktopPaused: true});
+   const desktop = await this.#options.desktops.lifecycle(record.desktopId, action as "start" | "stop" | "sleep");
+   if (action === "start" || action === "sleep") this.#store.set(room, {...this.#store.get(room)!, desktopPaused: false});
+   return {id: desktop.id, state: desktop.state, queuePaused: !!this.#store.get(room)?.desktopPaused};
+  } catch { throw new Error("Desktop operation failed; its outcome may be unknown. Inspect status before deciding another action."); }
+  finally {
    this.#desktopChanging.delete(room);
    if (!this.#store.get(room)?.desktopPaused) this.#delivery?.resumePending(room);
   }

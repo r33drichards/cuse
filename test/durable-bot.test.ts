@@ -292,10 +292,10 @@ test("creating before first poll does not bypass older skip-policy recovery", as
 });
 
 
-test("remembered desktop GET failure saves input and emits safe retry notice", async () => {
+test("remembered desktop opens recovery agent without requesting unavailable desktop", async () => {
  const root=mkdtempSync(join(tmpdir(),"cuse-open-notice-"));
  let ensures=0;
- const {bot,irc}=app(root,async()=>{throw Error("must not open");},true,{
+ const {bot,irc}=app(root,async(channel)=>session(root,channel,async()=>({text:"RECOVERY_READY",steered:false})),true,{
   ensure:async(room:string,id?:string)=>{
    ensures++;
    if(id) throw new HttpError(503,"PRIVATE_CANARY");
@@ -306,9 +306,9 @@ test("remembered desktop GET failure saves input and emits safe retry notice", a
   await bot.start();irc.emit("registered",{nick:"cuse"});
   await until(()=>bot.store.get("#control")!==undefined);
   irc.emit("privmsg",{nick:"tester",target:"#control",message:"hello",tags:{msgid:"saved"}});
-  await until(()=>irc.messages.some(m=>m.text.includes("retry automatically")));
-  assert.equal(readInbox(root)[0]!.state,"pending");
-  assert.equal(ensures,2);
+  await until(()=>irc.messages.some(m=>m.text.includes("RECOVERY_READY")));
+  assert.equal(readInbox(root)[0]!.state,"completed");
+  assert.equal(ensures,1);
   assert.ok(!irc.messages.some(m=>m.text.includes("PRIVATE_CANARY")));
  } finally {await bot.close();rmSync(root,{recursive:true,force:true});}
 });
@@ -542,4 +542,15 @@ test("actual client definitive create rejections restore queue state and permit 
    assert.equal(a.bot.store.get("#control")?.desktopOperation, undefined);
   } finally {await a.bot.close(); rmSync(root, {recursive: true, force: true});}
  }
+});
+
+test("active agent can stop and start its own desktop without closing itself",async()=>{
+ const root=mkdtempSync(join(tmpdir(),"cuse-agent-control-")); const calls:string[]=[];
+ const a=app(root,async channel=>session(root,channel,async()=>{
+  assert.equal((await a.bot.desktopControl(channel,"status") as any).message,"Pod is Running but not Ready");
+  await a.bot.desktopControl(channel,"stop");assert.equal(a.bot.store.get(channel)?.desktopPaused,true);
+  await a.bot.desktopControl(channel,"start");assert.equal(a.bot.store.get(channel)?.desktopPaused,false);
+  return{text:"SELF_RECOVERED",steered:false};
+ }),true,{ensure:async()=>({id:"own",state:"running"}),get:async()=>({id:"own",state:"starting",message:"Pod is Running but not Ready"}),viewer:()=>"https://example.test/own",lifecycle:async(id:string,action:string)=>{calls.push(`${id}/${action}`);return{id,state:action};}} as any);
+ try{await a.bot.start();a.irc.emit("registered",{nick:"cuse"});await until(()=>!!a.bot.store.get("#control"));a.irc.emit("privmsg",{nick:"owner",target:"#control",message:"recover"});await until(()=>a.irc.messages.some(m=>m.text==="SELF_RECOVERED"));assert.deepEqual(calls,["own/stop","own/start"]);}finally{await a.bot.close();rmSync(root,{recursive:true,force:true});}
 });

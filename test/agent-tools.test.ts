@@ -126,3 +126,19 @@ test("unavailable mailbox fails clearly without posting via irc_send", async () 
 		);
 	}
 });
+
+test("host desktop controls bind room, reject extra privileges and receipt mutations", async () => {
+ const calls:string[]=[];
+ const tool=createDurableAgentTools({send:async()=>{},desktopControl:async(room,action)=>{calls.push(`${room}/${action}`);return{state:action};}},"#own","sid").find(t=>t.name==="desktop_control")!;
+ const memo=new Map();
+ const invocation={getMemo:async(k:string)=>memo.get(k),setMemo:async(k:string,v:unknown)=>{memo.set(k,v);}};
+ const execute=(params:unknown)=> (tool.execute as any)("id",params,undefined,undefined,invocation);
+ await assert.rejects(execute({action:"delete"}));
+ await assert.rejects(execute({action:"stop",room:"#other"}));
+ const first=await execute({action:"stop"});
+ assert.deepEqual(await execute({action:"stop"}),first);
+ assert.deepEqual(calls,["#own/stop"]);
+ memo.delete("desktop.result");
+ assert.equal((await execute({action:"stop"})).details.ambiguous,true);
+ assert.equal(calls.length,1);
+});
