@@ -1,3 +1,5 @@
+import { DesktopOpenUnavailableError } from "./public-error.ts";
+import { isTransientDesktopDiscoveryError } from "./computer-use.ts";
 /** Durable IRC adapter. The host must hold exclusive ownership of sessionDir. */
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -150,6 +152,12 @@ export class DurableChannelSession {
 			if (!header || JSON.parse(header).type !== "session")
 				throw new Error("Invalid remembered classic session");
 		}
+        // Discovery must succeed before allocating a new session identity or durable files.
+        // The bot cannot remember that identity until open returns successfully.
+        const remote = await deps.desktop.tools().catch((error: unknown) => {
+                if (isTransientDesktopDiscoveryError(error)) throw new DesktopOpenUnavailableError();
+                throw error;
+            });
 		const legacy = options.sessionFile
 			? SessionManager.open(options.sessionFile, deps.sessionDir, deps.cwd)
 			: SessionManager.create(deps.cwd, deps.sessionDir);
@@ -235,7 +243,6 @@ export class DurableChannelSession {
 				throw new Error(
 					"Durable session database is missing; refusing to replay legacy history",
 				);
-			const remote = await deps.desktop.tools();
 			const tools: AgentHarnessTool<undefined>[] = remote
 				.filter((t) =>
 					[

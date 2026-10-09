@@ -1,3 +1,4 @@
+import { DesktopOpenUnavailableError } from "../src/public-error.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -309,4 +310,70 @@ test("peer answer waits behind active source turn then runs without another exte
 	await answered.promise;
 	await controller.startChannel("#source");
 	assert.deepEqual(calls, ["source-work", "one", "one/answer"]);
+});
+
+test("transient discovery retries with capped backoff, preserves FIFO and reports once", async (t) => {
+ t.mock.timers.enable({apis: ["setTimeout"]});
+ let attempts = 0;
+ let ready = false;
+ const executed: string[] = [];
+ const reports: unknown[] = [];
+ const {controller, store} = setup(t, {
+  open: async () => {
+   attempts++;
+   if (!ready) throw new DesktopOpenUnavailableError();
+   return {promptDurable: async id => {executed.push(id); return {text:"ok",steered:false};}, abort: async () => {}};
+  },
+  report: (_channel, error) => { reports.push(error); },
+ });
+ const settle = async () => {for(let i=0;i<20;i++) await Promise.resolve();};
+ controller.enqueue(message);
+ await settle();
+ controller.enqueue({...message,id:"two"});
+ await settle();
+ assert.equal(attempts,1);
+ for (const delay of [5000,15000,30000,60000,60000]) {
+  t.mock.timers.tick(delay-1); await settle();
+  const before = attempts;
+  t.mock.timers.tick(1); await settle();
+  assert.equal(attempts,before+1);
+ }
+ assert.equal(reports.length,1);
+ assert.deepEqual(store.listInbox().map(m=>m.state),["pending","pending"]);
+ ready=true;
+ t.mock.timers.tick(60000); await settle();
+ assert.deepEqual(executed,["one","two"]);
+ assert.deepEqual(store.listInbox().map(m=>m.state),["completed","completed"]);
+ await controller.close();
+});
+
+test("closing cancels discovery retry", async (t) => {
+ t.mock.timers.enable({apis:["setTimeout"]});
+ let attempts=0;
+ const {controller} = setup(t,{open:async()=>{attempts++;throw new DesktopOpenUnavailableError();}});
+ controller.enqueue(message);
+ await controller.startChannel(message.channel);
+ await controller.close();
+ t.mock.timers.tick(120000);
+ await Promise.resolve();
+ assert.equal(attempts,1);
+});
+
+test("unclassified open failures and typed failures after dispatch do not auto retry", async (t) => {
+ t.mock.timers.enable({apis:["setTimeout"]});
+ for (const postDispatch of [false,true]) {
+  let attempts=0;
+  const {controller,store}=setup(t,{open:async()=>{
+   attempts++;
+   if (!postDispatch) throw Error("invalid configuration");
+   return {promptDurable:async()=>{throw new DesktopOpenUnavailableError();},abort:async()=>{}};
+  }});
+  controller.enqueue(message);
+  await controller.startChannel(message.channel);
+  controller.enqueue({...message,id:"two"});
+  t.mock.timers.tick(120000); await Promise.resolve();
+  assert.equal(attempts,1);
+  assert.equal(store.listInbox()[0].state,postDispatch?"recovery-required":"pending");
+  await controller.close();
+ }
 });

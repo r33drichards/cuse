@@ -10,6 +10,7 @@ import {
 	type BotSession,
 	type IrcBotOptions,
 } from "../.runtime/pi/packages/coding-agent/src/cuse/bot.ts";
+import { HttpError } from "../.runtime/pi/packages/coding-agent/src/cuse/computer-use.ts";
 import { DurableIrcStore } from "../src/durable-store.ts";
 
 class FakeIrc extends EventEmitter {
@@ -56,7 +57,7 @@ function session(
 		reload: async () => {},
 	};
 }
-function app(root: string, open: IrcBotOptions["openSession"], durable = true) {
+function app(root: string, open: IrcBotOptions["openSession"], durable = true, desktopOverride?: IrcBotOptions["desktops"]) {
 	const irc = new FakeIrc();
 	const bot = new IrcPiBot({
 		server: "synthetic.invalid",
@@ -72,7 +73,7 @@ function app(root: string, open: IrcBotOptions["openSession"], durable = true) {
 		cwd: root,
 		agentDir: root,
 		sessionDir: join(root, "sessions"),
-		desktops: {
+		desktops: desktopOverride ?? {
 			ensure: async (room: string) => ({
 				id: room,
 				name: room,
@@ -287,5 +288,27 @@ test("creating before first poll does not bypass older skip-policy recovery", as
   bot.pollSchedules();await tick();assert.equal(calls.length,0);
   const rows=await bot.schedule({action:"list",room:"#control",requestId:"list"}) as {id:string;nextRunAt:number}[];
   assert.ok(rows.find(r=>r.id==="old-skip")!.nextRunAt>Date.now());
+ } finally {await bot.close();rmSync(root,{recursive:true,force:true});}
+});
+
+
+test("remembered desktop GET failure saves input and emits safe retry notice", async () => {
+ const root=mkdtempSync(join(tmpdir(),"cuse-open-notice-"));
+ let ensures=0;
+ const {bot,irc}=app(root,async()=>{throw Error("must not open");},true,{
+  ensure:async(room:string,id?:string)=>{
+   ensures++;
+   if(id) throw new HttpError(503,"PRIVATE_CANARY");
+   return{id:room,name:room,state:"starting"};
+  },
+ } as IrcBotOptions["desktops"]);
+ try {
+  await bot.start();irc.emit("registered",{nick:"cuse"});
+  await until(()=>bot.store.get("#control")!==undefined);
+  irc.emit("privmsg",{nick:"tester",target:"#control",message:"hello",tags:{msgid:"saved"}});
+  await until(()=>irc.messages.some(m=>m.text.includes("retry automatically")));
+  assert.equal(readInbox(root)[0]!.state,"pending");
+  assert.equal(ensures,2);
+  assert.ok(!irc.messages.some(m=>m.text.includes("PRIVATE_CANARY")));
  } finally {await bot.close();rmSync(root,{recursive:true,force:true});}
 });

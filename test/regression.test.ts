@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, statSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { ComputerUseClient, DesktopMcp, HttpError, parseRpc } from '../src/computer-use.ts';
+import { ComputerUseClient, DesktopMcp, HttpError, parseRpc, isTransientDesktopDiscoveryError } from '../src/computer-use.ts';
 import { ChannelSessionStore } from '../src/state.ts';
 
 const json = (value: unknown, status = 200, headers = {}) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json', ...headers } });
@@ -282,4 +282,15 @@ test('wake deadline expires without dispatching or provisioning a desktop', asyn
  }, { wakeTimeoutMs: 0 });
  await assert.rejects(new DesktopMcp(c, 'desktop').call('run_js', {}), (e: any) => e instanceof HttpError && e.status === 425);
  assert.equal(requests, 1);
+});
+
+
+test('only transient desktop discovery failures qualify for opening retry', () => {
+ for (const status of [408,425,429,502,503,504]) assert.equal(isTransientDesktopDiscoveryError(new HttpError(status,'private')),true);
+ for (const status of [400,401,403,404,409,500]) assert.equal(isTransientDesktopDiscoveryError(new HttpError(status,'private')),false);
+ assert.equal(isTransientDesktopDiscoveryError(new DOMException('private','TimeoutError')),true);
+ assert.equal(isTransientDesktopDiscoveryError(new DOMException('cancelled','AbortError')),false);
+ assert.equal(isTransientDesktopDiscoveryError(new TypeError('private',{cause:Object.assign(new Error('private'),{code:'ECONNRESET'})})),true);
+ assert.equal(isTransientDesktopDiscoveryError(new TypeError('programming error')),false);
+ assert.equal(isTransientDesktopDiscoveryError(new Error('private')),false);
 });
