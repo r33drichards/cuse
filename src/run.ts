@@ -5,9 +5,11 @@ import { PublicError, publicError } from "./public-error.ts";
  */
 
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { getAgentDir } from "../config.ts";
 import { SessionManager } from "../core/session-manager.ts";
 import { ChannelSession } from "./channel-session.ts";
+import { DurableChannelSession } from "./durable-session.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { DefaultResourceLoader } from "../core/resource-loader.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
@@ -125,6 +127,8 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	};
 	const { resourceLoader, settingsManager } = await createResources(cwd);
 	const extensions = resourceLoader.getExtensions();
+ const durable = envFlag(env.CUSE_DURABLE_IRC) ?? false;
+ if (durable && (extensions.extensions.length || extensions.errors.length)) throw new PublicError("durableExtensions");
 	if (extensions.extensions.length > 0) {
 		log(`Extensions: ${extensions.extensions.length} loaded`);
 	}
@@ -145,6 +149,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	await desktops.request("/v1/me");
 	const botOptions: IrcBotOptions = {
 		...config,
+  durable,
 		cwd,
 		workspaceRoot: command.workspaceRoot ?? env.PI_IRC_WORKSPACE_DIR ?? join(agentDir, "irc", "channels"),
 		agentDir,
@@ -152,7 +157,10 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 		createResources,
 		modelRuntime,
 		desktops,
-		openSession: (channel, deps, sessionOptions) => ChannelSession.open(channel, deps, sessionOptions),
+		openSession: (channel, deps, sessionOptions) => {
+   if (!durable && sessionOptions.sessionFile && existsSync(sessionOptions.sessionFile + ".durable.json")) throw new PublicError("durableRequired");
+   return durable ? DurableChannelSession.open(channel, deps, sessionOptions) : ChannelSession.open(channel, deps, sessionOptions);
+  },
 		forkSession: (sourceFile, targetCwd, targetSessionDir) => {
 			const manager = SessionManager.forkFrom(sourceFile, targetCwd, targetSessionDir);
 			const sessionFile = manager.getSessionFile();

@@ -300,3 +300,69 @@ New exact-HEAD CI and independent source approval remain parent barriers.
 ### Mention toggle
 
 Send `,toggle mention` in a channel to switch between requiring `cuse:` and responding to every message. The bot confirms whether mentions are ON (required) or OFF. The setting is per channel and survives restarts; channels without an override use `IRC_RESPOND_TO_ALL`. The toggle works without a bot prefix in any channel. DMs always accept messages.
+
+### Opt-in durable IRC runtime
+
+Set `CUSE_DURABLE_IRC=true` to use pi's SQLite-backed AgentHarness and the
+persistent IRC inbox/outbox. Keep the existing persistent `/data/agent`
+volume and run one replica. The process takes an exclusive SQLite ownership
+lock before opening durable conversations; a process crash releases that lock.
+This is single-host recovery, not multi-host failover or a substitute for backups.
+
+Incoming prompts are saved before opening the desktop or calling the model.
+Each channel processes them in order. On reconnect/startup, unfinished inputs
+use their original operation IDs: completed operations return their saved
+result, and interrupted operations reconcile their checkpoints. Empty queues
+do not wake sleeping desktops. Final replies are committed with input
+completion and retained for delivery when the channel is available.
+
+This mode deliberately queues new prompts instead of steering a running turn.
+Assistant progress text is not relayed; final text is durable, while tool
+progress remains best effort. Classic extensions are not supported and cause
+an explicit refusal instead of being silently omitted. `,reload` requires a
+restart in this mode. Model selection, thinking level, mention preferences,
+conversation identity, and desktop identity remain persistent.
+
+Migration imports the selected classic conversation into SQLite and retains
+the original JSONL file. An interrupted import resumes only when its existing
+entries exactly match the original history. Once migrated, turning the flag
+off refuses to open the stale classic history. Back up the whole stopped
+volume before migration; rollback requires deliberate reconciliation rather
+than switching the flag off.
+
+External effects cannot be made exactly-once by this client alone. A crashed
+`run_js` may have performed a browser edit or started a remote job. Such tool
+invocations are never marked replay-safe; recovery records an interruption
+and directs the agent to inspect the outcome before attempting another action.
+Arbitrary JavaScript does not provide a recoverable remote job ID or an
+idempotency key for every side effect.
+
+IRC also has no end-to-end delivery acknowledgement here. An uncertain reply
+may be duplicated after a crash, and local socket acceptance does not prove
+receipt. Messages sent while the bot was offline cannot be recovered unless
+the IRC server replays them. Server message IDs deduplicate received replays;
+without those IDs, each received line is a distinct input. Administrative
+commands and live tool progress are outside the persistent prompt queue.
+
+Run `npm run test:durable` with Node 24 to exercise inbox ownership/crash
+recovery, runtime checkpoints, and IRC transport integration without live
+provider calls or desktop actions.
+
+### Questions between channel agents
+
+With durable mode enabled, ask naturally: **“Ask #cuse how it completed that
+task.”** The agent uses `agent_list` to discover joined peers and `agent_ask`
+to send the question. A bare channel name such as `cuse` resolves to `#cuse`
+only when it identifies a joined channel unambiguously. No bot mention is
+needed inside the question, and no channel is joined automatically.
+
+The requesting agent receives an immediate queued acknowledgement. The peer's
+answer arrives in a later turn, including the original question. Both the
+question and return message survive restart, and retrying the same tool
+invocation does not create another question. Busy peers process the question
+after their existing work. Exchanges cannot revisit an agent and are limited
+to four agents, preventing endless automated question loops.
+
+Each agent keeps its own conversation and desktop. Peer replies provide
+information; they do not grant new permissions or transfer browser sessions.
+`irc_send` remains available for posting to a joined channel.

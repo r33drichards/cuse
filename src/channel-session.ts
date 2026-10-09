@@ -27,7 +27,7 @@ import { type ChannelDelegate, createDelegationTools, createDesktopTools } from 
 
 export interface RelayEvents {
 	/** Completed assistant text, already split into IRC lines. */
-	text(lines: string[]): void;
+	text(lines: string[], entryId?: string): void;
 	/** One line per tool call and one per tool result. */
 	tool(line: string): void;
 }
@@ -136,7 +136,7 @@ export class ChannelSession {
 		}
 
 		const customTools: ToolDefinition[] = await createDesktopTools(deps.desktop);
-		customTools.push(...createDelegationTools(deps.delegate, channel));
+		customTools.push(...createDelegationTools(deps.delegate, channel, sessionId));
 
 		const { resourceLoader, settingsManager } = await deps.createResources(deps.cwd);
 		const channelSettings = desktopSettings(settingsManager);
