@@ -1,8 +1,6 @@
-import { HttpError } from "../.runtime/pi/packages/coding-agent/src/cuse/computer-use.ts";
-import { isDesktopOpenUnavailable } from "../.runtime/pi/packages/coding-agent/src/cuse/public-error.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -120,6 +118,26 @@ test("committed operation survives reopen without another provider request", asy
         ]);
         assert.equal((await s.promptDurable("offline-status","check status")).text,"Recovery status obtained");
         assert.equal(controls,1);
+        // Simulate a conversation created before desktop_control existed. Its
+        // durable allowlist must migrate as well as the runtime registry.
+        const oldTools = (await s.lane.getActiveTools(ctx)).filter(name => name !== "desktop_control");
+        await s.lane.setActiveTools(oldTools, ctx);
+        const priorEntries = await s.lane.findEntries({type:"message"}, ctx);
+        const priorModel = s.modelLabel();
+        await s.close();
+        s = await DurableChannelSession.open("#test", deps, {sessionFile:file});
+        assert.deepEqual(await s.lane.getActiveTools(ctx), [...oldTools,"desktop_control"]);
+        assert.equal(s.modelLabel(), priorModel);
+        assert.deepEqual(await s.lane.findEntries({type:"message"}, ctx),priorEntries);
+        faux.setResponses([
+            (context) => {
+                assert.ok(context.tools?.some(tool => tool.name === "desktop_control"), "reopened model receives recovery tool schema");
+                return fauxAssistantMessage([{type:"toolCall",id:"status-migrated",name:"desktop_control",arguments:{action:"status"}}],{stopReason:"toolUse"});
+            },
+            fauxAssistantMessage("Migrated recovery works")
+        ]);
+        assert.equal((await s.promptDurable("migrated-status","check status")).text,"Migrated recovery works");
+        assert.equal(controls,2);
 
 		// Close the process-local harness while the real SQLite operation is effect_pending.
 		let dispatched!: () => void;
