@@ -210,3 +210,82 @@ test("empty JOIN does not open MCP and shutdown releases exclusive delivery owne
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("scheduled prompts stay asleep until due, enqueue once, and management replays safely", async () => {
+ const root = mkdtempSync(join(tmpdir(), "cuse-schedule-bot-"));
+ const calls: string[] = [];
+ let opens = 0;
+ const {bot,irc} = app(root, async channel => {
+  opens++;
+  return session(root,channel,async (id) => { calls.push(id); return {text:"SCHEDULE_OK",steered:false}; });
+ });
+ try {
+  await bot.start(); irc.emit("registered",{nick:"cuse"});
+  await until(() => bot.joinedChannels.has("#control"));
+  const request = {action:"create" as const,room:"#control",requestId:"create-1",timing:{kind:"delay" as const,afterMs:60000},prompt:"Reply SCHEDULE_OK"};
+  const created = await bot.schedule(request) as {id:string;nextRunAt:number};
+  assert.deepEqual(await bot.schedule(request),created);
+  assert.equal(opens,0);
+  bot.pollSchedules(created.nextRunAt-1); assert.equal(opens,0);
+  bot.pollSchedules(created.nextRunAt); bot.pollSchedules(created.nextRunAt);
+  await until(() => calls.length===1);
+  await until(() => irc.messages.some(m=>m.text==="SCHEDULE_OK"));
+  assert.equal(opens,1); assert.match(calls[0]!,/^schedule\//);
+  const deletion = {action:"delete" as const,room:"#control",requestId:"delete-1",id:created.id};
+  assert.deepEqual(await bot.schedule(deletion),{id:created.id,deleted:true});
+  assert.deepEqual(await bot.schedule(deletion),{id:created.id,deleted:true});
+  assert.deepEqual(await bot.schedule(request),created); // receipt does not resurrect deleted schedule
+  assert.deepEqual(await bot.schedule({action:"list",room:"#control",requestId:"list"}),[]);
+ } finally {await bot.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test("IRC schedule command replay uses msgid; human can create during scheduled work", async () => {
+ const root = mkdtempSync(join(tmpdir(),"cuse-schedule-command-"));
+ let release!:()=>void;
+ const gate = new Promise<void>(r=>{release=r;});
+ let running=false;
+ const {bot,irc} = app(root, async channel => session(root,channel,async()=>{running=true;await gate;return{text:"DONE",steered:false};}));
+ try {
+  await bot.start();irc.emit("registered",{nick:"cuse"});await until(()=>bot.joinedChannels.has("#control"));
+  const initial=await bot.schedule({action:"create",room:"#control",requestId:"initial",timing:{kind:"delay",afterMs:60000},prompt:"wait"}) as {nextRunAt:number};
+  bot.pollSchedules(initial.nextRunAt);await until(()=>running);
+  await assert.rejects(bot.schedule({action:"create",room:"#control",requestId:"recursive",timing:{kind:"delay",afterMs:60000},prompt:"recurse"}),/cannot create/);
+  const event={nick:"tester",target:"#control",message:",schedule every 5m :: check status",tags:{msgid:"schedule-command"}};
+  irc.emit("privmsg",event);irc.emit("privmsg",event);
+  await until(()=>irc.messages.length===2);
+  const schedules=await bot.schedule({action:"list",room:"#control",requestId:"list"}) as unknown[];
+  assert.equal(schedules.length,2);
+ } finally {release();await bot.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test("reconnect skips missed skip schedules and catches up once for default policy", async () => {
+ const root=mkdtempSync(join(tmpdir(),"cuse-schedule-offline-"));
+ const calls:string[]=[];
+ const {bot,irc}=app(root,async channel=>session(root,channel,async(id)=>{calls.push(id);return{text:"OK",steered:false};}));
+ try {
+  await bot.start();irc.emit("registered",{nick:"cuse"});await until(()=>bot.joinedChannels.has("#control"));
+  const common={action:"create" as const,room:"#control",timing:{kind:"interval" as const,everyMs:60000},prompt:"check"};
+  const skip=await bot.schedule({...common,requestId:"skip",missedPolicy:"skip"}) as {nextRunAt:number};
+  const catchup=await bot.schedule({...common,requestId:"catchup"}) as {id:string};
+  irc.emit("socket close");bot.pollSchedules(skip.nextRunAt+600000);assert.equal(calls.length,0);
+  irc.emit("registered",{nick:"cuse"});await until(()=>bot.joinedChannels.has("#control"));
+  bot.pollSchedules(skip.nextRunAt+600000);
+  await until(()=>calls.length===1);assert.ok(calls[0]!.includes(catchup.id));
+ } finally {await bot.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test("creating before first poll does not bypass older skip-policy recovery", async () => {
+ const root=mkdtempSync(join(tmpdir(),"cuse-schedule-skip-create-"));
+ const seed=new DurableIrcStore(join(root,"delivery"));
+ seed.addSchedule({id:"old-skip",channel:"#control",sender:"scheduler",prompt:"must skip",timing:{kind:"interval",everyMs:60000},missedPolicy:"skip"},Date.now()-600000);
+ seed.close();
+ const calls:string[]=[];
+ const {bot,irc}=app(root,async channel=>session(root,channel,async(id)=>{calls.push(id);return{text:"OK",steered:false};}));
+ try {
+  await bot.start();irc.emit("registered",{nick:"cuse"});await until(()=>bot.joinedChannels.has("#control"));
+  await bot.schedule({action:"create",room:"#control",requestId:"new",timing:{kind:"delay",afterMs:60000},prompt:"new task"});
+  bot.pollSchedules();await tick();assert.equal(calls.length,0);
+  const rows=await bot.schedule({action:"list",room:"#control",requestId:"list"}) as {id:string;nextRunAt:number}[];
+  assert.ok(rows.find(r=>r.id==="old-skip")!.nextRunAt>Date.now());
+ } finally {await bot.close();rmSync(root,{recursive:true,force:true});}
+});

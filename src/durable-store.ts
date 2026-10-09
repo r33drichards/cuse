@@ -1,6 +1,28 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+	nextScheduleTime,
+	validateScheduleTiming,
+	type ScheduleTiming,
+} from "./schedule-time.js";
+
+export interface ScheduleInput {
+	id: string;
+	channel: string;
+	sender: string;
+	prompt: string;
+	timing: ScheduleTiming;
+	missedPolicy?: "catch-up-one" | "skip";
+}
+export interface StoredSchedule extends ScheduleInput {
+	missedPolicy: "catch-up-one" | "skip";
+	paused: boolean;
+	nextRunAt: number | null;
+	lastRunAt: number | null;
+	lastMessageId: string | null;
+	createdAt: number;
+}
 
 export type InboxState =
 	| "pending"
@@ -53,6 +75,7 @@ export class DurableIrcStore {
 	private readonly owner: DatabaseSync;
 	private readonly db: DatabaseSync;
 	private closed = false;
+	private transactionDepth = 0;
 
 	constructor(rootDir: string) {
 		mkdirSync(rootDir, { recursive: true, mode: 0o700 });
@@ -83,7 +106,19 @@ export class DurableIrcStore {
 						state TEXT NOT NULL CHECK(state IN ('pending','sending','sent')),
 						delivery_uncertain INTEGER NOT NULL DEFAULT 0
 					);
-					UPDATE inbox SET state='recovery-required' WHERE state='running';
+					CREATE TABLE IF NOT EXISTS schedule_receipts (
+ id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL
+ );
+ CREATE TABLE IF NOT EXISTS schedule_ids (id TEXT PRIMARY KEY);
+ CREATE TABLE IF NOT EXISTS schedules (
+ id TEXT PRIMARY KEY, channel TEXT NOT NULL, sender TEXT NOT NULL,
+ prompt TEXT NOT NULL, timing_json TEXT NOT NULL,
+ missed_policy TEXT NOT NULL CHECK(missed_policy IN ('catch-up-one','skip')),
+ paused INTEGER NOT NULL DEFAULT 0, next_run_at INTEGER,
+ last_run_at INTEGER, last_message_id TEXT, created_at INTEGER NOT NULL
+ );
+ INSERT OR IGNORE INTO schedule_ids(id) SELECT id FROM schedules;
+ UPDATE inbox SET state='recovery-required' WHERE state='running';
 					UPDATE outbox SET state='pending', delivery_uncertain=1 WHERE state='sending';
 				`);
 				if (
@@ -105,7 +140,7 @@ export class DurableIrcStore {
 	}
 
 	/** Call before acknowledging acceptance. Reusing an ID with different contents is an error. */
-	enqueue(message: InboxMessage): boolean {
+	enqueue(message: InboxMessage, now = Date.now()): boolean {
 		const previous = this.db
 			.prepare("SELECT * FROM inbox WHERE id=?")
 			.get(message.id);
@@ -129,7 +164,7 @@ export class DurableIrcStore {
 				message.channel,
 				message.sender,
 				message.body,
-				Date.now(),
+				now,
 				encodePeer(message.peer),
 			);
 		return true;
@@ -270,6 +305,198 @@ export class DurableIrcStore {
 			throw new Error(`Outbox message is not sending: ${id}`);
 	}
 
+	/** Persist mutation and tool result atomically for deterministic tool replay. */
+	scheduleOperation<T>(
+		requestId: string,
+		fingerprint: string,
+		operation: () => T,
+	): T {
+		if (!requestId || !fingerprint)
+			throw new Error("Schedule operation requires ID and fingerprint");
+		return this.transaction(() => {
+			const receipt = this.db
+				.prepare(
+					"SELECT fingerprint,result_json FROM schedule_receipts WHERE id=?",
+				)
+				.get(requestId);
+			if (receipt) {
+				if (receipt.fingerprint !== fingerprint)
+					throw new Error("Schedule operation ID collision");
+				return JSON.parse(String(receipt.result_json)).value as T;
+			}
+			const result = operation();
+			const encoded = JSON.stringify({ value: result });
+			if (result !== undefined && !encoded.includes('"value"'))
+				throw new Error("Schedule result must be serializable");
+			this.db
+				.prepare(
+					"INSERT INTO schedule_receipts(id,fingerprint,result_json) VALUES(?,?,?)",
+				)
+				.run(requestId, fingerprint, encoded);
+			return result;
+		});
+	}
+
+	/** Schedule IDs cannot be reused, including across channels. */
+	addSchedule(input: ScheduleInput, now = Date.now()): StoredSchedule {
+		if (!/^[a-zA-Z0-9_-]{1,80}$/.test(input.id))
+			throw new Error("Invalid schedule ID");
+		if (
+			!input.channel ||
+			!input.sender ||
+			!input.prompt.trim() ||
+			input.prompt.length > 8000
+		)
+			throw new Error(
+				"Schedule requires channel, sender and prompt (maximum 8000 characters)",
+			);
+		if (this.listSchedules(input.channel).length >= 100)
+			throw new Error("Maximum 100 schedules per channel");
+		validateScheduleTiming(input.timing, now);
+		const policy = input.missedPolicy ?? "catch-up-one";
+		if (policy !== "catch-up-one" && policy !== "skip")
+			throw new Error("Invalid missed-run policy");
+		this.transaction(() => {
+			this.db.prepare("INSERT INTO schedule_ids(id) VALUES(?)").run(input.id);
+			this.db
+				.prepare(`INSERT INTO schedules(id,channel,sender,prompt,timing_json,missed_policy,next_run_at,created_at)
+   VALUES(?,?,?,?,?,?,?,?)`)
+				.run(
+					input.id,
+					input.channel,
+					input.sender,
+					input.prompt,
+					JSON.stringify(input.timing),
+					policy,
+					nextScheduleTime(input.timing, now),
+					now,
+				);
+		});
+		return this.listSchedules(input.channel).find(
+			(item) => item.id === input.id,
+		)!;
+	}
+
+	listSchedules(channel?: string): StoredSchedule[] {
+		const rows =
+			channel === undefined
+				? this.db
+						.prepare("SELECT * FROM schedules ORDER BY created_at,id")
+						.all()
+				: this.db
+						.prepare(
+							"SELECT * FROM schedules WHERE channel=? ORDER BY created_at,id",
+						)
+						.all(channel);
+		return rows.map((row) => ({
+			id: String(row.id),
+			channel: String(row.channel),
+			sender: String(row.sender),
+			prompt: String(row.prompt),
+			timing: JSON.parse(String(row.timing_json)) as ScheduleTiming,
+			missedPolicy: row.missed_policy as StoredSchedule["missedPolicy"],
+			paused: row.paused === 1,
+			nextRunAt: row.next_run_at === null ? null : Number(row.next_run_at),
+			lastRunAt: row.last_run_at === null ? null : Number(row.last_run_at),
+			lastMessageId:
+				row.last_message_id === null ? null : String(row.last_message_id),
+			createdAt: Number(row.created_at),
+		}));
+	}
+
+	setSchedulePaused(
+		channel: string,
+		id: string,
+		paused: boolean,
+		now = Date.now(),
+	): StoredSchedule {
+		const schedule = this.listSchedules(channel).find((item) => item.id === id);
+		if (!schedule) throw new Error("Schedule not found in this channel");
+		if (schedule.paused === paused) return schedule;
+		// Resume starts from now, never replays the time deliberately paused.
+		const next = paused
+			? schedule.nextRunAt
+			: nextScheduleTime(schedule.timing, now);
+		this.db
+			.prepare(
+				"UPDATE schedules SET paused=?,next_run_at=? WHERE id=? AND channel=?",
+			)
+			.run(paused ? 1 : 0, next, id, channel);
+		return { ...schedule, paused, nextRunAt: next };
+	}
+
+	deleteSchedule(channel: string, id: string): boolean {
+		// Already accepted inbox work is not cancelled by deleting its recurrence.
+		return (
+			Number(
+				this.db
+					.prepare("DELETE FROM schedules WHERE channel=? AND id=?")
+					.run(channel, id).changes,
+			) === 1
+		);
+	}
+
+	/** Commit occurrence acceptance and recurrence advance in the SAME transaction.
+	 * On startup, skip-policy jobs discard overdue occurrences. Normal polling runs due jobs.
+	 * Slow/recovering prior occurrences coalesce elapsed ticks; never build a prompt backlog.
+	 */
+	enqueueDueSchedules(
+		now = Date.now(),
+		options: {
+			recovering?: boolean;
+			eligibleChannels?: readonly string[];
+		} = {},
+	): InboxMessage[] {
+		return this.transaction(() => {
+			const messages: InboxMessage[] = [];
+			for (const schedule of this.listSchedules()) {
+				if (
+					options.eligibleChannels &&
+					!options.eligibleChannels.includes(schedule.channel)
+				)
+					continue;
+				if (
+					schedule.paused ||
+					schedule.nextRunAt === null ||
+					schedule.nextRunAt > now
+				)
+					continue;
+				const due = schedule.nextRunAt;
+				const next = nextScheduleTime(schedule.timing, now, due);
+				const previous = schedule.lastMessageId
+					? this.db
+							.prepare("SELECT state FROM inbox WHERE id=?")
+							.get(schedule.lastMessageId)
+					: undefined;
+				const busy = previous !== undefined && previous.state !== "completed";
+				const skip =
+					options.recovering === true &&
+					schedule.missedPolicy === "skip" &&
+					due < now;
+				if (busy || skip) {
+					this.db
+						.prepare("UPDATE schedules SET next_run_at=? WHERE id=?")
+						.run(next, schedule.id);
+					continue;
+				}
+				const message: InboxMessage = {
+					id: `schedule/${schedule.id}/${due}`,
+					channel: schedule.channel,
+					sender: schedule.sender,
+					body: `Scheduled prompt (${schedule.id}, due ${new Date(due).toISOString()}):\n${schedule.prompt}`,
+				};
+				this.enqueue(message, now);
+				this.db
+					.prepare(
+						"UPDATE schedules SET next_run_at=?,last_run_at=?,last_message_id=? WHERE id=?",
+					)
+					.run(next, now, message.id, schedule.id);
+				messages.push(message);
+			}
+			return messages;
+		});
+	}
+
 	close(): void {
 		if (this.closed) return;
 		this.closed = true;
@@ -289,14 +516,22 @@ export class DurableIrcStore {
 	}
 
 	private transaction<T>(operation: () => T): T {
-		this.db.exec("BEGIN IMMEDIATE");
+		const depth = this.transactionDepth++;
+		const name = `nested_${depth}`;
 		try {
-			const result = operation();
-			this.db.exec("COMMIT");
-			return result;
-		} catch (error) {
-			this.db.exec("ROLLBACK");
-			throw error;
+			this.db.exec(depth === 0 ? "BEGIN IMMEDIATE" : `SAVEPOINT ${name}`);
+			try {
+				const result = operation();
+				this.db.exec(depth === 0 ? "COMMIT" : `RELEASE ${name}`);
+				return result;
+			} catch (error) {
+				this.db.exec(
+					depth === 0 ? "ROLLBACK" : `ROLLBACK TO ${name}; RELEASE ${name}`,
+				);
+				throw error;
+			}
+		} finally {
+			this.transactionDepth--;
 		}
 	}
 }

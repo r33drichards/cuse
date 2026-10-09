@@ -1,5 +1,9 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ scheduleUnavailable: "Scheduling requires CUSE_DURABLE_IRC=true and a running bot.",
+ scheduleChannel: "Schedules belong to the current joined channel.",
+ scheduleOrigin: "Scheduled turns and peer requests cannot create additional schedules. Ask directly in the channel.",
+ scheduleInvalid: "Invalid schedule or unknown ID. Use ,schedule list; intervals must be at least 1m, cron uses five fields and an IANA timezone, one-shots must be in the future. Maximum 100 schedules per channel.",
  agentMessagingUnavailable: "Agent questions require CUSE_DURABLE_IRC=true so requests and replies survive restarts.",
  agentTarget: "Choose another joined channel from agent_list. No channel was joined automatically.",
  agentLoop: "This exchange already visited that agent or reached its four-agent limit. Return the information you have to the requester.",
