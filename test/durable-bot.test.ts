@@ -515,3 +515,31 @@ test("capacity failure before dispatch restores original desktop and does not le
   assert.equal(a.bot.store.get("#control")?.desktopId, "old");
  } finally {await a.bot.close(); rmSync(root, {recursive: true, force: true});}
 });
+
+test("actual client definitive create rejections restore queue state and permit a later attempt", async () => {
+ for (const status of [400, 401, 403, 409]) {
+  const root = mkdtempSync(join(tmpdir(), "cuse-create-rejected-"));
+  let posts = 0;
+  let a: ReturnType<typeof app>;
+  const client = new ComputerUseClient({token: "fake", namespace: "test", fetch: async (_url, init) => {
+   if (init?.method === "POST") {
+    posts++;
+    assert.equal(a.bot.store.get("#control")?.desktopOperation?.createDispatched, true);
+    return Response.json({code: "no_capacity", error: "PRIVATE_DETAILS"}, {status});
+   }
+   return Response.json([]);
+  }});
+  a = app(root, async () => {throw Error("no prompt expected");}, true, client);
+  const send = () => a.irc.emit("privmsg", {nick: "owner", target: "#control", message: ",desktop recreate old"});
+  try {
+   await a.bot.start(); a.bot.store.set("#control", {desktopId: "old", createdAt: 1, desktopPaused: status === 403});
+   send(); await until(() => a.irc.messages.some(m => m.text.includes("creation was rejected")));
+   assert.equal(a.bot.store.get("#control")?.desktopOperation, undefined);
+   assert.equal(a.bot.store.get("#control")?.desktopPaused, status === 403);
+   assert.equal(a.bot.store.get("#control")?.desktopId, "old");
+   assert.ok(!a.irc.messages.some(m => m.text.includes("PRIVATE_DETAILS")));
+   send(); await until(() => posts === 2); await tick();
+   assert.equal(a.bot.store.get("#control")?.desktopOperation, undefined);
+  } finally {await a.bot.close(); rmSync(root, {recursive: true, force: true});}
+ }
+});

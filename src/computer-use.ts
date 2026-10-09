@@ -6,6 +6,10 @@ export interface Desktop {
 }
 export interface RemoteTool { name: string; description?: string; inputSchema: Record<string, unknown> }
 export interface RemoteResult { content?: unknown[]; isError?: boolean; structuredContent?: unknown }
+/** Only emitted for documented non-mutating rejections of POST /v1/sessions. */
+export class DesktopCreateRejectedError extends PublicError {
+ constructor() { super("desktopCreateRejected"); }
+}
 export class HttpError extends Error {
  readonly status: number;
  readonly retryAfter: number;
@@ -122,6 +126,12 @@ export class ComputerUseClient {
    beforeCreate?.();
    const response = await this.request("/v1/sessions", {
     method: "POST", body: JSON.stringify({ name, size: this.options.size ?? "small" }),
+   }).catch((error: unknown) => {
+    // API create validation/auth/admission rejects before making anything.
+    // storeError's 409 no_capacity and unsupported policy also guarantee no create.
+    // Do not generalize this verdict to another endpoint or network/5xx failures.
+    if (error instanceof HttpError && [400, 401, 403, 409].includes(error.status)) throw new DesktopCreateRejectedError();
+    throw error;
    });
    return response.json() as Promise<Desktop>;
   });

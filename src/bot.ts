@@ -16,7 +16,7 @@ import { Client as IrcClient, type IrcPrivmsgEvent } from "irc-framework";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { ChannelSession, ChannelSessionDeps, OpenChannelSession } from "./channel-session.ts";
 import { HELP_LINES, type IrcCommand, isChannel, mentionText, parseCommand } from "./commands.ts";
-import { ComputerUseClient, DesktopMcp, isTransientDesktopDiscoveryError, type Desktop } from "./computer-use.ts";
+import { ComputerUseClient, DesktopMcp, DesktopCreateRejectedError, isTransientDesktopDiscoveryError, type Desktop } from "./computer-use.ts";
 import { PublicError, publicError, isDesktopOpenUnavailable, DesktopOpenUnavailableError } from "./public-error.ts";
 import { framePrompt } from "./format.ts";
 import { JoinTracker } from "./join.ts";
@@ -752,7 +752,7 @@ export class IrcPiBot implements ChannelDelegate {
        const current = this.#store.get(room)!;
        // A capacity/list/preflight failure cannot have created anything. Restore
        // the original desktop's queue instead of trapping it in a mutation journal.
-       if (!current.desktopOperation?.createDispatched && !current.desktopOperation?.targetId) {
+       if ((!current.desktopOperation?.createDispatched || error instanceof DesktopCreateRejectedError) && !current.desktopOperation?.targetId) {
         this.#store.set(room, {...current, desktopOperation: undefined, desktopPaused: op.priorPaused ?? true});
        }
        throw error;
