@@ -6,6 +6,10 @@ export interface Desktop {
 }
 export interface RemoteTool { name: string; description?: string; inputSchema: Record<string, unknown> }
 export interface RemoteResult { content?: unknown[]; isError?: boolean; structuredContent?: unknown }
+/** Only emitted for documented non-mutating rejections of POST /v1/sessions. */
+export class DesktopCreateRejectedError extends PublicError {
+ constructor() { super("desktopCreateRejected"); }
+}
 export class HttpError extends Error {
  readonly status: number;
  readonly retryAfter: number;
@@ -105,7 +109,7 @@ export class ComputerUseClient {
   throw new UnsupportedDesktopForkError();
  }
  /** Serialized provisioning and stable names allow reconciliation after an ambiguous create timeout. */
- ensure(room: string, id?: string, fresh = false): Promise<Desktop> {
+ ensure(room: string, id?: string, fresh = false, beforeCreate?: () => void): Promise<Desktop> {
   if (id) return this.get(id);
   const work = this.#provisioning.then(async () => {
    const sessions = await this.list();
@@ -119,15 +123,36 @@ export class ComputerUseClient {
    if (sessions.filter(s => s.name.startsWith(this.prefix)).length >= (this.options.maxDesktops ?? 10)) {
     throw new PublicError("quota");
    }
+   beforeCreate?.();
    const response = await this.request("/v1/sessions", {
     method: "POST", body: JSON.stringify({ name, size: this.options.size ?? "small" }),
+   }).catch((error: unknown) => {
+    // API create validation/auth/admission rejects before making anything.
+    // storeError's 409 no_capacity and unsupported policy also guarantee no create.
+    // Do not generalize this verdict to another endpoint or network/5xx failures.
+    if (error instanceof HttpError && [400, 401, 403, 409].includes(error.status)) throw new DesktopCreateRejectedError();
+    throw error;
    });
    return response.json() as Promise<Desktop>;
   });
   this.#provisioning = work.catch(() => {});
   return work;
  }
- async lifecycle(id: string, action: "sleep" | "wake"): Promise<Desktop> {
+ /** Read-only reconciliation after a create may have reached the backend. Never POST again. */
+ async reconcile(room: string): Promise<Desktop> {
+  const matches = (await this.list()).filter(session => session.name === this.name(room));
+  if (matches.length > 1) throw new PublicError("duplicate");
+  if (!matches[0]) throw new PublicError("desktopCreateUncertain");
+  return matches[0];
+ }
+ async delete(id: string): Promise<void> {
+  try { await this.request("/v1/sessions/" + encodeURIComponent(id), {method: "DELETE"}, 120_000); }
+  catch (error) { if (!(error instanceof HttpError && error.status === 404)) throw error; }
+ }
+ async lifecycle(id: string, action: "sleep" | "wake" | "start" | "stop"): Promise<Desktop> {
+  if (action === "start" || action === "stop") {
+   return (await this.request("/v1/sessions/" + encodeURIComponent(id), { method: "PATCH", body: JSON.stringify({ action: action === "start" ? "resume" : "stop" }) }, 120_000)).json() as Promise<Desktop>;
+  }
   return (await this.request("/v1/sessions/" + encodeURIComponent(id) + "/" + action, { method: "POST", body: "{}" }, 120_000)).json() as Promise<Desktop>;
  }
 }

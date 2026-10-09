@@ -4,6 +4,9 @@ import { dirname } from "node:path";
 export interface ChannelRecord {
  desktopId: string;
  mentionRequired?: boolean;
+ desktopPaused?: boolean;
+ desktopDeleted?: boolean;
+ desktopOperation?: {kind: "delete" | "recreate"; sourceId: string; key: string; priorPaused?: boolean; createDispatched?: boolean; targetId?: string};
  forkedFrom?: string;
  forkNoticePending?: boolean;
  sessionId?: string;
@@ -32,6 +35,15 @@ export class ChannelSessionStore {
     || (record.sessionId !== undefined && (typeof record.sessionId !== "string" || !record.sessionId))
     || (record.sessionFile !== undefined && (typeof record.sessionFile !== "string" || !record.sessionFile))
     || (record.forkedFrom !== undefined && (typeof record.forkedFrom !== "string" || !record.forkedFrom))
+    || (record.desktopDeleted !== undefined && typeof record.desktopDeleted !== "boolean")
+    || (record.desktopOperation !== undefined && (!record.desktopOperation || typeof record.desktopOperation !== "object"
+      || !["delete", "recreate"].includes(record.desktopOperation.kind)
+      || typeof record.desktopOperation.sourceId !== "string" || !record.desktopOperation.sourceId
+      || typeof record.desktopOperation.key !== "string" || !record.desktopOperation.key
+      || (record.desktopOperation.priorPaused !== undefined && typeof record.desktopOperation.priorPaused !== "boolean")
+      || (record.desktopOperation.createDispatched !== undefined && typeof record.desktopOperation.createDispatched !== "boolean")
+      || (record.desktopOperation.targetId !== undefined && (typeof record.desktopOperation.targetId !== "string" || !record.desktopOperation.targetId))))
+    || (record.desktopPaused !== undefined && typeof record.desktopPaused !== "boolean")
     || (record.mentionRequired !== undefined && typeof record.mentionRequired !== "boolean")
     || (record.forkNoticePending !== undefined && typeof record.forkNoticePending !== "boolean")) throw new Error("Invalid cuse channel record: " + room);
    this.#channels.set(room.toLowerCase(), record);

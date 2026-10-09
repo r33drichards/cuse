@@ -25,7 +25,9 @@ export type ControlCommand =
  | { kind: "join"; channels: string[] }
  | { kind: "part"; channel: string }
  | { kind: "fork"; channels: string[] }
- | { kind: "sessions" | "help" | "desktop" | "sleep" | "wake" };
+ | { kind: "desktop-destroy"; action: "delete" | "recreate"; confirmId?: string }
+ | { kind: "desktop"; action: "status" | "ls" | "start" | "stop" | "sleep" | "wake" }
+ | { kind: "sessions" | "help" | "sleep" | "wake" };
 
 export type IrcCommand = ControlCommand | SessionCommandAction;
 
@@ -37,7 +39,7 @@ const CONTROL_COMMANDS = [
  { usage: "fork [#a,#b]", description: "copy conversation + independent disk snapshot; cold-start child, no live process clone or merge (currently unsupported)" },
  { usage: "join #a,#b", description: "join channels, one independent desktop each" },
  { usage: "part #chan", description: "leave, retaining conversation and desktop" },
- { usage: "desktop", description: "show this channel's desktop and viewer link" },
+ { usage: "desktop [status|ls|start|stop|sleep|wake|delete|recreate|new]", description: "manage this channel’s desktop; stop discards unsaved process state, sleep saves it" },
  { usage: "sleep", description: "sleep this channel's idle desktop" },
  { usage: "wake", description: "wake/resume this channel's desktop" },
  { usage: "sessions", description: "list channel → desktop and agent" },
@@ -47,7 +49,7 @@ const CONTROL_COMMANDS = [
 export const HELP_LINES = [
 	...SESSION_COMMANDS.map((command) => `,${command.usage} — ${command.description}`),
 	...CONTROL_COMMANDS.map((command) => `,${command.usage} — ${command.description}`),
-	"Mention cuse to talk (cuse: …) or DM cuse. Use ,toggle mention in a channel to switch mention requirements. Use cuse ,join #name in the control channel or a DM. Each room has its own desktop and conversation; Fork copies conversation + an independent desktop disk snapshot; the child cold-starts, not a live process clone. No merge or spawn. Snapshot fork is currently unavailable until the backend API is validated. Delete desktops only in the Computer Use web app.",
+	"Mention cuse to talk (cuse: …) or DM cuse. Use ,toggle mention in a channel to switch mention requirements. Use cuse ,join #name in the control channel or a DM. Each room has its own desktop and conversation; Fork copies conversation + an independent desktop disk snapshot; the child cold-starts, not a live process clone. No merge or spawn. Snapshot fork is currently unavailable until the backend API is validated. Desktop delete/recreate permanently erase the old disk and require typed desktop ID confirmation.",
 ];
 
 const CHANNEL = /^[#&][^\s,\x07]{1,63}$/;
@@ -110,7 +112,13 @@ export function parseCommand(line: string): IrcCommand | undefined {
 			if (channels.length !== 1) return { kind: "error", message: "Usage: ,part #channel" };
 			return { kind: "part", channel: channels[0]! };
 		}
-		case "desktop": return { kind: "desktop" };
+		case "desktop": {
+            const destructive = /^(delete|recreate|new)(?:\s+(\S+))?$/i.exec(argument);
+            if (destructive) return {kind: "desktop-destroy", action: destructive[1]!.toLowerCase() === "delete" ? "delete" : "recreate", ...(destructive[2] ? {confirmId: destructive[2]} : {})};
+            const action = argument.toLowerCase() || "status";
+            if (action === "status" || action === "ls" || action === "start" || action === "stop" || action === "sleep" || action === "wake") return { kind: "desktop", action };
+            return { kind: "error", message: "Usage: ,desktop [status|ls|start|stop|sleep|wake|delete|recreate|new]" };
+        }
 		case "sleep": return { kind: "sleep" };
 		case "wake": return { kind: "wake" };
 		case "sessions":

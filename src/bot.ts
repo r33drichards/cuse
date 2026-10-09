@@ -16,7 +16,7 @@ import { Client as IrcClient, type IrcPrivmsgEvent } from "irc-framework";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { ChannelSession, ChannelSessionDeps, OpenChannelSession } from "./channel-session.ts";
 import { HELP_LINES, type IrcCommand, isChannel, mentionText, parseCommand } from "./commands.ts";
-import { ComputerUseClient, DesktopMcp, isTransientDesktopDiscoveryError, type Desktop } from "./computer-use.ts";
+import { ComputerUseClient, DesktopMcp, DesktopCreateRejectedError, isTransientDesktopDiscoveryError, type Desktop } from "./computer-use.ts";
 import { PublicError, publicError, isDesktopOpenUnavailable, DesktopOpenUnavailableError } from "./public-error.ts";
 import { framePrompt } from "./format.ts";
 import { JoinTracker } from "./join.ts";
@@ -135,6 +135,7 @@ export class IrcPiBot implements ChannelDelegate {
 	readonly #store: ChannelSessionStore;
 	readonly #sessions = new Map<string, BotSession>();
 	readonly #opening = new Map<string, Promise<BotSession>>();
+ readonly #desktopChanging = new Set<string>();
 	readonly #sendQueues = new Map<string, (lines: string[]) => Promise<void>>();
 	/** Recent extension faults per channel, to keep the log readable. */
 	readonly #faults = new Map<string, number[]>();
@@ -158,6 +159,7 @@ export class IrcPiBot implements ChannelDelegate {
 		this.#store = new ChannelSessionStore(options.statePath);
   if (options.durable) this.#durableStore = new DurableIrcStore(join(dirname(options.statePath), "delivery"));
   if (this.#durableStore) this.#delivery = new DurableDelivery(this.#durableStore, {
+   canOpen: (channel) => !this.#desktopChanging.has(channel) && !this.#store.get(channel)?.desktopPaused && !this.#store.get(channel)?.desktopDeleted && !this.#store.get(channel)?.desktopOperation,
    open: async (channel) => {
     const session = await this.#sessionFor(channel);
     if (!session.promptDurable) throw new Error("Durable queue requires durable session adapter");
@@ -391,6 +393,7 @@ export class IrcPiBot implements ChannelDelegate {
 	async #sessionFor(name: string): Promise<BotSession> {
 		const key = name.toLowerCase();
 		if (this.#forking.has(key)) throw new PublicError("preparing");
+  if (this.#desktopChanging.has(key) || this.#store.get(key)?.desktopPaused || this.#store.get(key)?.desktopDeleted || this.#store.get(key)?.desktopOperation) throw new DesktopOpenUnavailableError();
 		const existing = this.#sessions.get(key);
 		if (existing) return existing;
 		const pending = this.#opening.get(key);
@@ -454,8 +457,10 @@ export class IrcPiBot implements ChannelDelegate {
   if (this.#delivery) {
    const id = event.tags?.msgid ? createHash("sha256").update(`${this.#options.server}:${this.#options.port}:${room}:${event.tags.msgid}`).digest("hex") : randomUUID();
    this.#delivery.enqueue({id, channel: room, sender: event.nick, body: this.#framePromptFor(room, isDm ? `dm:${event.nick}` : room, event.nick, body)});
+   if (this.#store.get(room)?.desktopPaused) this.say(room, "Message saved. Desktop is paused; use ,desktop start to resume queued messages.");
    return;
   }
+		if (this.#store.get(room)?.desktopPaused) { this.say(room, "Desktop is paused; use ,desktop start before sending a prompt."); return; }
 		const session = await this.#sessionFor(room);
 		if (session.busy) this.say(room, `(steering the running turn)`);
 		await this.#promptWithNotice(session, room, isDm ? `dm:${event.nick}` : room, event.nick, body);
@@ -487,6 +492,7 @@ export class IrcPiBot implements ChannelDelegate {
 		if (pending) return pending;
 		const work = (async () => {
 			const record = this.#store.get(key);
+   if (record?.desktopDeleted || record?.desktopOperation) throw new PublicError("preparing");
 			const desktop = await this.#options.desktops.ensure(key, record?.desktopId).catch((error: unknown) => {
     // ensure with an existing identity only GETs it; never retry an ambiguous create POST.
     if (record?.desktopId && isTransientDesktopDiscoveryError(error)) throw new DesktopOpenUnavailableError();
@@ -660,17 +666,110 @@ export class IrcPiBot implements ChannelDelegate {
 			this.say(room, `left ${command.channel}; its session is kept`);
 			return;
 		}
-		if (command.kind === "desktop" || command.kind === "sleep" || command.kind === "wake") {
-			const record = this.#store.get(room);
-			if (!record) { this.say(room, "No desktop yet; join a channel or send a prompt first."); return; }
-			if (command.kind !== "desktop" && (this.#opening.has(room) || this.#sessions.get(room)?.busy)) {
-				this.say(room, "A turn is running; wait before changing desktop state."); return;
-			}
-			const desktop = command.kind === "desktop" ? await this.#options.desktops.get(record.desktopId)
-				: await this.#options.desktops.lifecycle(record.desktopId, command.kind);
-			this.say(room, `desktop ${desktop.id}: ${desktop.state} — ${this.#options.desktops.viewer(desktop.id)}`);
-		}
+        if (command.kind === "desktop-destroy") {
+            await this.#destroyDesktop(room, command.action, command.confirmId);
+            return;
+        }
+        if (command.kind === "desktop" || command.kind === "sleep" || command.kind === "wake") {
+            const action = command.kind === "desktop" ? command.action : command.kind;
+            if (action === "ls") {
+                for (const [channel, entry] of this.#store.entries()) this.say(room, `${channel} → desktop ${entry.desktopId}${entry.desktopPaused ? " (paused)" : ""} — ${this.#options.desktops.viewer(entry.desktopId)}`);
+                if (!this.#store.entries().length) this.say(room, "No channel desktops yet.");
+                return;
+            }
+            const record = this.#store.get(room);
+            if (!record) { this.say(room, "No desktop yet; join a channel or send a prompt first."); return; }
+            if (action === "status" && record.desktopDeleted) {
+                this.say(room, `desktop ${record.desktopId}: deleted or deletion pending; queue paused. Use ,desktop recreate to create a replacement.`); return;
+            }
+            if (action === "status") {
+                const desktop = await this.#options.desktops.get(record.desktopId);
+                this.say(room, `desktop ${desktop.id}: ${desktop.state}${record.desktopPaused ? " (queue paused; ,desktop start to resume)" : ""} — ${this.#options.desktops.viewer(desktop.id)}`);
+                return;
+            }
+            if (record.desktopDeleted || record.desktopOperation) { this.say(room, "Desktop deletion/recreation is pending or complete; use ,desktop recreate or repeat the confirmed pending operation."); return; }
+            if (this.#desktopChanging.has(room) || this.#provisioning.has(room) || this.#opening.has(room) || this.#sessions.get(room)?.busy || this.#delivery?.isActive(room)) {
+                this.say(room, "A turn or desktop operation is running; wait before changing desktop state."); return;
+            }
+            if (action === "sleep" && this.#durableStore?.listInbox().some(message => message.channel === room && message.state !== "completed")) {
+                this.say(room, "Messages are queued; wait before sleeping, or use ,desktop stop to pause the queue."); return;
+            }
+            this.#desktopChanging.add(room);
+            try {
+                // Persist intent before mutation: even an ambiguous timeout must not auto-wake it.
+                if (action === "stop") this.#store.set(room, {...record, desktopPaused: true});
+                const desktop = await this.#options.desktops.lifecycle(record.desktopId, action);
+                if (action === "start" || action === "wake" || action === "sleep") this.#store.set(room, {...this.#store.get(room)!, desktopPaused: false});
+                const note = action === "stop" ? " — disk kept; stop does not save process state; queue paused"
+                    : action === "sleep" ? " — sleep preserves state; next prompt wakes it" : "";
+                this.say(room, `desktop ${desktop.id}: ${desktop.state} — ${this.#options.desktops.viewer(desktop.id)}${note}`);
+            } finally {
+                this.#desktopChanging.delete(room);
+                if (!this.#store.get(room)?.desktopPaused) this.#delivery?.resumePending(room);
+            }
+        }
 	}
+
+ /** Journal each destructive step so retries reconcile a stable replacement instead of duplicating it. */
+ async #destroyDesktop(room: string, action: "delete" | "recreate", confirmId?: string): Promise<void> {
+  let record = this.#store.get(room);
+  if (!record) { this.say(room, "No desktop is assigned to this channel."); return; }
+  const operation = record.desktopOperation;
+  const sourceId = operation?.sourceId ?? record.desktopId;
+  if (operation && operation.kind !== action) { this.say(room, `Finish the pending operation: ,desktop ${operation.kind} ${sourceId}`); return; }
+  if (confirmId !== sourceId) {
+   this.say(room, `This permanently deletes desktop ${sourceId} and its disk, files, logins, and unsaved state.${action === "recreate" ? " A fresh desktop replaces it; conversation history is kept." : " Conversation history is kept and the message queue remains paused."} Confirm with: ,desktop ${action} ${sourceId}`); return;
+  }
+  if (this.#desktopChanging.has(room) || this.#provisioning.has(room) || this.#opening.has(room) || this.#sessions.get(room)?.busy || this.#delivery?.isActive(room)) {
+   this.say(room, "A turn or desktop operation is running; wait before replacing or deleting its desktop."); return;
+  }
+  const session = this.#sessions.get(room);
+  if (session && (!this.#options.durable || !session.close)) { this.say(room, "Desktop replacement requires an idle durable session so its bindings can close safely."); return; }
+  this.#desktopChanging.add(room);
+  try {
+   const op = operation ?? {kind: action, sourceId, key: randomUUID(), priorPaused: record.desktopPaused ?? false};
+   record = {...record, desktopPaused: true, desktopOperation: op};
+   this.#store.set(room, record);
+   if (session) { await session.close!(); this.#sessions.delete(room); }
+   if (action === "delete") {
+    // Tombstone before remote delete. An ambiguous response cannot cause implicit provisioning.
+    this.#store.set(room, {...record, desktopDeleted: true});
+    await this.#options.desktops.delete(sourceId);
+    this.#store.set(room, {...this.#store.get(room)!, desktopOperation: undefined});
+    this.say(room, `desktop ${sourceId}: deleted; disk erased. Conversation and queued messages retained, queue paused. Use ,desktop recreate for a fresh desktop.`);
+    return;
+   }
+   let targetId = op.targetId;
+   if (!targetId) {
+    const provisionKey = `${room}/replacement/${op.key}`;
+    // A name is not an API idempotency key. Once POST may have left the process,
+    // only observe it: a delayed list must never cause a duplicate POST.
+    const replacement = op.createDispatched
+     ? await this.#options.desktops.reconcile(provisionKey)
+     : await this.#options.desktops.ensure(provisionKey, undefined, false, () => {
+       this.#store.set(room, {...this.#store.get(room)!, desktopOperation: {...op, createDispatched: true}});
+      }).catch((error: unknown) => {
+       const current = this.#store.get(room)!;
+       // A capacity/list/preflight failure cannot have created anything. Restore
+       // the original desktop's queue instead of trapping it in a mutation journal.
+       if ((!current.desktopOperation?.createDispatched || error instanceof DesktopCreateRejectedError) && !current.desktopOperation?.targetId) {
+        this.#store.set(room, {...current, desktopOperation: undefined, desktopPaused: op.priorPaused ?? true});
+       }
+       throw error;
+      });
+    targetId = replacement.id;
+    if (targetId === sourceId) throw new Error("Replacement must be a distinct desktop");
+    this.#store.set(room, {...record, desktopId: targetId, desktopDeleted: false, desktopOperation: {...this.#store.get(room)!.desktopOperation!, targetId}});
+   }
+   // The new binding is durable before deletion of the old disk is requested.
+   await this.#options.desktops.delete(sourceId);
+   this.#store.set(room, {...this.#store.get(room)!, desktopOperation: undefined, desktopDeleted: false, desktopPaused: false});
+   this.say(room, `desktop recreated: ${targetId} — ${this.#options.desktops.viewer(targetId)}; old disk deleted, conversation kept, pending messages resuming.`);
+  } finally {
+   this.#desktopChanging.delete(room);
+   if (!this.#store.get(room)?.desktopPaused) this.#delivery?.resumePending(room);
+  }
+ }
 
  /** Host-side timer: only accepted occurrences open MCP; idle schedules leave desktops asleep. */
  pollSchedules(now = Date.now()): void {

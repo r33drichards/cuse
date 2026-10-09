@@ -59,3 +59,39 @@ test("remembered 404 or outage never provisions or changes persisted identity", 
   assert.deepEqual(new ChannelSessionStore(path).get("#a"), record);
  } finally { rmSync(dir, {recursive: true, force: true}); }
 });
+
+test("desktop subcommands parse strictly and preserve status default", () => {
+ for (const action of ["status", "ls", "start", "stop", "sleep", "wake"]) assert.deepEqual(parseCommand(",desktop " + action), {kind: "desktop", action});
+ assert.deepEqual(parseCommand(",desktop"), {kind: "desktop", action: "status"});
+ for (const argument of ["wat", "stop extra", "delete a b"]) assert.equal(parseCommand(",desktop " + argument)?.kind, "error");
+});
+
+test("desktop start and stop use validated PATCH actions while sleep saves state", async () => {
+ const requests: Array<{url: string; method?: string; body: unknown}> = [];
+ const client = new ComputerUseClient({token: "fake", namespace: "test", fetch: async (url, init) => {
+  requests.push({url: String(url), method: init?.method, body: JSON.parse(String(init?.body))});
+  return Response.json({id: "desktop/id", state: "starting"});
+ }});
+ for (const action of ["start", "stop", "sleep", "wake"] as const) await client.lifecycle("desktop/id", action);
+ assert.deepEqual(requests, [
+  {url: "https://api.computeruse.site/v1/sessions/desktop%2Fid", method: "PATCH", body: {action: "resume"}},
+  {url: "https://api.computeruse.site/v1/sessions/desktop%2Fid", method: "PATCH", body: {action: "stop"}},
+  {url: "https://api.computeruse.site/v1/sessions/desktop%2Fid/sleep", method: "POST", body: {}},
+  {url: "https://api.computeruse.site/v1/sessions/desktop%2Fid/wake", method: "POST", body: {}},
+ ]);
+});
+
+test("destructive desktop commands require a single case-sensitive confirmation ID", () => {
+ assert.deepEqual(parseCommand(",desktop delete"), {kind: "desktop-destroy", action: "delete"});
+ assert.deepEqual(parseCommand(",desktop new s-AbC"), {kind: "desktop-destroy", action: "recreate", confirmId: "s-AbC"});
+ assert.equal(parseCommand(",desktop recreate old extra")?.kind, "error");
+});
+
+test("desktop delete is idempotent on absent desktop and does not invent POST endpoint", async () => {
+ const requests: string[] = [];
+ const client = new ComputerUseClient({token: "fake", namespace: "test", fetch: async (url, init) => {
+  requests.push(`${init?.method} ${url}`); return new Response("", {status: 404});
+ }});
+ await client.delete("old/id");
+ assert.deepEqual(requests, ["DELETE https://api.computeruse.site/v1/sessions/old%2Fid"]);
+});
