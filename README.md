@@ -451,3 +451,21 @@ and other preflight failures restore the original queue state. Ambiguous old-dis
 cleanup also remains paused until the same confirmed command finishes it. While cleanup is pending, confirmation still uses the old desktop
 ID. Replacement needs capacity for both desktops temporarily. Classic sessions
 without a safe close adapter cannot be replaced while cached.
+
+### Agent desktop recovery
+
+Durable agents have a channel-bound `desktop_control` tool with `status`, `start`,
+`stop`, and `sleep`. It runs on the bot host, so a broken desktop MCP connection
+cannot prevent the agent from checking or changing its desktop state. `status`
+reports readiness, the backend message, and whether the message queue is paused.
+`stop` preserves disk but loses unsaved browser/process state and pauses later
+messages. The current agent turn remains alive and can call `start` to resume.
+`sleep` preserves state; later desktop use wakes it. Delete, recreate, new, and
+other-channel desktop access are not exposed to the agent.
+
+Mutation receipts prevent replay after process recovery: an interrupted operation
+with no recorded result is reported as uncertain; the agent must inspect status.
+Remote desktop actions are never automatically repeated after an ambiguous failure.
+Durable sessions use the checked-in desktopjs tool manifest and initialize MCP only
+when a remote tool is called, keeping recovery tools available during an outage.
+Classic extension sessions retain their existing remote-discovery behavior.

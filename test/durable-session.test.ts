@@ -63,13 +63,8 @@ test("committed operation survives reopen without another provider request", asy
 		},
 	};
 	try {
-        const readyTools = deps.desktop.tools;
-        deps.desktop.tools = async () => {throw new HttpError(425, "still waking");};
-        for (let attempt = 0; attempt < 3; attempt++) {
-            await assert.rejects(DurableChannelSession.open("#test", deps), isDesktopOpenUnavailable);
-            assert.equal(existsSync(deps.sessionDir), false, "failed discovery must not allocate orphan session files");
-        }
-        deps.desktop.tools = readyTools;
+        deps.desktop.tools = async () => {throw new Error("offline: discovery must not be called");};
+
 		faux.setResponses([fauxAssistantMessage("durable answer")]);
 		s = await DurableChannelSession.open("#test", deps);
 		const file = s.sessionFile;
@@ -117,6 +112,15 @@ test("committed operation survives reopen without another provider request", asy
 			(await s.promptDurable("after-abort", "next")).text,
 			"after cancellation",
 		);
+        let controls = 0;
+        deps.delegate.desktopControl = async (room: string, action: string) => {assert.equal(room,"#test");assert.equal(action,"status");controls++;return {state:"starting"};};
+        faux.setResponses([
+            fauxAssistantMessage([{type:"toolCall",id:"status-offline",name:"desktop_control",arguments:{action:"status"}}],{stopReason:"toolUse"}),
+            fauxAssistantMessage("Recovery status obtained")
+        ]);
+        assert.equal((await s.promptDurable("offline-status","check status")).text,"Recovery status obtained");
+        assert.equal(controls,1);
+
 		// Close the process-local harness while the real SQLite operation is effect_pending.
 		let dispatched!: () => void;
 		const started = new Promise<void>((resolve) => {
@@ -135,7 +139,7 @@ test("committed operation survives reopen without another provider request", asy
 						type: "toolCall",
 						id: "run-js-call",
 						name: "run_js",
-						arguments: {},
+						arguments: {code:"console.log(1)"},
 					},
 				],
 				{ stopReason: "toolUse" },

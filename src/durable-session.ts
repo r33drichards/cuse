@@ -1,5 +1,4 @@
-import { DesktopOpenUnavailableError } from "./public-error.ts";
-import { isTransientDesktopDiscoveryError } from "./computer-use.ts";
+import { DESKTOP_TOOL_MANIFEST } from "./desktop-tool-manifest.ts";
 /** Durable IRC adapter. The host must hold exclusive ownership of sessionDir. */
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -152,12 +151,7 @@ export class DurableChannelSession {
 			if (!header || JSON.parse(header).type !== "session")
 				throw new Error("Invalid remembered classic session");
 		}
-        // Discovery must succeed before allocating a new session identity or durable files.
-        // The bot cannot remember that identity until open returns successfully.
-        const remote = await deps.desktop.tools().catch((error: unknown) => {
-                if (isTransientDesktopDiscoveryError(error)) throw new DesktopOpenUnavailableError();
-                throw error;
-            });
+        const remote = DESKTOP_TOOL_MANIFEST;
 		const legacy = options.sessionFile
 			? SessionManager.open(options.sessionFile, deps.sessionDir, deps.cwd)
 			: SessionManager.create(deps.cwd, deps.sessionDir);
@@ -315,7 +309,7 @@ export class DurableChannelSession {
 					systemPrompt: [
 						resourceLoader.getSystemPrompt() ??
 							"You are cuse, an IRC computer-use assistant. Use only this channel's isolated desktop tools. Never repeat an action whose outcome is unknown; inspect its result first.",
-						"If a tool reports an unknown outcome after interruption, do not repeat its action. Inspect the desktop or ask the user before retrying. All tools belong to this channel isolated desktop; host tools are unavailable.",
+						"If a tool reports an unknown outcome after interruption, do not repeat its action. Inspect the desktop or ask the user before retrying. Remote tools belong to this channel isolated desktop. desktop_control runs on the host and remains available if the desktop fails. Use status to diagnose, then start/stop/sleep only as needed for recovery; stop preserves disk but loses unsaved process state. Never replay an uncertain remote action after recovery.",
 						AGENT_ASK_DESCRIPTION,
 						...resourceLoader.getAppendSystemPrompt(),
 						...resourceLoader

@@ -182,7 +182,7 @@ export class DurableDelivery {
 				return;
 			}
 			this.sessions.set(channel, session);
-			while (!this.closing) {
+			while (!this.closing && this.handlers.canOpen?.(channel) !== false) {
 				const message = this.store.claimNext(channel);
 				if (!message) return;
 				activeId = message.id;
