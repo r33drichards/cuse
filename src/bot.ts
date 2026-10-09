@@ -20,8 +20,9 @@ import { ComputerUseClient, DesktopMcp, type Desktop } from "./computer-use.ts";
 import { PublicError, publicError } from "./public-error.ts";
 import { framePrompt } from "./format.ts";
 import { JoinTracker } from "./join.ts";
-import { DurableIrcStore } from "./durable-store.ts";
+import { DurableIrcStore, type StoredSchedule } from "./durable-store.ts";
 import { DurableDelivery } from "./durable-delivery.ts";
+import type { ScheduleRequest } from "./schedule-commands.ts";
 
 import { filterModels } from "./session-commands.ts";
 import { ChannelSessionStore } from "./state.ts";
@@ -121,6 +122,13 @@ export function createSendQueue(
 	};
 }
 
+function formatSchedule(schedule: StoredSchedule): string {
+ const timing = schedule.timing;
+ const rule = timing.kind === "cron" ? `${timing.expression} (${timing.timeZone})`
+  : timing.kind === "interval" ? `every ${timing.everyMs / 1000}s` : "once";
+ return `${schedule.id}: ${schedule.paused ? "paused" : schedule.nextRunAt === null ? "finished" : "active"} · ${rule} · next ${schedule.nextRunAt === null ? "none" : new Date(schedule.nextRunAt).toISOString()} · missed: ${schedule.missedPolicy} · ${schedule.prompt.replace(/[\r\n]/g, " ").slice(0, 80)}`;
+}
+
 export class IrcPiBot implements ChannelDelegate {
 	readonly #options: IrcBotOptions;
 	readonly #irc: IrcClient;
@@ -137,6 +145,10 @@ export class IrcPiBot implements ChannelDelegate {
 	#nick: string;
 	#closed = false;
  readonly #delivery?: DurableDelivery;
+ readonly #durableStore?: DurableIrcStore;
+ #scheduleTimer?: ReturnType<typeof setInterval>;
+ #scheduleFaulted = false;
+ readonly #scheduleReady = new Set<string>();
  #connected = false;
 
 	constructor(options: IrcBotOptions) {
@@ -144,7 +156,8 @@ export class IrcPiBot implements ChannelDelegate {
 		this.#nick = options.nick;
 		this.#irc = options.createClient ? options.createClient() : new IrcClient();
 		this.#store = new ChannelSessionStore(options.statePath);
-  if (options.durable) this.#delivery = new DurableDelivery(new DurableIrcStore(join(dirname(options.statePath), "delivery")), {
+  if (options.durable) this.#durableStore = new DurableIrcStore(join(dirname(options.statePath), "delivery"));
+  if (this.#durableStore) this.#delivery = new DurableDelivery(this.#durableStore, {
    open: async (channel) => {
     const session = await this.#sessionFor(channel);
     if (!session.promptDurable) throw new Error("Durable queue requires durable session adapter");
@@ -213,10 +226,15 @@ export class IrcPiBot implements ChannelDelegate {
 	}
 
 	async start(): Promise<void> {
+  if (this.#delivery && !this.#scheduleTimer) {
+   this.#scheduleTimer = setInterval(() => this.pollSchedules(), 1000);
+   this.#scheduleTimer.unref();
+  }
 		const { server, port, tls, nick, password, log } = this.#options;
 		this.#irc.on("registered", (event) => {
 			this.#nick = event.nick;
    this.#connected = true;
+   this.#scheduleReady.clear();
 			log(`IRC: registered as ${event.nick} on ${server}:${port}`);
 			// A fresh registration means a fresh connection, in no channels at all.
 			// Without this a reconnect would skip every channel the tracker still
@@ -243,12 +261,13 @@ export class IrcPiBot implements ChannelDelegate {
 			});
 		});
 		this.#irc.on("part", (event) => {
-			if (event.nick === this.#nick) this.#joins.onLeft(event.channel);
+			if (event.nick === this.#nick) { this.#joins.onLeft(event.channel); this.#scheduleReady.delete(event.channel.toLowerCase()); }
 		});
 		this.#irc.on("kick", (event) => {
 			if (event.kicked === this.#nick) {
 				log(`IRC: kicked from ${event.channel}`);
 				this.#joins.onLeft(event.channel);
+    this.#scheduleReady.delete(event.channel.toLowerCase());
 			}
 		});
 		this.#irc.on("privmsg", (event) => {
@@ -276,6 +295,7 @@ export class IrcPiBot implements ChannelDelegate {
 			// proves the membership record is stale. Drop it and the next send rejoins.
 			if (event.error === "cannot_send_to_channel" && event.channel !== undefined) {
 				this.#joins.onLeft(event.channel);
+    this.#scheduleReady.delete(event.channel.toLowerCase());
 			}
 		});
 		this.#irc.connect({
@@ -403,26 +423,27 @@ export class IrcPiBot implements ChannelDelegate {
 		const isDm = event.target.toLowerCase() === this.#nick.toLowerCase();
 		const room = (isDm ? event.nick : event.target).toLowerCase();
 		const control = room === this.#options.controlChannel.toLowerCase() || isDm;
+  const commandId = event.tags?.msgid ? createHash("sha256").update(`${this.#options.server}:${this.#options.port}:${room}:${event.tags.msgid}`).digest("hex") : randomUUID();
 		// Channel lines are prompts only when they mention the bot. DMs are
 		// addressed by nature. Responding to everything is an explicit opt-in.
 		const mentioned = mentionText(event.message, this.#nick);
 		const mentionRequired = this.#store.get(room)?.mentionRequired ?? this.#options.addressedOnly;
 		const toggle = parseCommand(event.message);
 		if (toggle?.kind === "toggle-mention") {
-			await this.#onCommand(toggle, room, control);
+			await this.#onCommand(toggle, room, control, commandId);
 			return;
 		}
 		const body = isDm || !mentionRequired ? (mentioned ?? event.message.trim()) : mentioned;
 		// `pi ,model astra` is a command in a mention; a bare `,command` counts in the control channel and DMs.
 		const command = body !== undefined ? parseCommand(body) : undefined;
 		if (command) {
-			await this.#onCommand(command, room, control);
+			await this.#onCommand(command, room, control, commandId);
 			return;
 		}
 		if (mentioned === undefined && control) {
 			const bare = parseCommand(event.message);
 			if (bare) {
-				await this.#onCommand(bare, room, true);
+				await this.#onCommand(bare, room, true, commandId);
 				return;
 			}
 		}
@@ -538,9 +559,19 @@ export class IrcPiBot implements ChannelDelegate {
 		return false;
 	}
 
-	async #onCommand(command: IrcCommand, room: string, control: boolean): Promise<void> {
+	async #onCommand(command: IrcCommand, room: string, control: boolean, commandId: string = randomUUID()): Promise<void> {
 		if (await this.#onSessionCommand(command, room)) return;
 		switch (command.kind) {
+			case "schedule": {
+    const result = await this.#schedule({...command.request, room, requestId: commandId}, true);
+    if (command.request.action === "list") {
+     const rows = result as StoredSchedule[];
+     this.say(room, rows.length ? rows.map(formatSchedule) : "No schedules in this channel.");
+    } else if (command.request.action === "delete") {
+     this.say(room, (result as {deleted:boolean}).deleted ? "Schedule deleted; already queued work is retained." : "Schedule not found in this channel.");
+    } else this.say(room, formatSchedule(result as StoredSchedule));
+    return;
+   }
 			case "toggle-mention": {
 				if (!isChannel(room)) {
 					this.say(room, "Use ,toggle mention in a channel. DMs always accept messages.");
@@ -618,6 +649,7 @@ export class IrcPiBot implements ChannelDelegate {
 			// extension runtime shared with every other channel.
 			this.#irc.part(command.channel, "session kept; ,join to resume");
 			this.#joins.onLeft(command.channel);
+   this.#scheduleReady.delete(command.channel.toLowerCase());
 			this.say(room, `left ${command.channel}; its session is kept`);
 			return;
 		}
@@ -632,6 +664,59 @@ export class IrcPiBot implements ChannelDelegate {
 			this.say(room, `desktop ${desktop.id}: ${desktop.state} — ${this.#options.desktops.viewer(desktop.id)}`);
 		}
 	}
+
+ /** Host-side timer: only accepted occurrences open MCP; idle schedules leave desktops asleep. */
+ pollSchedules(now = Date.now()): void {
+  if (this.#closed || !this.#connected || !this.#durableStore || !this.#delivery) return;
+  try {
+  const channels = [...new Set(this.#durableStore.listSchedules().map(s => s.channel))]
+   .filter(channel => !isChannel(channel) || this.#joins.has(channel));
+  for (const channel of [...this.#scheduleReady]) if (!channels.includes(channel)) this.#scheduleReady.delete(channel);
+   for (const channel of channels) {
+    const messages = this.#durableStore.enqueueDueSchedules(now, {recovering: !this.#scheduleReady.has(channel), eligibleChannels: [channel]});
+    this.#scheduleReady.add(channel);
+    for (const message of messages) this.#delivery.enqueue(message);
+   }
+   this.#scheduleFaulted = false;
+  } catch (error) {
+   if (!this.#scheduleFaulted) this.#options.log(`IRC: schedule polling failed: ${publicError(error)}`);
+   this.#scheduleFaulted = true;
+  }
+ }
+
+ async schedule(request: ScheduleRequest & {room: string; requestId: string}): Promise<unknown> {
+  return this.#schedule(request, false);
+ }
+
+ async #schedule(request: ScheduleRequest & {room: string; requestId: string}, human: boolean): Promise<unknown> {
+  if (!this.#durableStore || !this.#delivery || this.#closed) throw new PublicError("scheduleUnavailable");
+  const room = request.room.toLowerCase();
+  if (isChannel(room) && !this.#joins.has(room)) throw new PublicError("scheduleChannel");
+  if (request.action === "list") return this.#durableStore.listSchedules(room);
+  const active = this.#delivery.currentMessage(room);
+  if (!human && request.action === "create" && (active?.peer || active?.id.startsWith("schedule/"))) throw new PublicError("scheduleOrigin");
+  const {room: _room, requestId, ...input} = request;
+  const operationId = createHash("sha256").update(`${room}:${requestId}`).digest("hex");
+  try {
+   // Reconcile older skip-policy schedules before making this channel ready.
+   if (request.action === "create" && !this.#scheduleReady.has(room)) this.pollSchedules();
+   const result = this.#durableStore.scheduleOperation(operationId, JSON.stringify(input), () => {
+    const now = Date.now();
+    if (request.action === "create") {
+     if (!request.timing || typeof request.prompt !== "string" || !request.prompt.trim()) throw new Error("Invalid schedule");
+     const timing = request.timing.kind === "delay"
+      ? {kind: "once" as const, at: now + request.timing.afterMs} : request.timing;
+     return this.#durableStore!.addSchedule({id: operationId.slice(0, 24), channel: room, sender: "scheduler", prompt: request.prompt, timing, missedPolicy: request.missedPolicy}, now);
+    }
+    if (typeof request.id !== "string") throw new Error("Schedule ID required");
+    if (request.action === "delete") return {id: request.id, deleted: this.#durableStore!.deleteSchedule(room, request.id)};
+    if (request.action === "pause" || request.action === "resume") return this.#durableStore!.setSchedulePaused(room, request.id, request.action === "pause", now);
+    throw new Error("Unknown schedule action");
+   });
+   if (request.action === "create") this.#scheduleReady.add(room);
+   return result;
+  } catch (error) { throw new PublicError("scheduleInvalid"); }
+ }
 
  /** Only joined peer agents are discoverable; no desktop credentials or files are shared. */
  listAgents(room: string): {channel: string; busy: boolean}[] {
@@ -733,6 +818,7 @@ export class IrcPiBot implements ChannelDelegate {
 
 	async close(): Promise<void> {
 		this.#closed = true;
+  if (this.#scheduleTimer) clearInterval(this.#scheduleTimer);
 		this.#irc.quit("cuse shutting down");
 		await this.#delivery?.close();
   await Promise.allSettled([...this.#opening.values()]);

@@ -9,10 +9,13 @@
     "test:regression": ".runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/regression.test.ts test/after-fixes.test.ts",
     "check": "npm --prefix .runtime/pi/packages/coding-agent run build",
     "prepareRuntime": "python3 scripts/prepare.py",
-    "test:durable": ".runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/durable-*.test.ts test/agent-tools.test.ts test/agent-messaging.test.ts"
+    "test:durable": ".runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/durable-*.test.ts test/agent-tools.test.ts test/agent-messaging.test.ts test/schedule-commands.test.ts test/schedule-tools.test.ts"
   },
   "devDependencies": {
     "@types/node": "22.19.19",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "croner": "10.0.1"
   }
 }

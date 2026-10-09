@@ -68,9 +68,20 @@ test("SIGKILL releases ownership without losing committed incoming work", async 
  const store = new DurableIrcStore(${JSON.stringify(dir)}); store.enqueue(${JSON.stringify(input)}); store.claimNext();
  console.log('ready'); setInterval(() => store.listInbox(), 100);`,
 	);
-	const child = spawn(process.execPath, [script], {
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const child = spawn(
+		process.execPath,
+		[
+			"--import",
+			new URL(
+				"../.runtime/pi/node_modules/tsx/dist/loader.mjs",
+				import.meta.url,
+			).href,
+			script,
+		],
+		{
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
 	let errors = "";
 	child.stderr.on("data", (data) => {
 		errors += String(data);

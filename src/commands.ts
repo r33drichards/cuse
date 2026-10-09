@@ -16,9 +16,11 @@
  * bare `,command` is honored in the control channel and DMs.
  */
 
+import { parseScheduleCommand, SCHEDULE_USAGE, type ScheduleRequest } from "./schedule-commands.ts";
 import { parseSessionCommand, SESSION_COMMANDS, type SessionCommandAction } from "./session-commands.ts";
 
 export type ControlCommand =
+ | { kind: "schedule"; request: ScheduleRequest }
  | { kind: "toggle-mention" }
  | { kind: "join"; channels: string[] }
  | { kind: "part"; channel: string }
@@ -30,6 +32,7 @@ export type IrcCommand = ControlCommand | SessionCommandAction;
 export const COMMAND_PREFIX = ",";
 
 const CONTROL_COMMANDS = [
+ { usage: "schedule …", description: "schedule durable prompts: list, every, once, cron, pause, resume, delete; timezone defaults to UTC" },
  { usage: "toggle mention", description: "toggle requiring a mention in this channel; saved across restarts" },
  { usage: "fork [#a,#b]", description: "copy conversation + independent disk snapshot; cold-start child, no live process clone or merge (currently unsupported)" },
  { usage: "join #a,#b", description: "join channels, one independent desktop each" },
@@ -86,6 +89,10 @@ export function parseCommand(line: string): IrcCommand | undefined {
 	const session = parseSessionCommand(name!, argument);
 	if (session) return session;
 	switch (name!.toLowerCase()) {
+		case "schedule": {
+			const request = parseScheduleCommand(argument);
+			return request ? { kind: "schedule", request } : { kind: "error", message: SCHEDULE_USAGE };
+		}
 		case "toggle": return argument.toLowerCase() === "mention" ? { kind: "toggle-mention" } : { kind: "error", message: "Usage: ,toggle mention" };
 		case "join": {
 			const { channels, invalid } = parseChannelList(argument);

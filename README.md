@@ -366,3 +366,51 @@ to four agents, preventing endless automated question loops.
 Each agent keeps its own conversation and desktop. Peer replies provide
 information; they do not grant new permissions or transfer browser sessions.
 `irc_send` remains available for posting to a joined channel.
+
+### Durable scheduled prompts
+
+With `CUSE_DURABLE_IRC=true`, schedule prompts in the current channel using
+`,schedule` or ask the agent naturally, such as **“Every 30 minutes, check the
+build and report failures.”** The `schedule_prompt` tool creates and manages
+these schedules without loading a classic pi extension. Only explicitly
+requested scheduled work should create schedules; a scheduled prompt is not
+permission to create more schedules. Jobs run prompts, not host shell commands.
+
+```text
+,schedule every 30m :: Check the build and report failures.
+,schedule once 10m :: Remind me to check the deployment.
+,schedule once 2030-01-01T09:00:00-08:00 :: Prepare the report.
+,schedule cron America/Los_Angeles 0 9 * * 1-5 :: Summarize today's priorities.
+,schedule cron 0 9 * * * :: Summarize today's priorities at 09:00 UTC.
+,schedule list
+,schedule pause ID
+,schedule resume ID
+,schedule delete ID
+```
+
+Cron accepts five fields, with optional IANA timezone before the expression;
+UTC is the explicit default. Absolute one-shot dates require a timezone offset
+or `Z`. Durations accept whole seconds (`s`), minutes (`m`), hours (`h`) or days
+(`d`); intervals must be at least one minute. Creation and listing report the
+schedule identity and next run. Schedules belong to their channel; management
+in another channel cannot change them.
+
+The scheduler runs on the cuse host, not inside the Computer Use desktop.
+A due prompt enters the existing durable channel inbox and waits behind any
+running work. Its desktop can sleep until the prompt opens an MCP connection,
+which uses wake-on-connect. The cuse host must run to dispatch work; schedules
+persist on its `/data/agent` volume across restarts. Keep one replica.
+
+Each occurrence has a stable identity. Advancing its schedule and inserting
+its inbox message happen in one SQLite transaction, preventing duplicate
+local enqueue after a crash. The default `catch-up-one` policy coalesces missed
+recurring runs into one prompt; the agent tool also supports `skip`. Schedule
+creation and management tools use durable request receipts so replay does not
+create another schedule or move a resumed schedule's next time again.
+
+This does not make external actions exactly-once: an interrupted browser edit
+may already have happened. The existing durable tool reconciliation rules still
+apply, and uncertain IRC replies can duplicate. Pause or delete affects future
+occurrences, not work already placed in the inbox.
+
+Outside the control channel, prefix commands with `cuse` when mentions are required (for example `cuse ,schedule list`). An unfinished occurrence blocks additional occurrences of the same schedule; elapsed ticks are coalesced rather than building a backlog. Schedule listings include a short prompt preview.
