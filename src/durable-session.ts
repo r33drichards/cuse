@@ -329,6 +329,12 @@ export class DurableChannelSession {
 				ctx,
 			));
 			const lane = await harness.lane("main", ctx);
+            // Registry updates do not change an existing lane's persisted allowlist.
+            // Append the recovery capability without replacing model/thinking/history
+            // or altering an in-flight operation's frozen execution configuration.
+            const activeTools = await lane.getActiveTools(ctx);
+            if (!activeTools.includes("desktop_control"))
+                await lane.setActiveTools([...activeTools, "desktop_control"], ctx);
 			const restored = await lane.getModel(ctx);
 			if (!restored) throw new Error("Persisted durable model is unavailable");
 			await requireExplicitModel(
