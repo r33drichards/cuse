@@ -1,5 +1,6 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ desktopOpening: "Desktop is still starting or temporarily unavailable. Your messages are saved; I will retry automatically.",
  scheduleUnavailable: "Scheduling requires CUSE_DURABLE_IRC=true and a running bot.",
  scheduleChannel: "Schedules belong to the current joined channel.",
  scheduleOrigin: "Scheduled turns and peer requests cannot create additional schedules. Ask directly in the channel.",
@@ -48,4 +49,15 @@ export function publicError(error: unknown): string {
   }
  } catch { /* Do not inspect hostile thrown objects. */ }
  return GUIDANCE.generic;
+}
+
+/** Only emitted by read-only desktop discovery, before a prompt can execute. */
+const DESKTOP_OPEN_UNAVAILABLE = Symbol.for("cuse.desktop-open-unavailable.v1");
+export class DesktopOpenUnavailableError extends PublicError {
+ readonly [DESKTOP_OPEN_UNAVAILABLE] = true;
+ constructor() { super("desktopOpening"); }
+}
+export function isDesktopOpenUnavailable(error: unknown): boolean {
+ try { return typeof error === "object" && error !== null && (error as DesktopOpenUnavailableError)[DESKTOP_OPEN_UNAVAILABLE] === true; }
+ catch { return false; }
 }

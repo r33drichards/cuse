@@ -240,3 +240,14 @@ export class DesktopMcp {
   return await this.#toolRequest("tools/call", { name, arguments: args }, signal) as RemoteResult;
  }
 }
+
+/** Safe only for discovery/initialization; never use to replay tools/call. */
+export function isTransientDesktopDiscoveryError(error: unknown): boolean {
+ if (error instanceof HttpError) return [408, 425, 429, 502, 503, 504].includes(error.status);
+ if (!(error instanceof Error)) return false;
+ if (error.name === "TimeoutError") return true;
+ // Native fetch transport failures; an ordinary TypeError is not enough evidence.
+ if (!(error instanceof TypeError) || !(error.cause instanceof Error)) return false;
+ const code = (error.cause as Error & {code?: string}).code;
+ return typeof code === "string" && ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"].includes(code);
+}

@@ -1,6 +1,8 @@
+import { HttpError } from "../.runtime/pi/packages/coding-agent/src/cuse/computer-use.ts";
+import { isDesktopOpenUnavailable } from "../.runtime/pi/packages/coding-agent/src/cuse/public-error.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -61,6 +63,13 @@ test("committed operation survives reopen without another provider request", asy
 		},
 	};
 	try {
+        const readyTools = deps.desktop.tools;
+        deps.desktop.tools = async () => {throw new HttpError(425, "still waking");};
+        for (let attempt = 0; attempt < 3; attempt++) {
+            await assert.rejects(DurableChannelSession.open("#test", deps), isDesktopOpenUnavailable);
+            assert.equal(existsSync(deps.sessionDir), false, "failed discovery must not allocate orphan session files");
+        }
+        deps.desktop.tools = readyTools;
 		faux.setResponses([fauxAssistantMessage("durable answer")]);
 		s = await DurableChannelSession.open("#test", deps);
 		const file = s.sessionFile;

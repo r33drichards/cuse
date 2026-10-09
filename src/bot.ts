@@ -16,8 +16,8 @@ import { Client as IrcClient, type IrcPrivmsgEvent } from "irc-framework";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { ChannelSession, ChannelSessionDeps, OpenChannelSession } from "./channel-session.ts";
 import { HELP_LINES, type IrcCommand, isChannel, mentionText, parseCommand } from "./commands.ts";
-import { ComputerUseClient, DesktopMcp, type Desktop } from "./computer-use.ts";
-import { PublicError, publicError } from "./public-error.ts";
+import { ComputerUseClient, DesktopMcp, isTransientDesktopDiscoveryError, type Desktop } from "./computer-use.ts";
+import { PublicError, publicError, isDesktopOpenUnavailable, DesktopOpenUnavailableError } from "./public-error.ts";
 import { framePrompt } from "./format.ts";
 import { JoinTracker } from "./join.ts";
 import { DurableIrcStore, type StoredSchedule } from "./durable-store.ts";
@@ -171,7 +171,10 @@ export class IrcPiBot implements ChannelDelegate {
     if (spacing) await new Promise(resolve => setTimeout(resolve, spacing));
    },
    report: (channel, error) => {
-    this.#options.log(`IRC: durable work in ${channel} requires recovery: ${publicError(error)}`);
+    this.#options.log(`IRC: durable work in ${channel}: ${publicError(error)}`);
+    if (channel && this.#connected && (!isChannel(channel) || this.#joins.has(channel))) {
+     this.say(channel, isDesktopOpenUnavailable(error) ? publicError(error) : `Messages saved; this channel needs recovery. ${publicError(error)}`);
+    }
    },
   });
 		this.#joins = new JoinTracker({
@@ -484,7 +487,11 @@ export class IrcPiBot implements ChannelDelegate {
 		if (pending) return pending;
 		const work = (async () => {
 			const record = this.#store.get(key);
-			const desktop = await this.#options.desktops.ensure(key, record?.desktopId);
+			const desktop = await this.#options.desktops.ensure(key, record?.desktopId).catch((error: unknown) => {
+    // ensure with an existing identity only GETs it; never retry an ambiguous create POST.
+    if (record?.desktopId && isTransientDesktopDiscoveryError(error)) throw new DesktopOpenUnavailableError();
+    throw error;
+   });
 			this.#store.set(key, { ...(this.#store.get(key) ?? record), desktopId: desktop.id, createdAt: record?.createdAt ?? Date.now() });
 			return desktop;
 		})();

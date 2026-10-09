@@ -1,3 +1,4 @@
+import { isDesktopOpenUnavailable } from "./public-error.ts";
 import type { DurableIrcStore, InboxMessage } from "./durable-store.js";
 import { toIrcLines } from "./format.js";
 
@@ -23,6 +24,8 @@ export class DurableDelivery {
 	private readonly workers = new Map<string, Promise<void>>();
 	private readonly sessions = new Map<string, DurablePromptSession>();
 	private readonly blocked = new Set<string>();
+ private readonly openRetries = new Map<string, ReturnType<typeof setTimeout>>();
+ private readonly openAttempts = new Map<string, number>();
 	private readonly activeMessages = new Map<string, InboxMessage>();
 	private outputWorker?: Promise<void>;
 	private closing = false;
@@ -64,6 +67,9 @@ export class DurableDelivery {
 				if (message.channel === channel) this.store.retry(message.id);
 			}
 			this.blocked.delete(channel);
+            const retry = this.openRetries.get(channel);
+            if (retry) clearTimeout(retry);
+            this.openRetries.delete(channel);
 			this.kick(channel);
 			await this.workers.get(channel);
 		} catch (error) {
@@ -103,6 +109,8 @@ export class DurableDelivery {
 	close(): Promise<void> {
 		if (this.closePromise) return this.closePromise;
 		this.closing = true;
+        for (const timer of this.openRetries.values()) clearTimeout(timer);
+        this.openRetries.clear();
 		this.closePromise = this.finishClose();
 		return this.closePromise;
 	}
@@ -117,7 +125,7 @@ export class DurableDelivery {
 	}
 
 	private kick(channel: string): void {
-		if (this.closing || this.blocked.has(channel) || this.workers.has(channel))
+		if (this.closing || this.blocked.has(channel) || this.openRetries.has(channel) || this.workers.has(channel))
 			return;
 		// Recovery must run first; newer messages cannot overtake an uncertain older operation.
 		if (
@@ -153,8 +161,11 @@ export class DurableDelivery {
 
 	private async runChannel(channel: string): Promise<void> {
 		let activeId: string | undefined;
+        let opened = false;
 		try {
 			const session = await this.handlers.open(channel);
+            opened = true;
+            this.openAttempts.delete(channel);
 			if (this.closing) {
 				await session.abort();
 				return;
@@ -185,9 +196,22 @@ export class DurableDelivery {
 				await this.drainOutputs();
 			}
 		} catch (error) {
-			if (activeId) this.store.markRecoveryRequired(activeId);
-			this.blocked.add(channel);
-			this.report(channel, error);
+            if (!opened && isDesktopOpenUnavailable(error) && !this.closing) {
+                const attempt = this.openAttempts.get(channel) ?? 0;
+                this.openAttempts.set(channel, attempt + 1);
+                const delay = [5000, 15000, 30000, 60000][Math.min(attempt, 3)];
+                const timer = setTimeout(() => {
+                    this.openRetries.delete(channel);
+                    this.kick(channel);
+                }, delay);
+                timer.unref();
+                this.openRetries.set(channel, timer);
+                if (attempt === 0) this.report(channel, error);
+            } else {
+                if (activeId) this.store.markRecoveryRequired(activeId);
+                this.blocked.add(channel);
+                this.report(channel, error);
+            }
 		} finally {
 			this.sessions.delete(channel);
 			this.activeMessages.delete(channel);
