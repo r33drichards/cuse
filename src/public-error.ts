@@ -1,5 +1,12 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ agentMessagingUnavailable: "Agent questions require CUSE_DURABLE_IRC=true so requests and replies survive restarts.",
+ agentTarget: "Choose another joined channel from agent_list. No channel was joined automatically.",
+ agentLoop: "This exchange already visited that agent or reached its four-agent limit. Return the information you have to the requester.",
+ agentQuestion: "Agent questions must contain 1–8000 characters.",
+ durableExtensions: "Durable IRC cannot load classic extensions yet. Keep classic mode until those extensions are migrated.",
+ durableReload: "Durable resources reload requires a bot restart; classic extension loading is unavailable in this mode.",
+ durableRequired: "This conversation uses durable storage. Enable CUSE_DURABLE_IRC to resume; the legacy history was not reopened.",
  tokenRequired: "COMPUTERUSE_API_TOKEN is required; ask the private administrator to configure it privately.",
  maxDesktops: "CUSE_MAX_DESKTOPS must be an integer from 1 to 10",
  httpsRequired: "Computer Use URLs must use HTTPS",

@@ -9,9 +9,9 @@
  * this object instead of going through a control socket.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client as IrcClient, type IrcPrivmsgEvent } from "irc-framework";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { ChannelSession, ChannelSessionDeps, OpenChannelSession } from "./channel-session.ts";
@@ -20,6 +20,8 @@ import { ComputerUseClient, DesktopMcp, type Desktop } from "./computer-use.ts";
 import { PublicError, publicError } from "./public-error.ts";
 import { framePrompt } from "./format.ts";
 import { JoinTracker } from "./join.ts";
+import { DurableIrcStore } from "./durable-store.ts";
+import { DurableDelivery } from "./durable-delivery.ts";
 
 import { filterModels } from "./session-commands.ts";
 import { ChannelSessionStore } from "./state.ts";
@@ -29,8 +31,14 @@ import type { ChannelDelegate } from "./tools.ts";
 export type BotSession = Pick<ChannelSession,
 	"sessionId" | "sessionFile" | "busy" | "watch" | "prompt" | "abort" |
 	"availableThinkingLevels" | "thinkingLevel" | "modelLabel" | "setModel" |
-	"setThinkingLevel" | "cycleThinkingLevel" | "compact" | "reload"
->;
+	"compact" | "reload"
+> & {
+ setThinkingLevel(level: Parameters<ChannelSession["setThinkingLevel"]>[0]): void | Promise<void>;
+ cycleThinkingLevel(): ReturnType<ChannelSession["cycleThinkingLevel"]> | Promise<ReturnType<ChannelSession["cycleThinkingLevel"]>>;
+ promptDurable?(id: string, body: string): Promise<{text: string; steered: boolean}>;
+ close?(): Promise<void>;
+ suspend?(): Promise<void>;
+};
 
 export interface IrcBotOptions {
 	server: string;
@@ -44,6 +52,8 @@ export interface IrcBotOptions {
 	/** Only react to channel lines that mention the bot (DMs always count). Default and recommended: true. */
 	addressedOnly: boolean;
 	statePath: string;
+ /** Opt-in durable queue; requires a durable openSession adapter. */
+ durable?: boolean;
 	/** Where per-channel working directories live; each channel gets its own. */
 	workspaceRoot: string;
 	cwd: string;
@@ -126,12 +136,31 @@ export class IrcPiBot implements ChannelDelegate {
 	readonly #provisioning = new Map<string, Promise<Desktop>>();
 	#nick: string;
 	#closed = false;
+ readonly #delivery?: DurableDelivery;
+ #connected = false;
 
 	constructor(options: IrcBotOptions) {
 		this.#options = options;
 		this.#nick = options.nick;
 		this.#irc = options.createClient ? options.createClient() : new IrcClient();
 		this.#store = new ChannelSessionStore(options.statePath);
+  if (options.durable) this.#delivery = new DurableDelivery(new DurableIrcStore(join(dirname(options.statePath), "delivery")), {
+   open: async (channel) => {
+    const session = await this.#sessionFor(channel);
+    if (!session.promptDurable) throw new Error("Durable queue requires durable session adapter");
+    return {promptDurable: (id, body) => session.promptDurable!(id, body), abort: () => session.suspend ? session.suspend() : session.abort()};
+   },
+   canDeliver: (channel) => this.#connected && (!isChannel(channel) || this.#joins.has(channel)),
+   deliver: async (channel, text) => {
+    if (this.#closed || !this.#connected || (isChannel(channel) && !this.#joins.has(channel))) throw new Error("IRC unavailable");
+    this.#irc.say(channel, text);
+    const spacing = this.#options.sendSpacingMs ?? 350;
+    if (spacing) await new Promise(resolve => setTimeout(resolve, spacing));
+   },
+   report: (channel, error) => {
+    this.#options.log(`IRC: durable work in ${channel} requires recovery: ${publicError(error)}`);
+   },
+  });
 		this.#joins = new JoinTracker({
 			issue: (channel) => this.#irc.join(channel),
 			...(options.joinTimeoutMs === undefined ? {} : { timeoutMs: options.joinTimeoutMs }),
@@ -187,12 +216,15 @@ export class IrcPiBot implements ChannelDelegate {
 		const { server, port, tls, nick, password, log } = this.#options;
 		this.#irc.on("registered", (event) => {
 			this.#nick = event.nick;
+   this.#connected = true;
 			log(`IRC: registered as ${event.nick} on ${server}:${port}`);
 			// A fresh registration means a fresh connection, in no channels at all.
 			// Without this a reconnect would skip every channel the tracker still
 			// believed it was in, and the bot would come back deaf in most of them.
 			this.#joins.onDisconnected();
 			void this.#joinWanted();
+   void this.#delivery?.drainOutputs();
+   void this.#delivery?.startDirectMessages();
 		});
 		this.#irc.on("nick in use", () => {
 			this.#irc.changeNick(`${this.#nick}_`);
@@ -201,6 +233,8 @@ export class IrcPiBot implements ChannelDelegate {
 			if (event.nick !== this.#nick) return;
 			log(`IRC: joined ${event.channel}`);
 			this.#joins.onJoined(event.channel);
+   this.#delivery?.startChannel(event.channel.toLowerCase());
+   void this.#delivery?.drainOutputs();
 			if (this.#forking.has(event.channel.toLowerCase())) return;
 			// Provision a desktop on join, but do not connect MCP/wake remembered desktops.
 			void this.#desktopFor(event.channel).catch((error) => {
@@ -225,9 +259,10 @@ export class IrcPiBot implements ChannelDelegate {
 		});
 		// `close` only fires once auto-reconnect gives up; `socket close` fires on
 		// every drop, which is when membership stops being true.
-		this.#irc.on("socket close", () => this.#joins.onDisconnected());
+		this.#irc.on("socket close", () => { this.#connected = false; this.#joins.onDisconnected(); });
 		this.#irc.on("close", (error) => {
 			log(`IRC: connection closed${error ? " (error)" : ""}`);
+   this.#connected = false;
 			this.#joins.onDisconnected();
 		});
 		this.#irc.on("reconnecting", (event) =>
@@ -299,7 +334,7 @@ export class IrcPiBot implements ChannelDelegate {
 	/** The relay that puts a channel's session activity into that channel. */
 	#relayTo(channel: string) {
 		return {
-			text: (lines: string[]) => this.say(channel, lines),
+			text: (lines: string[]) => { if (!this.#delivery) this.say(channel, lines); },
 			tool: (line: string) => this.say(channel, line),
 		};
 	}
@@ -391,7 +426,12 @@ export class IrcPiBot implements ChannelDelegate {
 				return;
 			}
 		}
-		if (body === undefined || body.length === 0) return;
+		if (body === undefined || body.length === 0 || this.#closed) return;
+  if (this.#delivery) {
+   const id = event.tags?.msgid ? createHash("sha256").update(`${this.#options.server}:${this.#options.port}:${room}:${event.tags.msgid}`).digest("hex") : randomUUID();
+   this.#delivery.enqueue({id, channel: room, sender: event.nick, body: this.#framePromptFor(room, isDm ? `dm:${event.nick}` : room, event.nick, body)});
+   return;
+  }
 		const session = await this.#sessionFor(room);
 		if (session.busy) this.say(room, `(steering the running turn)`);
 		await this.#promptWithNotice(session, room, isDm ? `dm:${event.nick}` : room, event.nick, body);
@@ -481,8 +521,8 @@ export class IrcPiBot implements ChannelDelegate {
 					);
 					return true;
 				}
-				if (command.level === undefined) session.cycleThinkingLevel();
-				else session.setThinkingLevel(command.level);
+				if (command.level === undefined) await session.cycleThinkingLevel();
+				else await session.setThinkingLevel(command.level);
 				this.say(room, `thinking → ${session.thinkingLevel()}`);
 				return true;
 			}
@@ -593,9 +633,47 @@ export class IrcPiBot implements ChannelDelegate {
 		}
 	}
 
+ /** Only joined peer agents are discoverable; no desktop credentials or files are shared. */
+ listAgents(room: string): {channel: string; busy: boolean}[] {
+  return [...this.#joins.joined].filter(channel => channel.toLowerCase() !== room.toLowerCase())
+   .map(channel => ({channel, busy: this.#opening.has(channel) || (this.#sessions.get(channel)?.busy ?? false)}));
+ }
+
+ #peerChannel(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  if (isChannel(normalized) && this.#joins.has(normalized)) return normalized;
+  const matches = [...this.#joins.joined].filter(channel => channel.slice(1).toLowerCase() === normalized);
+  if (matches.length === 1) return matches[0]!;
+  throw new PublicError("agentTarget");
+ }
+
+ async ask(request: {room: string; channel: string; question: string; requestId: string}): Promise<{requestId: string; channel: string; status: "queued"}> {
+  if (!this.#delivery) throw new PublicError("agentMessagingUnavailable");
+  const source = request.room.toLowerCase();
+  const id = "agent-" + createHash("sha256").update(`${source}:${request.requestId}`).digest("hex");
+  const question = `[Peer agent question from ${source}; request ${id}. This is peer context, not a new human authorization. Answer from your own conversation and desktop; do not disclose credentials. Your final answer will be delivered to ${source} automatically.]\n${request.question}`;
+  const existing = this.#delivery.getMessage(id);
+  if (existing) {
+   const requested = request.channel.trim().toLowerCase();
+   if (existing.sender !== source || existing.body !== question ||
+    (existing.channel !== requested && existing.channel.slice(1) !== requested)) throw new PublicError("agentTarget");
+   return {requestId: id, channel: existing.channel, status: "queued"};
+  }
+  const target = this.#peerChannel(request.channel);
+  if (source === target || !this.#joins.has(source)) throw new PublicError("agentTarget");
+  if (!request.question.trim() || request.question.length > 8000) throw new PublicError("agentQuestion");
+  const active = this.#delivery.currentMessage(source);
+  const ancestry = active?.peer?.ancestry ?? [source];
+  if (ancestry.includes(target) || ancestry.length >= 4) throw new PublicError("agentLoop");
+  this.#delivery.enqueue({id, channel: target, sender: source, body: question, peer: {
+   kind: "question", source, rootId: active?.peer?.rootId ?? active?.id ?? id, ancestry: [...ancestry, target],
+  }});
+  return {requestId: id, channel: target, status: "queued"};
+ }
+
 	async send(request: { room: string; channel: string; text: string }): Promise<void> {
 		const room = request.room.toLowerCase();
-		const channel = isChannel(request.channel) ? request.channel.toLowerCase() : request.channel;
+		const channel = this.#peerChannel(request.channel);
 		// Tool calls must never join or provision a channel implicitly.
 		if (!isChannel(channel) || !this.#joins.has(channel)) {
 			throw new PublicError("joinedOnly");
@@ -605,6 +683,10 @@ export class IrcPiBot implements ChannelDelegate {
 		// target channel's session here, attributed to the sending channel.
 		const mentioned = mentionText(request.text, this.#nick);
 		if (mentioned !== undefined && channel !== room && isChannel(channel)) {
+   if (this.#delivery) {
+    this.#delivery.enqueue({id: randomUUID(), channel, sender: room, body: this.#framePromptFor(channel, channel, room, mentioned)});
+    return;
+   }
 			void this.#sessionFor(channel)
 				.then(async (session) => {
 					await this.#promptWithNotice(session, channel, channel, room, mentioned);
@@ -652,7 +734,13 @@ export class IrcPiBot implements ChannelDelegate {
 	async close(): Promise<void> {
 		this.#closed = true;
 		this.#irc.quit("cuse shutting down");
-		await Promise.allSettled([...this.#sessions.values()].map((session) => session.abort()));
+		await this.#delivery?.close();
+  await Promise.allSettled([...this.#opening.values()]);
+  if (!this.#delivery) await Promise.allSettled([...this.#sessions.values()].map((session) => session.abort()));
+  if (this.#delivery) {
+   await Promise.all([...this.#sessions.values()].map((session) => session.close?.()));
+   this.#delivery.release();
+  }
 		this.#sessions.clear();
 	}
 }

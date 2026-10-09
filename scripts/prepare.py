@@ -15,6 +15,7 @@ REQUIRED = (
     "bot.ts", "channel-session.ts", "commands.ts", "session-commands.ts",
     "format.ts", "fault-domain.ts", "join.ts", "irc-framework.d.ts", "run.ts",
     "computer-use.ts", "state.ts", "tools.ts", "main.ts", "model-selection.ts",
+    "durable-session.ts", "durable-store.ts", "durable-delivery.ts",
 )
 head = subprocess.check_output(["git", "-C", str(PI), "rev-parse", "HEAD"], text=True).strip()
 if head != PIN:
