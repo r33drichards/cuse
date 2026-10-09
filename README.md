@@ -414,3 +414,40 @@ apply, and uncertain IRC replies can duplicate. Pause or delete affects future
 occurrences, not work already placed in the inbox.
 
 Outside the control channel, prefix commands with `cuse` when mentions are required (for example `cuse ,schedule list`). An unfinished occurrence blocks additional occurrences of the same schedule; elapsed ticks are coalesced rather than building a backlog. Schedule listings include a short prompt preview.
+
+### Desktop lifecycle from IRC
+
+`,desktop` (or `,desktop status`) shows the current desktop state and link;
+`,desktop ls` lists saved channel-to-desktop mappings. `,desktop start` and
+`,desktop wake` resume the same desktop and its pending messages.
+
+`,desktop stop` stops without saving process/browser memory, retains the disk,
+and pauses this channel's message queue until `,desktop start`. The queue pause
+survives bot restarts; messages arriving meanwhile are saved. If the API request
+fails, the queue stays paused because the remote stop may have succeeded.
+
+`,desktop sleep` saves desktop state and requires an idle channel with no queued
+messages. The next prompt wakes it automatically. Existing `,sleep` and `,wake`
+remain aliases. State changes are rejected while a turn or another desktop
+operation is running. These commands report the backend state: `stopping` is not
+a completed shutdown. Starting only resumes pending messages; it does not replay
+an uncertain, already-dispatched turn.
+
+`,desktop delete` permanently removes the assigned desktop and disk. It retains
+conversation history and a tombstone, so later messages cannot silently create
+another desktop. `,desktop recreate` (`new` is an alias) creates a fresh desktop,
+keeps the conversation, and permanently removes the old desktop and disk. Both
+first print the consequences and require repeating the command with the exact
+current desktop ID: `,desktop recreate s-example`.
+
+Recreation persists an operation key before provisioning, commits the replacement
+binding before deleting the old disk, and closes the old durable session bindings.
+An ambiguous create response leaves the queue paused. Before sending the create
+request, the bot journals that it may have been dispatched. Repeat the same
+confirmed command to reconcile by the exact provisioned name using only reads;
+it never sends a second create, even if the first desktop is not visible yet.
+If none appears, wait or ask an administrator to inspect the operation. Capacity
+and other preflight failures restore the original queue state. Ambiguous old-disk
+cleanup also remains paused until the same confirmed command finishes it. While cleanup is pending, confirmation still uses the old desktop
+ID. Replacement needs capacity for both desktops temporarily. Classic sessions
+without a safe close adapter cannot be replaced while cached.

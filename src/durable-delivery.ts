@@ -14,6 +14,7 @@ export interface DurableDeliveryHandlers {
 	open(channel: string): Promise<DurablePromptSession>;
 	deliver(channel: string, text: string): Promise<void>;
 	canDeliver?(channel: string): boolean;
+ canOpen?(channel: string): boolean;
 	report(channel: string, error: unknown): void;
 }
 
@@ -36,6 +37,16 @@ export class DurableDelivery {
 		this.store = store;
 		this.handlers = handlers;
 	}
+
+ /** Resume only pending work; lifecycle commands never retry uncertain dispatched turns. */
+ resumePending(channel: string): void {
+  const retry = this.openRetries.get(channel);
+  if (retry) clearTimeout(retry);
+  this.openRetries.delete(channel);
+  this.kick(channel);
+ }
+
+	isActive(channel: string): boolean { return this.workers.has(channel); }
 
 	getMessage(id: string): InboxMessage | undefined {
 		return this.store.listInbox().find((message) => message.id === id);
@@ -125,7 +136,7 @@ export class DurableDelivery {
 	}
 
 	private kick(channel: string): void {
-		if (this.closing || this.blocked.has(channel) || this.openRetries.has(channel) || this.workers.has(channel))
+		if (this.closing || this.handlers.canOpen?.(channel) === false || this.blocked.has(channel) || this.openRetries.has(channel) || this.workers.has(channel))
 			return;
 		// Recovery must run first; newer messages cannot overtake an uncertain older operation.
 		if (

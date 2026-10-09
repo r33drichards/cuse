@@ -1,5 +1,6 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ desktopCreateUncertain: "Replacement creation may still be in progress. No matching desktop is visible yet. Wait and repeat the same confirmed command, or ask the private administrator to inspect it; no second create will be sent.",
  desktopOpening: "Desktop is still starting or temporarily unavailable. Your messages are saved; I will retry automatically.",
  scheduleUnavailable: "Scheduling requires CUSE_DURABLE_IRC=true and a running bot.",
  scheduleChannel: "Schedules belong to the current joined channel.",
