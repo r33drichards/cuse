@@ -1,0 +1,10 @@
+{
+  "extends": "./.runtime/pi/packages/coding-agent/tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    ".runtime/pi/packages/coding-agent/src/cuse/**/*.ts"
+  ]
+}

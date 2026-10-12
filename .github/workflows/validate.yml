@@ -1,0 +1,30 @@
+name: Release preparation (no deployment)
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  node24:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Require actual Node24 before validation
+        run: node -e 'if (process.versions.node.split(".")[0] !== "24") process.exit(1); console.log(process.version)' && npm --version
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run bootstrap
+      - run: npm run check
+      - run: npm test
+      - name: Build Node24 image without publishing or credentials
+        run: docker build --tag cuse:validation .
+      - name: Smoke image runtime and catalog without OAuth or model calls
+        run: |
+          docker run --rm --entrypoint node cuse:validation --version
+          docker run --rm --entrypoint /app/node_modules/.bin/tsx cuse:validation --tsconfig /app/tsconfig.json /app/cuse/image-smoke.mts

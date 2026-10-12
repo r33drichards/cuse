@@ -1,0 +1,9 @@
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');const path=require('node:path');const os=require('node:os');const {spawnSync}=require('node:child_process');
+const root=path.resolve(__dirname,'..');const pi=path.join(root,'.runtime/pi');
+test('same ESM image probe loads actual runtime/catalog from unrelated cwd without auth/network',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cuse-smoke-test-'));const staged=path.join(pi,'cuse/image-smoke.mts');fs.mkdirSync(path.dirname(staged),{recursive:true});fs.copyFileSync(path.join(root,'scripts/image-smoke.mts'),staged);
+ try{const r=spawnSync(path.join(pi,'node_modules/.bin/tsx'),['--tsconfig',path.join(pi,'tsconfig.json'),staged],{cwd:dir,env:{PATH:process.env.PATH,PI_OFFLINE:'1',PI_CODING_AGENT_DIR:dir},encoding:'utf8',timeout:60000});assert.equal(r.status,0,r.stderr.slice(-2000));assert.match(r.stdout,/ESM image runtime and catalog OK: v24/);assert.match(r.stdout,/openai-codex\/gpt-5.4, kimi-coding/);assert.match(r.stdout,/networkRequests=0/);assert.equal(fs.readdirSync(dir).length,0,'probe must not persist auth or other data');}finally{fs.rmSync(staged,{force:true});fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('Docker/CI execute file-mode ESM probe with runtime tsconfig instead of CJS eval',()=>{const docker=fs.readFileSync(path.join(root,'Dockerfile'),'utf8');const workflow=fs.readFileSync(path.join(root,'.github/workflows/validate.yml'),'utf8');assert.ok(docker.includes('COPY scripts/image-smoke.mts /app/cuse/image-smoke.mts'));assert.ok(workflow.includes('cuse:validation --tsconfig /app/tsconfig.json /app/cuse/image-smoke.mts'));assert.ok(!workflow.includes('cuse:validation -e'));assert.ok(workflow.includes('docker run --rm --entrypoint node cuse:validation --version'));});

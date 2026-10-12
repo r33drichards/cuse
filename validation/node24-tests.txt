@@ -1,0 +1,80 @@
+acquired common advisory flock /data/chrome/home/.cuse-coordination/heavy-build.lock
+v24.14.0
+
+> cuse@0.1.0 test
+> node --experimental-strip-types --test test/runtime-primitives.test.ts test/model-selection.test.ts && npm run test:regression && node --test test/packaging/*.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/session-oauth.test.ts
+
+✔ explicit invalid catalog/auth never chooses another provider (2.99318ms)
+✔ snapshot fork fails explicitly without any backend/create request (0.899429ms)
+✔ ChatGPT auth errors request private reauthentication without raw token detail or fallback (0.613519ms)
+✔ only supported commands and cuse mentions are recognized (3.47771ms)
+✔ provisioning is serialized with stable names and an absolute cap (48.242196ms)
+✔ remembered 404 or outage never provisions or changes persisted identity (2.12172ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 399.880131
+
+> cuse@0.1.0 test:regression
+> .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/regression.test.ts test/after-fixes.test.ts
+
+✔ client unsupported snapshot fork rejects synchronously/asynchronously with zero fetch calls (1.86716ms)
+✔ only explicit pre-execution425 retries; same RPC request is reused (35.119397ms)
+✔ malformed optional state metadata rejects; valid fork metadata roundtrips (2.18309ms)
+✔ actual bot rejects bare/explicit/multiple/existing/concurrent forks before JOIN, source opening, mappings or fetch (15.099659ms)
+✔ explicit OAuth provider/model succeeds through standard getAuth surface without fallback (0.72868ms)
+✔ configured or resumed explicit model failures never select available API-key alternative (3.472189ms)
+✔ partial explicit configuration fails rather than invoking default provider (0.37802ms)
+✔ source-wiring guard: configured/resumed requireExplicitModel precede SDK; standard AuthStorage preserved (1.082529ms)
+✔ names are stable, case-normalized, isolated and bounded (2.24058ms)
+✔ concurrent provisioning serializes and deduplicates normalized room (65.256243ms)
+✔ ambiguous creation reconciles on next ensure without another POST (1.51327ms)
+✔ cap counts only namespace-owned desktops, existing remains accessible (1.27964ms)
+✔ foreign desktops do not consume cap (1.04357ms)
+✔ duplicate stable names fail closed (0.49636ms)
+✔ existing ID 404 never provisions replacement (1.26257ms)
+✔ request authenticates all calls, rejects redirects, preserves abort, overrides injected auth (0.74178ms)
+✔ JSON RPC parses matching result and rejects wrong ID/error/notification/malformed (0.39834ms)
+✔ SSE handles CRLF, comments, notifications, wrong IDs and multiline data (0.34864ms)
+✔ initialize is shared; paginated list and call use negotiated protocol/session/auth (2.06943ms)
+✔ MCP SSE response accepted end to end (0.82292ms)
+✔ network ambiguity never replays tool call (0.53753ms)
+✔ tool isError is returned without replay (0.6858ms)
+✔ RPC error/wrong-ID response never replays tool call (1.05413ms)
+✔ ambiguous HTTP 504 tool failure must not replay (0.691229ms)
+✔ abort cancels in-flight fake fetch without replay (0.93144ms)
+✔ abort cancels explicit wake-retry delay without replay (11.612399ms)
+✔ state roundtrip case-normalized records, secure file and atomic rename (1.54509ms)
+✔ corrupt JSON/version/record state errors surface rather than silently reset (1.21086ms)
+✔ corrupt state channels array is rejected (0.49202ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 882.125493
+✔ persistent OAuth bytes preserved, mode0600 enforced, codex defaults without generated API-key entries (306.873999ms)
+✔ persistent volume and shared agent-directory configuration are explicit (0.4635ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 425.844548
+✔ full ChannelSession uses catalog Codex, refreshes standard persistent OAuth, disables host tools and reopens (202.02254ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9311.521424

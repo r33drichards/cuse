@@ -1,0 +1,21 @@
+# Scoped recovery corrections — evidence, not feature approval
+
+Base: d842679ad932fd29f7ef65814d9e21501584cef7, release/preparation, public draft PR1.
+
+- P1: entrypoint Node configuration processing has an outer catch, constant shell guidance/nonzero status, withheld raw stderr, required-env guards and missing-executable preflight. Executed malformed environment/mounted/persisted JSON, mounted filesystem read, mkdir and missing-launcher synthetic canaries emit no raw canary, path, URL or stack. Valid mounted precedence and auth bytes/mode0600 are retained. Exec'd runtime stderr is deliberately withheld; controlled stdout/IRC remains. No claim of crash-proof runtime handling or extension sandboxing.
+- P2: remote isError and rejected calls throw owned PublicError before remote modelContent. Actual SDK marks failed tool isError=true; actual bot privmsg dispatch, adapter, SDK/session model context, persisted transcript, ChannelSession relay and fake IRC say are exercised. No raw remote text/image/structured data reaches model/IRC/transcript; one call per invocation, no replay. Success guest stdout and image remain in model context, stdout reaches IRC, binary image stays off IRC. Only synthetic model stream generation is substituted; no live network, refresh or credentials.
+- P2: set/get/entries deeply detach records. Accessor, nested array/data and during-write caller changes cannot mutate committed memory/file. Failure and concurrent/queued prior tests retained.
+- #cuse steering: actual bot registered event joins default#cuse plus#other with nickcuse and distinct stored desktop identities. Explicit control/nick override preserved. Executed entrypoint child observes cuse/#cuse defaults and overrides. Existing full session tests retain independent session IDs/files. No other service/host integration changed.
+- README and model provenance distinguish settled predecessor65/Docker evidence from current source, document actual bootstrap extraction vs final-image path, and preserve historical63/65 logs. Fork remains explicitly unsupported.
+
+## Actual current-source validation
+
+Final exec884c059d-3a95-4169-be49-6468d614f1d3 completed:0 under bounded strict common heavy flock. Existing verified Node24.14.0; bash -n entrypoint.sh; python3 scripts/prepare.py; npm run check (actual overlay build/typecheck); npm test:82passed,0failed,0skipped, all11maintained files. Groups12+29+11+1+21+2+3+3. New full adapter cases record zero fetch requests. Logs: recovery-boundary-build.txt/tests.txt.
+
+Manifest recovery-boundary-inputs.json binds44inputs and15byte-identical maintained/staged files. Digest f39e7cabb8ca3a108cbf927efe1a10b872d08fda4258298bb69c6eceafe1e8d4. Pin/model archive unchanged. Standard AuthStorage/ModelRuntime/defaultCodex and image smoke unchanged.
+
+Earlier normal test iterations exposed a missing-exec guidance gap and failed before later suites; corrected with an executed real synthetic-launcher harness/preflight. Exec06997732/e3554ca4/b292bb0f completed:1 during this test development, not policy failures. A standalone synthetic Bash exec diagnostic11d822de completed:127 (ordinary process status). Execd3a813cf ended:1 at bounded lock acquisition after180s (shared worker untouched); it did not validate source. No new auth/policy/transport failure occurred; no bypass, retry of denied commands, deleted locks or killed shared workers.
+
+Preflight pwd59e3c02c, clean statusbc9016f5, initial HEADf543eec3 and gh api user8606b477 completed:0; gh login r33drichards. Evidence capture7d068765 completed:0; diff-check024c45cb completed:0.
+
+Current exact-HEAD CI must settle at parent dependency barrier; pending jobs are not satisfied. Independent source review required. No merge, deployment, billing/RBAC/runner/auth config change, live OAuth/model/IRC/cloud call or feature approval. Dedicated private auth/token and reviewed backend fork/restore support remain separate release gates. State guarantee remains single-process atomic memory-after-file rename, not directory-fsync/power-loss/multiprocess durability. Inherited OAuth storage is not crash-atomic and old rotated-token backups may require private reauthentication. Synthetic fixtures cleaned by finally; ignored owned .tools evidence retained, shared workers untouched.

@@ -1,0 +1,121 @@
+
+> cuse@0.1.0 test
+> node --experimental-strip-types --test test/runtime-primitives.test.ts test/model-selection.test.ts test/state-commit.test.ts && npm run test:regression && node --test test/packaging/*.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/session-oauth.test.ts && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/public-boundary.test.ts && node --test test/image-smoke.test.cjs
+
+✔ explicit invalid catalog/auth never chooses another provider (1.77424ms)
+✔ snapshot fork fails explicitly without any backend/create request (0.9414ms)
+✔ ChatGPT auth errors request private reauthentication without raw token detail or fallback (0.578149ms)
+✔ only supported commands and cuse mentions are recognized (3.13834ms)
+✔ provisioning is serialized with stable names and an absolute cap (47.739335ms)
+✔ remembered 404 or outage never provisions or changes persisted identity (1.90995ms)
+✔ write failure leaves memory/disk unchanged and permits later commit (4.239329ms)
+✔ rename failure leaves memory/disk unchanged and permits later commit (1.487ms)
+✔ initial write failure creates no phantom identity (0.70525ms)
+✔ concurrent queued sets serialize successful updates around failed update without rollback loss (1.63178ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 515.385489
+
+> cuse@0.1.0 test:regression
+> .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/regression.test.ts test/after-fixes.test.ts
+
+✔ client unsupported snapshot fork rejects synchronously/asynchronously with zero fetch calls (1.848369ms)
+✔ only explicit pre-execution425 retries; same RPC request is reused (44.345515ms)
+✔ malformed optional state metadata rejects; valid fork metadata roundtrips (2.539399ms)
+✔ actual bot rejects bare/explicit/multiple/existing/concurrent forks before JOIN, source opening, mappings or fetch (14.461839ms)
+✔ explicit OAuth provider/model succeeds through standard getAuth surface without fallback (0.5818ms)
+✔ configured or resumed explicit model failures never select available API-key alternative (3.919839ms)
+✔ partial explicit configuration fails rather than invoking default provider (3.77335ms)
+✔ source-wiring guard: configured/resumed requireExplicitModel precede SDK; standard AuthStorage preserved (1.08872ms)
+✔ names are stable, case-normalized, isolated and bounded (2.00708ms)
+✔ concurrent provisioning serializes and deduplicates normalized room (65.990753ms)
+✔ ambiguous creation reconciles on next ensure without another POST (1.82164ms)
+✔ cap counts only namespace-owned desktops, existing remains accessible (1.44521ms)
+✔ foreign desktops do not consume cap (1.48372ms)
+✔ duplicate stable names fail closed (0.62976ms)
+✔ existing ID 404 never provisions replacement (1.79512ms)
+✔ request authenticates all calls, rejects redirects, preserves abort, overrides injected auth (1.09736ms)
+✔ JSON RPC parses matching result and rejects wrong ID/error/notification/malformed (0.64827ms)
+✔ SSE handles CRLF, comments, notifications, wrong IDs and multiline data (0.479539ms)
+✔ initialize is shared; paginated list and call use negotiated protocol/session/auth (2.893449ms)
+✔ MCP SSE response accepted end to end (1.31049ms)
+✔ network ambiguity never replays tool call (0.7755ms)
+✔ tool isError is returned without replay (1.0211ms)
+✔ RPC error/wrong-ID response never replays tool call (1.50165ms)
+✔ ambiguous HTTP 504 tool failure must not replay (0.86395ms)
+✔ abort cancels in-flight fake fetch without replay (1.06201ms)
+✔ abort cancels explicit wake-retry delay without replay (10.72299ms)
+✔ state roundtrip case-normalized records, secure file and atomic rename (1.405319ms)
+✔ corrupt JSON/version/record state errors surface rather than silently reset (1.15427ms)
+✔ corrupt state channels array is rejected (0.40692ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 866.180299
+✔ persistent OAuth bytes preserved, mode0600 enforced, codex defaults without generated API-key entries (217.542597ms)
+✔ persistent volume and shared agent-directory configuration are explicit (0.50228ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 302.523178
+✔ full ChannelSession uses catalog Codex, refreshes standard persistent OAuth, disables host tools and reopens (131.933217ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7443.264634
+✔ public command boundary withholds prompt (32.061926ms)
+✔ public command boundary withholds open (23.102557ms)
+✔ public command boundary withholds available (14.522288ms)
+✔ public command boundary withholds setModel (13.352319ms)
+✔ public command boundary withholds reload (12.367409ms)
+✔ public command boundary withholds compact (12.252199ms)
+✔ public command boundary withholds thinking (13.054879ms)
+✔ public command boundary withholds get (13.049068ms)
+✔ public command boundary withholds lifecycle (12.279519ms)
+✔ public command boundary withholds fork (12.509199ms)
+✔ public command boundary withholds join (12.906749ms)
+✔ public command boundary withholds joinRefused (11.657449ms)
+✔ public command boundary withholds part (11.998839ms)
+✔ event/log boundary withholds ensure (12.527988ms)
+✔ event/log boundary withholds send (11.397469ms)
+✔ event/log boundary withholds join (11.867249ms)
+✔ cross-channel catch withholds prompt (24.920858ms)
+✔ cross-channel catch withholds open (24.670557ms)
+✔ runtime channel/outside faults and server reasons never stringify secret failures (0.81214ms)
+✔ only owned codes provide safe guidance; mutated messages, names, stacks, causes and stringification ignored (0.53847ms)
+✔ startup, extension and failed agent/tool event wiring use controlled boundaries (0.66435ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7639.216576
+✔ same ESM image probe loads actual runtime/catalog from unrelated cwd without auth/network (7893.916529ms)
+✔ Docker/CI execute file-mode ESM probe with runtime tsconfig instead of CJS eval (0.65239ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7999.639807

@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.railway/
+.runtime/
+*.log
+*.tap
+auth.json
+agent-data/
+
+.tools/

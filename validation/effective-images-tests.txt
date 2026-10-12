@@ -1,0 +1,155 @@
+
+> cuse@0.1.0 test
+> node --experimental-strip-types --test test/runtime-primitives.test.ts test/model-selection.test.ts test/state-commit.test.ts && npm run test:regression && node --test test/packaging/*.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/session-oauth.test.ts && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/public-boundary.test.ts && node --test test/image-smoke.test.cjs && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/remote-adapter-session.test.ts && .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/default-startup.test.ts
+
+✔ explicit invalid catalog/auth never chooses another provider (1.54327ms)
+✔ snapshot fork fails explicitly without any backend/create request (1.22091ms)
+✔ ChatGPT auth errors request private reauthentication without raw token detail or fallback (0.61592ms)
+✔ only supported commands and cuse mentions are recognized (3.04875ms)
+✔ provisioning is serialized with stable names and an absolute cap (52.95297ms)
+✔ remembered 404 or outage never provisions or changes persisted identity (2.33818ms)
+✔ write failure leaves memory/disk unchanged and permits later commit (4.8205ms)
+✔ rename failure leaves memory/disk unchanged and permits later commit (1.56795ms)
+✔ initial write failure creates no phantom identity (0.70171ms)
+✔ concurrent queued sets serialize successful updates around failed update without rollback loss (1.63619ms)
+✔ get/entries and set caller nested data are independent snapshots, including during write (0.96505ms)
+✔ queued callers mutate accessor snapshots without modifying successful or failed committed updates (1.14488ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 578.891816
+
+> cuse@0.1.0 test:regression
+> .runtime/pi/node_modules/.bin/tsx --tsconfig .runtime/pi/tsconfig.json --test test/regression.test.ts test/after-fixes.test.ts
+
+✔ client unsupported snapshot fork rejects synchronously/asynchronously with zero fetch calls (2.32612ms)
+✔ only explicit pre-execution425 retries; same RPC request is reused (42.711599ms)
+✔ malformed optional state metadata rejects; valid fork metadata roundtrips (2.127991ms)
+✔ actual bot rejects bare/explicit/multiple/existing/concurrent forks before JOIN, source opening, mappings or fetch (16.01248ms)
+✔ explicit OAuth provider/model succeeds through standard getAuth surface without fallback (5.05431ms)
+✔ configured or resumed explicit model failures never select available API-key alternative (4.82959ms)
+✔ partial explicit configuration fails rather than invoking default provider (0.58539ms)
+✔ source-wiring guard: configured/resumed requireExplicitModel precede SDK; standard AuthStorage preserved (1.11085ms)
+✔ names are stable, case-normalized, isolated and bounded (2.083311ms)
+✔ concurrent provisioning serializes and deduplicates normalized room (67.618359ms)
+✔ ambiguous creation reconciles on next ensure without another POST (1.9222ms)
+✔ cap counts only namespace-owned desktops, existing remains accessible (1.29037ms)
+✔ foreign desktops do not consume cap (1.12642ms)
+✔ duplicate stable names fail closed (0.56709ms)
+✔ existing ID 404 never provisions replacement (1.38112ms)
+✔ request authenticates all calls, rejects redirects, preserves abort, overrides injected auth (0.84322ms)
+✔ JSON RPC parses matching result and rejects wrong ID/error/notification/malformed (0.4842ms)
+✔ SSE handles CRLF, comments, notifications, wrong IDs and multiline data (0.35765ms)
+✔ initialize is shared; paginated list and call use negotiated protocol/session/auth (2.33359ms)
+✔ MCP SSE response accepted end to end (1.01601ms)
+✔ network ambiguity never replays tool call (0.83449ms)
+✔ tool isError is returned without replay (0.84303ms)
+✔ RPC error/wrong-ID response never replays tool call (1.32064ms)
+✔ ambiguous HTTP 504 tool failure must not replay (0.75716ms)
+✔ abort cancels in-flight fake fetch without replay (0.92837ms)
+✔ abort cancels explicit wake-retry delay without replay (13.60989ms)
+✔ state roundtrip case-normalized records, secure file and atomic rename (1.68398ms)
+✔ corrupt JSON/version/record state errors surface rather than silently reset (1.21538ms)
+✔ corrupt state channels array is rejected (0.52758ms)
+ℹ tests 29
+ℹ suites 0
+ℹ pass 29
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 827.354844
+✔ persistent OAuth bytes preserved, mode0600 enforced, codex defaults without generated API-key entries (248.240648ms)
+✔ persistent volume and shared agent-directory configuration are explicit (0.48156ms)
+✔ executed startup env-json failure is sanitized and nonzero (66.885ms)
+✔ executed startup models-json failure is sanitized and nonzero (69.220459ms)
+✔ executed startup settings-json failure is sanitized and nonzero (69.330129ms)
+✔ executed startup persisted-json failure is sanitized and nonzero (71.455609ms)
+✔ executed startup models-read failure is sanitized and nonzero (64.504679ms)
+✔ executed startup agent-mkdir failure is sanitized and nonzero (14.28553ms)
+✔ executed startup launcher-missing failure is sanitized and nonzero (64.094199ms)
+✔ executed valid mounted precedence wins malformed env and OAuth bytes/mode preserved (76.13088ms)
+✔ executed entrypoint exports nick cuse/control #cuse defaults and preserves overrides (150.845829ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 993.644033
+✔ full ChannelSession uses catalog Codex, refreshes standard persistent OAuth, disables host tools and reopens (181.411469ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7461.163421
+✔ public command boundary withholds prompt (33.96935ms)
+✔ public command boundary withholds open (22.65286ms)
+✔ public command boundary withholds available (12.37469ms)
+✔ public command boundary withholds setModel (12.0052ms)
+✔ public command boundary withholds reload (11.93393ms)
+✔ public command boundary withholds compact (11.89501ms)
+✔ public command boundary withholds thinking (12.164ms)
+✔ public command boundary withholds get (12.85753ms)
+✔ public command boundary withholds lifecycle (12.65927ms)
+✔ public command boundary withholds fork (13.25187ms)
+✔ public command boundary withholds join (11.8166ms)
+✔ public command boundary withholds joinRefused (12.24648ms)
+✔ public command boundary withholds part (11.49151ms)
+✔ event/log boundary withholds ensure (10.653251ms)
+✔ event/log boundary withholds send (11.82728ms)
+✔ event/log boundary withholds join (13.30538ms)
+✔ cross-channel catch withholds prompt (24.043231ms)
+✔ cross-channel catch withholds open (24.292841ms)
+✔ runtime channel/outside faults and server reasons never stringify secret failures (0.9796ms)
+✔ only owned codes provide safe guidance; mutated messages, names, stacks, causes and stringification ignored (0.559ms)
+✔ startup, extension and failed agent/tool event wiring use controlled boundaries (0.70794ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 21
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7673.773384
+✔ same ESM image probe loads actual runtime/catalog from unrelated cwd without auth/network (6091.625313ms)
+✔ Docker/CI execute file-mode ESM probe with runtime tsconfig instead of CJS eval (0.76071ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6187.769942
+✔ complete adapter -> actual SDK -> model context -> IRC relay remote-error (85.815599ms)
+✔ complete adapter -> actual SDK -> model context -> IRC relay transport-error (42.57466ms)
+✔ complete adapter -> actual SDK -> model context -> IRC relay success (236.276678ms)
+✔ complete adapter -> actual SDK -> model context -> IRC relay project-images (439.00178ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8984.669428
+✔ executed bot registration joins default #cuse plus independent channels (27.4624ms)
+✔ executed bot registration joins explicit control override plus independent channels (33.91178ms)
+✔ Docker and entrypoint expose #cuse/cuse defaults without overriding explicit config (0.911009ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7454.876628

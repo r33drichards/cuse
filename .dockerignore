@@ -1,0 +1,12 @@
+.git
+node_modules
+.env
+.env.*
+.railway
+.runtime
+auth.json
+agent-data
+*.log
+*.tap
+
+.tools/
