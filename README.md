@@ -1,17 +1,27 @@
-# cuse deployment packaging
+# cuse
 
-> **Fork feature backend dependency:** disk-snapshot fork requires a new
-> Computer Use API that is not deployed yet. It must fail explicitly until
-> supported, never silently fall back to a fresh blank desktop. The upstream
-> model-data build blocker has been resolved using the exact published pi-ai
-> artifact; upstream offline builds and actual Node24 CI Docker build passed at predecessor d842679.
-> Container smoke must pass at the current PR HEAD before release; deployment
-> remains unperformed.
+The cuse IRC agent and its complete vendored Pi runtime live together on `main`.
 
-This repository packages its maintained `src` tree against public
-[r33drichards/pi](https://github.com/r33drichards/pi) pinned to
+- [`src/`](src/): cuse commands, durable sessions, scheduling, agent messaging, and desktop integration.
+- [`vendor/pi/packages/`](vendor/pi/packages/): Pi agent loop, durable harness, model providers, and supporting packages.
+- [`test/`](test/): cuse regression and packaging tests.
+- [`vendor/README.md`](vendor/README.md): upstream revision and vendor update notes; upstream licenses are preserved.
 
-d3e3b4ea7bd00e1e3784ac276a7c86fd1a5f1087.
+Clone this repository once; no other Git checkout or submodule is required.
+With Node 24, npm, Python 3, and tar installed:
+
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm run bootstrap
+npm run check
+npm test
+```
+
+Bootstrap copies `vendor/pi` into disposable `.runtime/pi`. Edit maintained
+source in `src` or `vendor/pi`, then rerun bootstrap. npm still downloads
+locked package dependencies; the build does not fetch source from GitHub.
+
+Snapshot-based desktop fork remains unavailable until its backend API is supported.
 
 Node 24 runs both stages. The build uses npm ci --ignore-scripts, hydrates
 model data from a SHA256-verified immutable npm artifact, and builds upstream with build:offline **before** overlaying cuse
@@ -26,7 +36,7 @@ mcp-js coordinator; entrypoint always removes the top-level mcpJs setting.
 
 ## Local Docker Compose
 
-Build context is this repository root. Only cuse source, entrypoint and the immutable model artifact are copied from the context;
+Build context is this repository root. The vendored Pi source, cuse source, entrypoint and immutable model artifact are copied from the context;
 never add secrets to COPY or build arguments. The build context excludes runtime checkouts, dependencies, auth files and environment files.
 
     cd cuse
@@ -41,7 +51,7 @@ HTTP service, port mapping, or HTTP healthcheck. A running process alone does
 not prove IRC/provider/desktop connectivity. Check sanitized startup logs and
 perform a controlled addressed prompt only after approval.
 
-## Railway setup (operator only; not performed by packaging)
+## Railway setup
 
 Use Dockerfile deployment with this repository as build context and Dockerfile path Dockerfile. No root
 railway.json is supplied or required. The image ENTRYPOINT is the start

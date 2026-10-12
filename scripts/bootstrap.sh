@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PIN=d3e3b4ea7bd00e1e3784ac276a7c86fd1a5f1087
+# vendor/pi is the source of truth; .runtime is disposable build output.
+test -f vendor/pi/package-lock.json
 mkdir -p .runtime
-if [[ ! -d .runtime/pi/.git ]]; then git clone https://github.com/r33drichards/pi.git .runtime/pi; fi
-git -C .runtime/pi checkout --detach "$PIN"
-test "$(git -C .runtime/pi rev-parse HEAD)" = "$PIN"
+rm -rf .runtime/pi
+cp -R vendor/pi .runtime/pi
 echo 'af7d11986179445ce6fe88b37d57de22f823c0ffd3a65cae31c555b7f5e99253  model-snapshot/pi-ai-0.85.1.tgz' | sha256sum -c -
 cd .runtime/pi
 rm -rf packages/coding-agent/src/cuse

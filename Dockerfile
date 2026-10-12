@@ -3,10 +3,7 @@ FROM node:24-bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-RUN git clone --filter=blob:none https://github.com/r33drichards/pi.git . \
- && git checkout --quiet d3e3b4ea7bd00e1e3784ac276a7c86fd1a5f1087 \
- && test "$(git rev-parse HEAD)" = d3e3b4ea7bd00e1e3784ac276a7c86fd1a5f1087 \
- && rm -rf .git
+COPY vendor/pi/ /app/
 # Keep dev dependencies: runtime uses tsx and workspace source imports.
 # Hydrate ignored data from an immutable compatible published artifact, NOT
 # today's changing model APIs. Preserve the pinned generated TS metadata.
