@@ -479,3 +479,10 @@ Remote desktop actions are never automatically repeated after an ambiguous failu
 Durable sessions use the checked-in desktopjs tool manifest and initialize MCP only
 when a remote tool is called, keeping recovery tools available during an outage.
 Classic extension sessions retain their existing remote-discovery behavior.
+
+## Vendored goal-engine source
+
+The complete MIT-licensed pi-goal-x v0.32.3 source is preserved under
+vendor/pi-goal-x with pinned provenance and an import-integrity regression test.
+It is not enabled automatically. See docs/vendored-goals.md for the proposed
+cuse-native durable goal integration and acceptance boundary.

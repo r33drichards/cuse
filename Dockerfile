@@ -37,6 +37,9 @@ ENV NODE_ENV=production \
     COMPUTERUSE_SESSION_SIZE=small \
     CUSE_MAX_DESKTOPS=10
 COPY --from=build /app /app
+# Ship audited source and its license, without auto-loading the extension.
+COPY vendor/pi-goal-x/ /opt/cuse-vendor/pi-goal-x/
+COPY vendor/pi-goal-x.provenance.json /opt/cuse-vendor/pi-goal-x.provenance.json
 COPY entrypoint.sh /usr/local/bin/cuse-entrypoint
 COPY scripts/image-smoke.mts /app/cuse/image-smoke.mts
 RUN chmod 0755 /usr/local/bin/cuse-entrypoint && mkdir -p /data/agent /workspace
