@@ -1,3 +1,4 @@
+import { createGoalTools, goalModels, guardGoalTool } from "./goal-tools.ts";
 import { DESKTOP_TOOL_MANIFEST } from "./desktop-tool-manifest.ts";
 /** Durable IRC adapter. The host must hold exclusive ownership of sessionDir. */
 import { isDeepStrictEqual } from "node:util";
@@ -87,6 +88,8 @@ export class DurableChannelSession {
 	readonly repo: SqliteSessionRepo;
 	private model: Model<Api>;
 	private thinking: ThinkingLevel;
+ private readonly goalScope: {operationId:string};
+ private readonly goalDelegate: ChannelSessionDeps["delegate"];
 	private constructor(
 		channel: string,
 		sessionId: string,
@@ -97,6 +100,8 @@ export class DurableChannelSession {
 		repo: SqliteSessionRepo,
 		model: Model<Api>,
 		thinking: ThinkingLevel,
+  goalScope: {operationId:string},
+  goalDelegate: ChannelSessionDeps["delegate"],
 	) {
 		this.channel = channel;
 		this.sessionId = sessionId;
@@ -107,6 +112,7 @@ export class DurableChannelSession {
 		this.repo = repo;
 		this.model = model;
 		this.thinking = thinking;
+  this.goalScope=goalScope;this.goalDelegate=goalDelegate;
 		harness.events.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
 			const lines = toIrcLines(
@@ -296,14 +302,16 @@ export class DurableChannelSession {
 					},
 				}),
 			);
-			tools.push(...createDurableAgentTools(deps.delegate, channel, sessionId));
+			tools.push(...createDurableAgentTools(deps.delegate, channel, sessionId), ...createGoalTools(deps.delegate, channel));
+            const goalScope = {operationId: ""};
+            const guardedTools = tools.map(tool => guardGoalTool(tool, deps.delegate, channel));
 			({ harness } = await AgentHarness.create<undefined>(
 				{
 					session: store,
-					models: deps.modelRuntime,
+					models: goalModels(deps.modelRuntime, deps.delegate, channel, () => goalScope.operationId),
 					model,
 					thinkingLevel: thinking,
-					tools,
+					tools: guardedTools,
 					toolExecution: "sequential",
 					toProviderMessages: convertToLlm,
 					systemPrompt: [
@@ -328,13 +336,18 @@ export class DurableChannelSession {
 				},
 				ctx,
 			));
-			const lane = await harness.lane("main", ctx);
+			harness.hooks.on("before_request", event=>{if(!goalScope.operationId)goalScope.operationId=event.runId;return undefined;},{id:"cuse.goal.request-identity.v1"});
+            harness.hooks.on("before_tool", event=>{try{deps.delegate.goalGuard?.(channel,event.runId,"check");}catch{return {block:{reason:"Goal stopped. Inspect outcomes; direct human start required.",terminate:true}};}return undefined;},{id:"cuse.goal.tool-admission.v1"});
+            harness.hooks.on("after_tool", event=>{if(event.isError&&deps.delegate.goalBlock?.(channel,event.runId))return {terminate:true};return undefined;},{id:"cuse.goal.tool-error.v1"});
+            const lane = await harness.lane("main", ctx);
             // Registry updates do not change an existing lane's persisted allowlist.
             // Append the recovery capability without replacing model/thinking/history
             // or altering an in-flight operation's frozen execution configuration.
             const activeTools = await lane.getActiveTools(ctx);
-            if (!activeTools.includes("desktop_control"))
-                await lane.setActiveTools([...activeTools, "desktop_control"], ctx);
+            const goalNames=["goal_status","goal_update"];
+            const desired=[...activeTools.filter(name=>deps.delegate.goalEnabled?.()||!goalNames.includes(name))];
+            for(const name of ["desktop_control",...(deps.delegate.goalEnabled?.()?goalNames:[])])if(!desired.includes(name))desired.push(name);
+            if(!isDeepStrictEqual(desired,activeTools))await lane.setActiveTools(desired,ctx);
 			const restored = await lane.getModel(ctx);
 			if (!restored) throw new Error("Persisted durable model is unavailable");
 			await requireExplicitModel(
@@ -352,6 +365,7 @@ export class DurableChannelSession {
 				repo,
 				restored,
 				await lane.getThinkingLevel(ctx),
+    goalScope, deps.delegate,
 			);
 		} catch (error) {
 			await harness?.close(ctx);
@@ -377,7 +391,8 @@ export class DurableChannelSession {
 			if (!result) {
 				const state = await this.lane.inspectExecution(ctx);
 				if (state.current && state.current.id !== operationId) {
-					const recovered = await this.lane.drive(
+					this.goalScope.operationId=state.current.id;
+                    const recovered = await this.lane.drive(
 						{
 							operationId: state.current.id,
 							waitForRetry: true,
@@ -398,7 +413,8 @@ export class DurableChannelSession {
 					);
 					if (!accepted.ok) throw accepted.error;
 				}
-				const driven = await this.lane.drive(
+				this.goalScope.operationId=operationId;
+                const driven = await this.lane.drive(
 					{ operationId, waitForRetry: true, pollDeferred: true },
 					ctx,
 				);
@@ -407,8 +423,10 @@ export class DurableChannelSession {
 					throw new Error("Durable operation is waiting and must be resumed");
 				result = driven.value.outcome;
 			}
-			if (result.status === "failed" || result.status === "aborted")
-				return { text: publicError(undefined), steered: false };
+			if (result.status === "failed" || result.status === "aborted") {
+                this.goalDelegate.goalBlock?.(this.channel,operationId);
+                return { text: publicError(undefined), steered: false };
+            }
 			const entry = result.tipId
 				? await this.store.getEntry(result.tipId, ctx)
 				: undefined;
@@ -450,6 +468,7 @@ export class DurableChannelSession {
 	async recover(): Promise<void> {
 		const state = await this.lane.inspectExecution(ctx);
 		if (state.current) {
+            this.goalScope.operationId=state.current.id;
 			const result = await this.lane.drive(
 				{
 					operationId: state.current.id,
@@ -507,6 +526,8 @@ export class DurableChannelSession {
 		return this.thinking;
 	}
 	async compact(instructions: string | null): Promise<void> {
+        if(this.busy)throw new PublicError("sessionBusy");
+        this.goalScope.operationId="";
 		const result = await this.lane.compact(
 			{ customInstructions: instructions ?? undefined },
 			ctx,

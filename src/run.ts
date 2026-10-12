@@ -128,6 +128,8 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	const { resourceLoader, settingsManager } = await createResources(cwd);
 	const extensions = resourceLoader.getExtensions();
  const durable = envFlag(env.CUSE_DURABLE_IRC) ?? false;
+ const goalsEnabled = envFlag(env.CUSE_GOALS_ENABLED) ?? false;
+ if(goalsEnabled && !durable)throw new PublicError("goalUnavailable");
  if (durable && (extensions.extensions.length || extensions.errors.length)) throw new PublicError("durableExtensions");
 	if (extensions.extensions.length > 0) {
 		log(`Extensions: ${extensions.extensions.length} loaded`);
@@ -150,6 +152,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	const botOptions: IrcBotOptions = {
 		...config,
   durable,
+  goalsEnabled,
 		cwd,
 		workspaceRoot: command.workspaceRoot ?? env.PI_IRC_WORKSPACE_DIR ?? join(agentDir, "irc", "channels"),
 		agentDir,
@@ -181,7 +184,8 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 		log(
 			`IRC: connecting to ${config.server}:${config.port}${config.tls ? " (tls)" : ""} as ${config.nick}, control ${config.controlChannel}`,
 		);
-		await bot.start();
+		if(goalsEnabled)log("Goals: native durable adapter enabled; direct human start required, finite allowances, human review.");
+        await bot.start();
 		await new Promise<void>((resolve, reject) => {
 			const cleanup = (): void => {
 				process.off("SIGINT", finish);

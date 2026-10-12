@@ -9,6 +9,7 @@
  * this object instead of going through a control socket.
  */
 
+import { formatGoal, type Goal, type GoalUpdate } from "./goal-types.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -55,6 +56,7 @@ export interface IrcBotOptions {
 	statePath: string;
  /** Opt-in durable queue; requires a durable openSession adapter. */
  durable?: boolean;
+ goalsEnabled?: boolean;
 	/** Where per-channel working directories live; each channel gets its own. */
 	workspaceRoot: string;
 	cwd: string;
@@ -437,20 +439,20 @@ export class IrcPiBot implements ChannelDelegate {
 		const mentionRequired = this.#store.get(room)?.mentionRequired ?? this.#options.addressedOnly;
 		const toggle = parseCommand(event.message);
 		if (toggle?.kind === "toggle-mention") {
-			await this.#onCommand(toggle, room, control, commandId);
+			await this.#onCommand(toggle, room, control, commandId, event.nick);
 			return;
 		}
 		const body = isDm || !mentionRequired ? (mentioned ?? event.message.trim()) : mentioned;
 		// `pi ,model astra` is a command in a mention; a bare `,command` counts in the control channel and DMs.
 		const command = body !== undefined ? parseCommand(body) : undefined;
 		if (command) {
-			await this.#onCommand(command, room, control, commandId);
+			await this.#onCommand(command, room, control, commandId, event.nick);
 			return;
 		}
 		if (mentioned === undefined && control) {
 			const bare = parseCommand(event.message);
 			if (bare) {
-				await this.#onCommand(bare, room, true, commandId);
+				await this.#onCommand(bare, room, true, commandId, event.nick);
 				return;
 			}
 		}
@@ -573,10 +575,22 @@ export class IrcPiBot implements ChannelDelegate {
 		return false;
 	}
 
-	async #onCommand(command: IrcCommand, room: string, control: boolean, commandId: string = randomUUID()): Promise<void> {
+	async #onCommand(command: IrcCommand, room: string, control: boolean, commandId: string = randomUUID(), sender = ""): Promise<void> {
 		if (await this.#onSessionCommand(command, room)) return;
 		switch (command.kind) {
-			case "schedule": {
+			case "goal": {
+    if(!this.goalEnabled()||!this.#durableStore||!this.#delivery)throw new PublicError("goalUnavailable");
+    if(command.request.action==="start"&&(!this.#store.get(room)?.desktopId||this.#store.get(room)?.desktopDeleted))throw new PublicError("goalDesktop");
+    const result=this.#durableStore.scheduleOperation("goal/control/"+room+"/"+commandId,JSON.stringify({request:command.request,sender}),()=>this.#durableStore!.goals.control(room,sender,createHash("sha256").update(room+":"+commandId).digest("hex").slice(0,24),command.request));
+    this.say(room,Array.isArray(result)?(result.length?result.map(formatGoal):["No goals in this channel. Add is inert; start explicitly authorizes a bounded run."]):formatGoal(result));
+    if(command.request.action==="start")this.#delivery.resumePending(room);
+    if(command.request.action==="pause"||command.request.action==="cancel"){
+     const active=this.#delivery.currentMessage(room);
+     if(active&&this.#durableStore.goals.isRun(active.id))await this.#sessions.get(room)?.abort();
+    }
+    return;
+   }
+   case "schedule": {
     const result = await this.#schedule({...command.request, room, requestId: commandId}, true);
     if (command.request.action === "list") {
      const rows = result as StoredSchedule[];
@@ -814,6 +828,21 @@ export class IrcPiBot implements ChannelDelegate {
   }
  }
 
+ goalEnabled():boolean{return !!this.#options.goalsEnabled&&!!this.#durableStore;}
+ goalRead(room:string):unknown {if(!this.goalEnabled())throw new PublicError("goalUnavailable");return this.#durableStore!.goals.list(room.toLowerCase());}
+ goalGuard(room:string,operationId:string,kind:"check"|"model"|"tool",invocationId?:string):boolean {
+  const ledger=this.#durableStore?.goals;if(!ledger?.isRun(operationId))return false;
+  if(!this.goalEnabled())throw new PublicError("goalStopped");
+  if(kind==="model")return ledger.spendModel(room.toLowerCase(),operationId);
+  if(kind==="tool")ledger.spendTool(room.toLowerCase(),operationId,invocationId!);else ledger.check(room.toLowerCase(),operationId);
+  return true;
+ }
+ goalUpdate(room:string,operationId:string,requestId:string,input:GoalUpdate):unknown {
+  if(!this.goalEnabled())throw new PublicError("goalUnavailable");
+  this.goalGuard(room,operationId,"check");
+  return this.#durableStore!.scheduleOperation("goal/update/"+room+"/"+requestId,JSON.stringify({operationId,input}),()=>this.#durableStore!.goals.update(room.toLowerCase(),operationId,input));
+ }
+ goalBlock(room:string,operationId:string):boolean {const ledger=this.#durableStore?.goals;if(!ledger?.isRun(operationId))return false;ledger.blockRun(room.toLowerCase(),operationId);return true;}
  async schedule(request: ScheduleRequest & {room: string; requestId: string}): Promise<unknown> {
   return this.#schedule(request, false);
  }
@@ -824,7 +853,7 @@ export class IrcPiBot implements ChannelDelegate {
   if (isChannel(room) && !this.#joins.has(room)) throw new PublicError("scheduleChannel");
   if (request.action === "list") return this.#durableStore.listSchedules(room);
   const active = this.#delivery.currentMessage(room);
-  if (!human && request.action === "create" && (active?.peer || active?.id.startsWith("schedule/"))) throw new PublicError("scheduleOrigin");
+  if (!human && request.action === "create" && (active?.peer || active?.id.startsWith("schedule/") || (active && this.#durableStore.goals.isRun(active.id)))) throw new PublicError("scheduleOrigin");
   const {room: _room, requestId, ...input} = request;
   const operationId = createHash("sha256").update(`${room}:${requestId}`).digest("hex");
   try {
