@@ -485,7 +485,9 @@ Classic extension sessions retain their existing remote-discovery behavior.
 The complete MIT-licensed pi-goal-x v0.32.3 source is preserved under
 vendor/pi-goal-x with pinned provenance and an import-integrity regression test.
 The native durable adapter is opt-in: CUSE_DURABLE_IRC=true and
-CUSE_GOALS_ENABLED=true. Use ,goal add :: objective, then ,goal start ID [steps].
+CUSE_GOALS_ENABLED=true. Use ,goal add :: objective, then
+,goal start ID [steps] [duration] (default 4 steps and 30m; maximum 200 steps
+and 3d).
 Pause/cancel revoke queued work; restart blocks goals until inspected and
 explicitly restarted. Completion needs human review/approve. The upstream
 ExtensionAPI and automatic auditor are not loaded. See docs/vendored-goals.md

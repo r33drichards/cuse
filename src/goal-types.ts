@@ -10,7 +10,7 @@ export interface Goal {
 export type GoalCommand =
  | { action: "add"; objective: string; ordered: boolean }
  | { action: "list" | "status"; id?: string }
- | { action: "start"; id: string; steps: number }
+ | { action: "start"; id: string; steps: number; durationMs?: number }
  | { action: "pause" | "cancel" | "approve"; id: string }
  | { action: "recover"; id: string; acknowledge: "inspected" };
 export type GoalUpdate =
@@ -19,7 +19,13 @@ export type GoalUpdate =
  | { action: "block"; reason: string }
  | { action: "submit" };
 export const MAX_GOAL_STEPS = 200;
-export const GOAL_USAGE = `Usage: ,goal add [ordered] :: objective | list | status [ID] | start ID [1-${MAX_GOAL_STEPS} steps, default 4] | pause/cancel/approve ID | recover ID inspected. Add is inert; start explicitly authorizes bounded continuation.`;
+export const MIN_GOAL_RUN_DURATION_MS = 60_000;
+export const DEFAULT_GOAL_RUN_DURATION_MS = 30 * MIN_GOAL_RUN_DURATION_MS;
+export const MAX_GOAL_RUN_DURATION_MS = 3 * 24 * 60 * MIN_GOAL_RUN_DURATION_MS;
+export function isGoalRunDuration(value:unknown):value is number {
+ return typeof value==="number"&&Number.isSafeInteger(value)&&value>=MIN_GOAL_RUN_DURATION_MS&&value<=MAX_GOAL_RUN_DURATION_MS&&value%MIN_GOAL_RUN_DURATION_MS===0;
+}
+export const GOAL_USAGE = `Usage: ,goal add [ordered] :: objective | list | status [ID] | start ID [1-${MAX_GOAL_STEPS} steps, default 4] [duration 1m-3d, m/h/d, default 30m] | pause/cancel/approve ID | recover ID inspected. Add is inert; start explicitly authorizes bounded continuation.`;
 export function parseGoalCommand(argument: string): GoalCommand | undefined {
  const value = argument.trim();
  if (!value || value === "list") return {action:"list"};
@@ -27,8 +33,13 @@ export function parseGoalCommand(argument: string): GoalCommand | undefined {
  if (add && add[2]!.trim().length <= 8000) return {action:"add",objective:add[2]!.trim(),ordered:!!add[1]};
  const status = /^status(?:\s+([a-zA-Z0-9_-]{1,80}))?$/.exec(value);
  if (status) return {action:"status",...(status[1] ? {id:status[1]} : {})};
- const start = /^start\s+([a-zA-Z0-9_-]{1,80})(?:\s+(\d+))?$/.exec(value);
- if (start) {const steps=Number(start[2]??4);if(Number.isInteger(steps)&&steps>=1&&steps<=MAX_GOAL_STEPS)return {action:"start",id:start[1]!,steps};}
+ const start = /^start\s+([a-zA-Z0-9_-]{1,80})(?:\s+(\d+))?(?:\s+(\d+)([mhd]))?$/.exec(value);
+ if (start) {
+  const steps=Number(start[2]??4);
+  const units={m:MIN_GOAL_RUN_DURATION_MS,h:60*MIN_GOAL_RUN_DURATION_MS,d:24*60*MIN_GOAL_RUN_DURATION_MS};
+  const durationMs=start[3]===undefined?undefined:Number(start[3])*units[start[4] as keyof typeof units];
+  if(Number.isInteger(steps)&&steps>=1&&steps<=MAX_GOAL_STEPS&&(durationMs===undefined||isGoalRunDuration(durationMs)))return {action:"start",id:start[1]!,steps,...(durationMs===undefined?{}:{durationMs})};
+ }
  const recovery=/^recover\s+([a-zA-Z0-9_-]{1,80})\s+inspected$/.exec(value);
  if(recovery)return {action:"recover",id:recovery[1]!,acknowledge:"inspected"};
  const control = /^(pause|cancel|approve)\s+([a-zA-Z0-9_-]{1,80})$/.exec(value);
@@ -60,5 +71,7 @@ export function taskOrder(tasks: GoalTask[]): GoalTask[] {
  const visit=(id:string)=>{for(const t of tasks.filter(t=>t.parent===id))visit(t.id);result.push(tasks.find(t=>t.id===id)!);};visit("objective");return result;
 }
 export function formatGoal(g:Goal):string {
- return `${g.id}: ${g.phase} · ${g.tasks.filter(t=>t.state==="done").length}/${g.tasks.length} tasks · ${g.stepsRemaining} steps, ${g.modelsRemaining} model requests, ${g.toolsRemaining} tools left · ${g.reason || g.objective.slice(0,100)}${g.recoveryRequired?" · outcome inspection required: ,goal recover "+g.id+" inspected":""}`;
+ const expiry=new Date(g.expiresAt);
+ const deadline=g.expiresAt>0&&Number.isFinite(expiry.getTime())?" · deadline "+expiry.toISOString():"";
+ return `${g.id}: ${g.phase} · ${g.tasks.filter(t=>t.state==="done").length}/${g.tasks.length} tasks · ${g.stepsRemaining} steps, ${g.modelsRemaining} model requests, ${g.toolsRemaining} tools left · ${g.reason || g.objective.slice(0,100)}${deadline}${g.recoveryRequired?" · outcome inspection required: ,goal recover "+g.id+" inspected":""}`;
 }
