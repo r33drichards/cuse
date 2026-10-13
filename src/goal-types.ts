@@ -18,7 +18,8 @@ export type GoalUpdate =
  | { action: "task"; id: string; state: GoalTask["state"]; evidence?: GoalEvidence[] }
  | { action: "block"; reason: string }
  | { action: "submit" };
-export const GOAL_USAGE = "Usage: ,goal add [ordered] :: objective | list | status [ID] | start ID [1-20 steps, default 4] | pause/cancel/approve ID | recover ID inspected. Add is inert; start explicitly authorizes bounded continuation.";
+export const MAX_GOAL_STEPS = 200;
+export const GOAL_USAGE = `Usage: ,goal add [ordered] :: objective | list | status [ID] | start ID [1-${MAX_GOAL_STEPS} steps, default 4] | pause/cancel/approve ID | recover ID inspected. Add is inert; start explicitly authorizes bounded continuation.`;
 export function parseGoalCommand(argument: string): GoalCommand | undefined {
  const value = argument.trim();
  if (!value || value === "list") return {action:"list"};
@@ -27,7 +28,7 @@ export function parseGoalCommand(argument: string): GoalCommand | undefined {
  const status = /^status(?:\s+([a-zA-Z0-9_-]{1,80}))?$/.exec(value);
  if (status) return {action:"status",...(status[1] ? {id:status[1]} : {})};
  const start = /^start\s+([a-zA-Z0-9_-]{1,80})(?:\s+(\d+))?$/.exec(value);
- if (start) {const steps=Number(start[2]??4);if(Number.isInteger(steps)&&steps>=1&&steps<=20)return {action:"start",id:start[1]!,steps};}
+ if (start) {const steps=Number(start[2]??4);if(Number.isInteger(steps)&&steps>=1&&steps<=MAX_GOAL_STEPS)return {action:"start",id:start[1]!,steps};}
  const recovery=/^recover\s+([a-zA-Z0-9_-]{1,80})\s+inspected$/.exec(value);
  if(recovery)return {action:"recover",id:recovery[1]!,acknowledge:"inspected"};
  const control = /^(pause|cancel|approve)\s+([a-zA-Z0-9_-]{1,80})$/.exec(value);

@@ -9,7 +9,7 @@ It does **not** load the upstream interactive ExtensionAPI or auditor.
 - ,goal add :: objective — creates an inert, paused goal.
 - ,goal add ordered :: objective — additionally enforces child-first task order.
 - ,goal list / status [ID] — inspect the channel-owned task/evidence ledger.
-- ,goal start ID [steps] — direct human approval for 1–20 continuation steps;
+- ,goal start ID [steps] — direct human approval for 1–200 continuation steps;
   default 4. A new grant replaces, never adds to, the prior remaining allowance.
 - ,goal pause ID / cancel ID — revoke queued and future work immediately.
   A dispatched remote action cannot be undone; inspect any uncertain outcome.
