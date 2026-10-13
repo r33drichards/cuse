@@ -136,6 +136,8 @@ export function desktopControlTool(delegate: ChannelDelegate, room: string): Age
   if (previous) return previous as any;
   if (await invocation.getMemo("desktop.dispatched")) return {content:[{type:"text",text:"Previous desktop control outcome unknown. Inspect status; do not repeat the mutation."}],details:{ambiguous:true}};
   if (input.action !== "status") await invocation.setMemo("desktop.dispatched", true);
+  // Awaited memos may yield to pause/cancel; recheck at lifecycle dispatch.
+  delegate.goalGuard?.(room,invocation.operationId,"check");
   const result = await delegate.desktopControl(room, input.action);
   const response = {content:[{type:"text" as const,text:JSON.stringify(result)}],details:result};
   await invocation.setMemo("desktop.result", JSON.parse(JSON.stringify(response)));

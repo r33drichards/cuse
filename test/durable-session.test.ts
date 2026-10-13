@@ -105,6 +105,14 @@ test("committed operation survives reopen without another provider request", asy
 			(await s.promptDurable("aborted-op", "cancel")).text,
 			/Operation failed/,
 		);
+        const fenced=await s.lane.accept({kind:"prompt",operationId:"fenced-current",prompt:"do not touch successor"},ctx);
+        assert.equal(fenced.ok,true);
+        await s.abortDurable("aborted-op");
+        assert.equal((await s.lane.inspectExecution(ctx)).current?.id,"fenced-current");
+        assert.equal((await s.lane.inspectExecution(ctx)).current?.status,"open");
+        await s.abortDurable("fenced-current");
+        assert.match((await s.promptDurable("fenced-current","do not touch successor")).text,/Operation failed/);
+        assert.equal(faux.state.callCount,2);
 		faux.setResponses([fauxAssistantMessage("after cancellation")]);
 		assert.equal(
 			(await s.promptDurable("after-abort", "next")).text,
@@ -268,4 +276,12 @@ test("dispatch memo prevents replay after process interruption", async () => {
 	);
 	assert.equal(calls, 1);
 	assert.match((result.content[0] as any).text, /outcome is unknown/);
+});
+
+test("remote dispatch rechecks revocation after awaited memo without replaying an unknown marker",async()=>{
+ let calls=0,revoked=false;const memo=new Map<string,unknown>();
+ const tool=guardTool({name:"run_js",label:"run_js",description:"fixture",parameters:{} as any,execute:async()=>{calls++;return{content:[],details:{}};}},op=>{assert.equal(op,"goal-op");if(revoked)throw Error("revoked");});
+ const invocation={operationId:"goal-op",getMemo:async(k:string)=>memo.get(k),setMemo:async(k:string,v:unknown)=>{memo.set(k,v);revoked=true;}};
+ await assert.rejects((tool.execute as any)("i",{},undefined,undefined,invocation,{}),/revoked/);assert.equal(calls,0);
+ assert.equal((await(tool.execute as any)("i",{},undefined,undefined,invocation,{})).details.ambiguous,true);assert.equal(calls,0);
 });
