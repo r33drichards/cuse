@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { PublicError } from "./public-error.ts";
-import { validateTasks, taskOrder, formatGoal, type Goal, type GoalCommand, type GoalUpdate } from "./goal-types.ts";
+import { MAX_GOAL_STEPS, validateTasks, taskOrder, formatGoal, type Goal, type GoalCommand, type GoalUpdate } from "./goal-types.ts";
 import type { InboxMessage } from "./durable-store.ts";
 
 /** Shares the delivery database AND transaction; it never drives a model or desktop. */
@@ -21,7 +21,7 @@ export class GoalLedger {
  list(channel?:string):Goal[]{
   const rows=channel===undefined?this.db.prepare("SELECT * FROM goals ORDER BY rowid LIMIT 257").all():this.db.prepare("SELECT * FROM goals WHERE channel=? ORDER BY rowid LIMIT 33").all(channel);
   if(rows.length>(channel===undefined?256:32))throw new PublicError("goalInvalid");
-  return rows.map(r=>{const g=JSON.parse(String(r.state_json)) as Goal;if(g.version!==1||g.id!==r.id||g.channel!==r.channel||!["active","paused","blocked","review","completed","cancelled"].includes(g.phase))throw new PublicError("goalInvalid");if(!g.objective?.trim()||g.objective.length>8000||typeof g.ordered!=="boolean"||!Number.isSafeInteger(g.stepsRemaining)||g.stepsRemaining<0||g.stepsRemaining>20||!Number.isSafeInteger(g.modelsRemaining)||g.modelsRemaining<0||g.modelsRemaining>160||!Number.isSafeInteger(g.toolsRemaining)||g.toolsRemaining<0||g.toolsRemaining>640||!Number.isSafeInteger(g.generation)||g.generation<0||!Number.isSafeInteger(g.sequence)||g.sequence<0||!Number.isSafeInteger(g.expiresAt))throw new PublicError("goalInvalid");if(g.recoveryRequired!==undefined&&typeof g.recoveryRequired!=="boolean")throw new PublicError("goalInvalid");validateTasks(g.tasks);return g;});
+  return rows.map(r=>{const g=JSON.parse(String(r.state_json)) as Goal;if(g.version!==1||g.id!==r.id||g.channel!==r.channel||!["active","paused","blocked","review","completed","cancelled"].includes(g.phase))throw new PublicError("goalInvalid");if(!g.objective?.trim()||g.objective.length>8000||typeof g.ordered!=="boolean"||!Number.isSafeInteger(g.stepsRemaining)||g.stepsRemaining<0||g.stepsRemaining>MAX_GOAL_STEPS||!Number.isSafeInteger(g.modelsRemaining)||g.modelsRemaining<0||g.modelsRemaining>MAX_GOAL_STEPS*8||!Number.isSafeInteger(g.toolsRemaining)||g.toolsRemaining<0||g.toolsRemaining>MAX_GOAL_STEPS*32||!Number.isSafeInteger(g.generation)||g.generation<0||!Number.isSafeInteger(g.sequence)||g.sequence<0||!Number.isSafeInteger(g.expiresAt))throw new PublicError("goalInvalid");if(g.recoveryRequired!==undefined&&typeof g.recoveryRequired!=="boolean")throw new PublicError("goalInvalid");validateTasks(g.tasks);return g;});
  }
  get(channel:string,id?:string):Goal {
   const rows=this.list(channel);const g=id?rows.find(g=>g.id===id):rows.at(-1);if(!g)throw new PublicError("goalInvalid");return g;
@@ -54,7 +54,7 @@ export class GoalLedger {
    }
    if(request.action==="start"){
     if(this.list(channel).some(goal=>goal.recoveryRequired))throw new PublicError("goalRecovery");
-    if(!["paused","blocked"].includes(g.phase)||!Number.isInteger(request.steps)||request.steps<1||request.steps>20)throw new PublicError("goalInvalid");
+    if(!["paused","blocked"].includes(g.phase)||!Number.isInteger(request.steps)||request.steps<1||request.steps>MAX_GOAL_STEPS)throw new PublicError("goalInvalid");
     if(this.list(channel).some(other=>other.id!==g.id&&other.phase==="active"))throw new PublicError("goalInvalid");
     if(this.db.prepare("SELECT 1 FROM inbox WHERE state!='completed' AND id IN (SELECT message_id FROM goal_runs WHERE goal_id=?) LIMIT 1").get(g.id))throw new PublicError("goalRecovery");
     g.phase="active";g.reason="Human-authorized bounded run";g.generation++;g.stepsRemaining=request.steps;g.modelsRemaining=request.steps*8;g.toolsRemaining=request.steps*32;g.expiresAt=now+30*60_000;
