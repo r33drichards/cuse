@@ -84,3 +84,9 @@ test("expired deadline blocks before provider/tool admission and persists denial
  const {store}=fixture(t);const m=start(store);const expiry=store.goals.get("#a","g1").expiresAt;t.mock.method(Date,"now",()=>expiry);
  assert.throws(()=>store.goals.spendModel("#a",m.id));assert.equal(store.goals.get("#a","g1").phase,"blocked");assert.equal(store.goals.get("#a","g1").modelsRemaining,32);assert.throws(()=>store.goals.spendTool("#a",m.id,"effect"));
 });
+
+test("session-unique invocation IDs are namespaced by operation across channels",t=>{
+ const {store}=fixture(t);const a=start(store);add(store,false,"#b","g2");store.goals.control("#b","human","r",{action:"start",id:"g2",steps:1});const b=store.claimNext("#b")!;
+ store.goals.spendTool("#a",a.id,"same-session-local-id");store.goals.spendTool("#b",b.id,"same-session-local-id");
+ store.goals.spendTool("#b",b.id,"same-session-local-id");assert.equal(store.goals.get("#a","g1").toolsRemaining,127);assert.equal(store.goals.get("#b","g2").toolsRemaining,31);
+});

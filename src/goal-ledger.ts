@@ -90,11 +90,12 @@ export class GoalLedger {
   this.check(channel,operationId);
   let denied=false;
   this.tx(()=>{const g=this.fromRun(channel,operationId);if(!g)return;
-   const receipt=this.db.prepare("SELECT operation_id FROM goal_tool_receipts WHERE id=?").get(invocationId);
+   const receiptId=JSON.stringify([operationId,invocationId]);
+   const receipt=this.db.prepare("SELECT operation_id FROM goal_tool_receipts WHERE id=?").get(receiptId);
    if(receipt){if(receipt.operation_id!==operationId)throw new PublicError("goalInvalid");return;}
    const run=this.db.prepare("SELECT tools_used FROM goal_runs WHERE message_id=?").get(operationId)!;
    if(g.toolsRemaining<=0||Number(run.tools_used)>=32){this.stop(g,"blocked","Tool allowance exhausted (maximum 32 per step)");denied=true;return;}
-   g.toolsRemaining--;this.save(g);this.db.prepare("UPDATE goal_runs SET tools_used=tools_used+1 WHERE message_id=?").run(operationId);this.db.prepare("INSERT INTO goal_tool_receipts VALUES(?,?)").run(invocationId,operationId);
+   g.toolsRemaining--;this.save(g);this.db.prepare("UPDATE goal_runs SET tools_used=tools_used+1 WHERE message_id=?").run(operationId);this.db.prepare("INSERT INTO goal_tool_receipts VALUES(?,?)").run(receiptId,operationId);
   });if(denied)throw new PublicError("goalStopped");
  }
  update(channel:string,operationId:string,input:GoalUpdate):Goal {
