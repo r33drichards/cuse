@@ -1,3 +1,4 @@
+import { toIrcLines } from "./format.ts";
 import { GoalLedger } from "./goal-ledger.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -173,6 +174,15 @@ export class DurableIrcStore {
 		return true;
 	}
 
+	/** Acceptance and visible handoffs must survive or roll back together. */
+	enqueueWithOutputs(message: InboxMessage, outputs: OutboxMessage[] = []): boolean {
+		return this.transaction(() => {
+			const added = this.enqueue(message);
+			if (added) for (const output of outputs) this.enqueueOutput(output);
+			return added;
+		});
+	}
+
 	listInbox(state?: InboxState): StoredInboxMessage[] {
 		const rows = state
 			? this.db
@@ -237,6 +247,13 @@ export class DurableIrcStore {
 				peer: { ...message.peer, kind: "answer", source: message.channel },
 			};
 			this.enqueue(answer);
+			for (const [index, line] of toIrcLines(resultText).entries()) {
+				this.enqueueOutput({
+					id: `${id}/peer-answer/${index}`,
+					channel: answer.channel,
+					text: `[agent reply ${message.channel} -> ${answer.channel}] ${line}`,
+				});
+			}
 			return answer;
 		});
 	}

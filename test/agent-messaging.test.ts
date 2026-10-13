@@ -285,3 +285,104 @@ test("agent question ancestry rejects revisits and a fifth channel", async () =>
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+function readOutbox(root: string) {
+	const db = new DatabaseSync(join(root, "delivery", "irc-delivery.sqlite"), {
+		readOnly: true,
+	});
+	try {
+		return db.prepare("SELECT channel, text FROM outbox ORDER BY sequence").all();
+	} finally {
+		db.close();
+	}
+}
+
+// Intentionally failing reproductions: private inbox routing already works,
+// but channel observers cannot see the cross-channel question/answer handoff.
+// Check semantic content and attribution, not a particular label or punctuation.
+test("queued agent question has visible durable notices while the peer is busy", async () => {
+	const root = mkdtempSync(join(tmpdir(), "cuse-agent-question-visibility-"));
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const calls: string[] = [];
+	const { bot, irc } = app(root, async (channel) =>
+		session(root, channel, async (_id, body) => {
+			calls.push(body);
+			if (body.includes("busy-work")) await gate;
+			return { text: "ACK", steered: false };
+		}),
+	);
+	try {
+		await bot.start();
+		irc.emit("registered", { nick: "cuse" });
+		await until(() => bot.joinedChannels.size === 5);
+		irc.emit("privmsg", { nick: "tester", target: "#cuse", message: "busy-work" });
+		await until(() => calls.length === 1);
+		const question = "Which channel owns the release checklist?";
+		const request = { room: "#cuse2", channel: "#cuse", question, requestId: "visible-question" };
+		const receipt = await bot.ask(request);
+		assert.equal(receipt.status, "queued");
+		assert.deepEqual(await bot.ask(request), receipt);
+		const queued = readInbox(root).filter((row) => row.id === receipt.requestId);
+		assert.equal(queued.length, 1, "the question was durably accepted exactly once");
+		assert.equal(queued[0].state, "pending", "peer remains busy, so the question cannot run yet");
+		assert.equal(calls.length, 1);
+
+		// A queued acknowledgment must not precede persistence of its visible
+		// handoff. Durable outbox inspection avoids transport/timer races and
+		// ensures reconnect can deliver the notice even while the peer is busy.
+		const outputs = readOutbox(root);
+		const notices = ["#cuse2", "#cuse"].map((channel) => ({
+			channel,
+			count: outputs.filter((row) => row.channel === channel &&
+				String(row.text).includes(question) &&
+				String(row.text).includes(channel === "#cuse" ? "#cuse2" : "#cuse")).length,
+		}));
+		assert.deepEqual(notices, [
+			{ channel: "#cuse2", count: 1 },
+			{ channel: "#cuse", count: 1 },
+		], "accepted agent question must be visible and attributed in both channels, without duplicate notices");
+	} finally {
+		release();
+		await bot.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("returned peer answer is visible in the source even when its agent only says ACK", async () => {
+	const root = mkdtempSync(join(tmpdir(), "cuse-agent-answer-visibility-"));
+	const answer = "The release checklist belongs to the platform channel.";
+	const calls: { channel: string; body: string }[] = [];
+	const { bot, irc } = app(root, async (channel) =>
+		session(root, channel, async (_id, body) => {
+			calls.push({ channel, body });
+			return { text: channel === "#cuse" ? answer : "ACK", steered: false };
+		}),
+	);
+	try {
+		await bot.start();
+		irc.emit("registered", { nick: "cuse" });
+		await until(() => bot.joinedChannels.size === 5);
+		const request = {
+			room: "#cuse2", channel: "#cuse",
+			question: "Who owns the release checklist?", requestId: "visible-answer",
+		};
+		const receipt = await bot.ask(request);
+		await until(() => calls.length === 2 && readInbox(root).every((row) => row.state === "completed"));
+		assert.equal(calls[1].channel, "#cuse2");
+		assert.ok(calls[1].body.includes(answer), "private reply reached the source agent");
+		assert.equal(readInbox(root).length, 2, "one question and one returned answer, no loop");
+		assert.deepEqual(await bot.ask(request), receipt);
+		const outputs = readOutbox(root);
+		assert.ok(outputs.some((row) => row.channel === "#cuse" && String(row.text).includes(answer)),
+			"ordinary destination final-answer output exists");
+		assert.ok(outputs.some((row) => row.channel === "#cuse2" && row.text === "ACK"),
+			"the source completed its reply turn successfully");
+		assert.equal(outputs.filter((row) => row.channel === "#cuse2" &&
+			String(row.text).includes(answer) && String(row.text).includes("#cuse")).length, 1,
+			"returned peer answer must have its own attributed source-channel notice, independent of the source model's response");
+	} finally {
+		await bot.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

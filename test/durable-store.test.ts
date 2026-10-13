@@ -162,7 +162,9 @@ test("peer metadata survives restart and question completion atomically creates 
 		store = new DurableIrcStore(dir);
 		assert.equal(store.enqueue(question), false);
 		assert.equal(store.listInbox().length, 2);
-		assert.equal(store.listOutbox().length, 1);
+		assert.equal(store.listOutbox().length, 2);
+		assert.equal(store.listOutbox()[1].channel, "#source");
+		assert.match(store.listOutbox()[1].text, /agent reply #test -> #source.*complete answer/);
 		assert.throws(() => store.complete(input.id, [output]), /not running/);
 		store.claimNext("#source");
 		store.complete("in/answer");
@@ -218,6 +220,33 @@ test("adds peer metadata column to existing delivery database without losing mes
 			},
 		});
 		assert.equal(store.listInbox()[1].peer?.kind, "question");
+	} finally {
+		store.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("visible acceptance is atomic, deduplicated and survives reconnect", () => {
+	const dir = mkdtempSync(join(tmpdir(), "cuse-visible-acceptance-"));
+	let store = new DurableIrcStore(dir);
+	const notice = { id: "in/notice", channel: "#test", text: "[agent question #source -> #test] hello" };
+	try {
+		store.enqueueOutput(notice);
+		assert.throws(() => store.enqueueWithOutputs(input, [{ ...notice, text: "collision" }]), /collision/);
+		assert.equal(store.listInbox().length, 0, "notice collision must not accept invisible work");
+		assert.equal(store.enqueueWithOutputs(input, [notice]), true);
+		assert.equal(store.enqueueWithOutputs(input, [notice]), false);
+		assert.equal(store.listOutbox().length, 1);
+		store.claimOutput();
+		store.close();
+		store = new DurableIrcStore(dir);
+		assert.equal(store.enqueueWithOutputs(input, [notice]), false);
+		assert.equal(store.listInbox().length, 1);
+		const recovered = store.claimOutput();
+		assert.equal(recovered?.id, notice.id);
+		assert.equal(recovered?.deliveryUncertain, true);
+		store.acknowledgeOutput(notice.id);
+		assert.equal(store.claimOutput(), undefined);
 	} finally {
 		store.close();
 		rmSync(dir, { recursive: true, force: true });
