@@ -29,6 +29,8 @@ import { filterModels } from "./session-commands.ts";
 import { ChannelSessionStore } from "./state.ts";
 import type { ChannelDelegate } from "./tools.ts";
 
+type GoalControlReceipt={goalControlVersion:1;result:Goal|Goal[];abortTarget?:{operationId:string;goalId:string;generation:number}};
+
 /** Structural session surface used by the transport; offline tests can implement it. */
 export type BotSession = Pick<ChannelSession,
 	"sessionId" | "sessionFile" | "busy" | "watch" | "prompt" | "abort" |
@@ -38,6 +40,8 @@ export type BotSession = Pick<ChannelSession,
  setThinkingLevel(level: Parameters<ChannelSession["setThinkingLevel"]>[0]): void | Promise<void>;
  cycleThinkingLevel(): ReturnType<ChannelSession["cycleThinkingLevel"]> | Promise<ReturnType<ChannelSession["cycleThinkingLevel"]>>;
  promptDurable?(id: string, body: string): Promise<{text: string; steered: boolean}>;
+ /** Abort only this durable operation; never fall back to aborting arbitrary current work. */
+ abortDurable?(operationId:string): Promise<void>;
  close?(): Promise<void>;
  suspend?(): Promise<void>;
 };
@@ -581,13 +585,25 @@ export class IrcPiBot implements ChannelDelegate {
 			case "goal": {
     if(!this.goalEnabled()||!this.#durableStore||!this.#delivery)throw new PublicError("goalUnavailable");
     if(command.request.action==="start"&&(!this.#store.get(room)?.desktopId||this.#store.get(room)?.desktopDeleted))throw new PublicError("goalDesktop");
-    const result=this.#durableStore.scheduleOperation("goal/control/"+room+"/"+commandId,JSON.stringify({request:command.request,sender}),()=>this.#durableStore!.goals.control(room,sender,createHash("sha256").update(room+":"+commandId).digest("hex").slice(0,24),command.request));
+    const request=command.request;
+    const receipt=this.#durableStore.receiptOperation<Goal|Goal[]|GoalControlReceipt>("goal/control/"+room+"/"+commandId,JSON.stringify({request,sender}),()=>{
+     let abortTarget:GoalControlReceipt["abortTarget"];
+     if(request.action==="pause"||request.action==="cancel"){
+      const prior=this.#durableStore!.goals.get(room,request.id);
+      const active=this.#delivery!.currentMessage(room);
+      const lineage=active?this.#durableStore!.goals.runIdentity(room,active.id):undefined;
+      if(prior.phase==="active"&&active&&lineage?.goalId===prior.id&&lineage.generation===prior.generation)
+       abortTarget={operationId:active.id,goalId:prior.id,generation:prior.generation};
+     }
+     const result=this.#durableStore!.goals.control(room,sender,createHash("sha256").update(room+":"+commandId).digest("hex").slice(0,24),request);
+     return {goalControlVersion:1,result,abortTarget};
+    });
+    // Legacy receipts contain a bare Goal/array. Both legacy and new replays are acknowledgements only.
+    const record=!Array.isArray(receipt.value)&&"goalControlVersion" in receipt.value?receipt.value:undefined;
+    const result=record?record.result:receipt.value as Goal|Goal[];
     this.say(room,Array.isArray(result)?(result.length?result.map(formatGoal):["No goals in this channel. Add is inert; start explicitly authorizes a bounded run."]):formatGoal(result));
-    if(command.request.action==="start")this.#delivery.resumePending(room);
-    if(command.request.action==="pause"||command.request.action==="cancel"){
-     const active=this.#delivery.currentMessage(room);
-     if(active&&this.#durableStore.goals.isRun(active.id))await this.#sessions.get(room)?.abort();
-    }
+    if(request.action==="start"&&!receipt.replayed)this.#delivery.resumePending(room);
+    if(!receipt.replayed&&record?.abortTarget)await this.#sessions.get(room)?.abortDurable?.(record.abortTarget.operationId);
     return;
    }
    case "schedule": {

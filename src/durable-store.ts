@@ -316,6 +316,11 @@ export class DurableIrcStore {
 		fingerprint: string,
 		operation: () => T,
 	): T {
+  return this.receiptOperation(requestId, fingerprint, operation).value;
+ }
+
+ /** Returns replay metadata without changing existing on-disk receipt format. */
+ receiptOperation<T>(requestId:string,fingerprint:string,operation:()=>T):{value:T;replayed:boolean} {
 		if (!requestId || !fingerprint)
 			throw new Error("Schedule operation requires ID and fingerprint");
 		return this.transaction(() => {
@@ -327,7 +332,7 @@ export class DurableIrcStore {
 			if (receipt) {
 				if (receipt.fingerprint !== fingerprint)
 					throw new Error("Schedule operation ID collision");
-				return JSON.parse(String(receipt.result_json)).value as T;
+				return {value:JSON.parse(String(receipt.result_json)).value as T,replayed:true};
 			}
 			const result = operation();
 			const encoded = JSON.stringify({ value: result });
@@ -338,7 +343,7 @@ export class DurableIrcStore {
 					"INSERT INTO schedule_receipts(id,fingerprint,result_json) VALUES(?,?,?)",
 				)
 				.run(requestId, fingerprint, encoded);
-			return result;
+			return {value:result,replayed:false};
 		});
 	}
 

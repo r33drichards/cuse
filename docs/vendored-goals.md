@@ -78,3 +78,7 @@ AgentHarness/SQLite integration tests use a faux provider (not a live paid model
 to verify request-boundary caps, prepared-tool cancellation, progress submission
 and normal-turn isolation. Existing regressions, Node24 runtime/catalog smoke
 and Docker CI remain required before release.
+
+### Pause/cancel and replay fences
+
+Human pause/cancel records revocation and, if that goal owns the currently-running generation, its exact goal ID, generation and durable operation ID atomically with its receipt. Only a newly applied command may request that exact lane operation abort; replayed (including legacy) receipts acknowledge without aborting newer work. Pausing an inert or different goal never aborts the current goal. Remote and desktop-lifecycle tools recheck revocation after awaited dispatch memos, immediately before invoking the remote function. Once a provider request or remote function has already been invoked, pause cannot undo costs/effects or guarantee that the remote server has stopped; inspect any uncertain result before starting again. Dispatched/uncertain memos remain fail-closed, even when the final admission check prevents dispatch.

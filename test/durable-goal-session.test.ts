@@ -76,3 +76,11 @@ test("goals cannot escape model allowances by delegating peers or resuming/delet
  await list.execute("c",{action:"list"},()=>{},undefined,{operationId:"goal/g/1/1",invocationId:"list"} as any,ctx);assert.equal(effects,1);
  isGoal=false;await list.execute("c",{action:"resume"},()=>{},undefined,{operationId:"human",invocationId:"resume"} as any,ctx);assert.equal(effects,2);
 });
+
+for(const name of ["run_js","desktop_control"])test("actual harness pause during async memo blocks "+name+" at dispatch",async t=>{
+ const f=await fixture(t);const m=f.start();const original=f.delegate.goalGuard;let revoked=false,lifecycle=0;
+ f.delegate.desktopControl=async()=>{lifecycle++;return {state:"stopped"};};
+ f.delegate.goalGuard=(room:string,id:string,kind:string,invocation:string)=>{const admitted=original(room,id,kind,invocation);if(kind==="tool"&&!revoked){revoked=true;queueMicrotask(()=>f.store.goals.control("#a","human","p",{action:"pause",id:"g1"}));}return admitted;};
+ f.faux.setResponses([fauxAssistantMessage([{type:"toolCall",id:"memo-race",name,arguments:name==="run_js"?{code:"console.log(1)"}:{action:"stop"}}],{stopReason:"toolUse"}),fauxAssistantMessage("must not call provider again")]);
+ await f.session.promptDurable(m.id,m.body);f.store.complete(m.id);assert.equal(revoked,true);assert.equal(f.external(),0);assert.equal(lifecycle,0);assert.equal(f.faux.state.callCount,1);assert.equal(f.store.goals.get("#a","g1").phase,"paused");
+});

@@ -131,5 +131,10 @@ export class GoalLedger {
   }
   return formatGoal(g);
  }
+ /** Trusted stored lineage, available after revocation for an exact abort target. */
+ runIdentity(channel:string,operationId:string):{goalId:string;generation:number}|undefined {
+  const row=this.db.prepare("SELECT r.goal_id,r.generation FROM goal_runs r JOIN goals g ON g.id=r.goal_id WHERE r.message_id=? AND g.channel=?").get(operationId,channel);
+  return row?{goalId:String(row.goal_id),generation:Number(row.generation)}:undefined;
+ }
  isRun(operationId:string):boolean{return !!this.db.prepare("SELECT 1 FROM goal_runs WHERE message_id=?").get(operationId);}
 }

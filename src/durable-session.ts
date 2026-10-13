@@ -60,6 +60,7 @@ const textOf = (content: unknown): string =>
 /** A durable dispatch marker deliberately prefers a missed action over duplicate side effects. */
 export function guardTool(
 	tool: AgentHarnessTool<undefined>,
+ beforeDispatch?: (operationId:string)=>void,
 ): AgentHarnessTool<undefined> {
 	return {
 		...tool,
@@ -71,6 +72,7 @@ export function guardTool(
 					details: { ambiguous: true },
 				};
 			await invocation.setMemo("cuse.dispatched", true);
+   beforeDispatch?.(invocation.operationId);
 			return tool.execute(id, params, update, context, invocation, callContext);
 		},
 	};
@@ -278,7 +280,7 @@ export class DurableChannelSession {
 								throw new Error(publicError(undefined));
 							}
 						},
-					}),
+					}, operationId=>deps.delegate.goalGuard?.(channel,operationId,"check")),
 				);
 			if (!tools.some((t) => t.name === "run_js"))
 				throw new Error("Desktop does not expose run_js");
@@ -480,6 +482,11 @@ export class DurableChannelSession {
 			if (!result.ok) throw result.error;
 		}
 	}
+ /** Atomically targets one operation; a settled/stale target never aborts its successor. */
+ async abortDurable(operationId:string):Promise<void> {
+  const result=await this.lane.requestAbort(operationId,ctx);
+  if(!result.ok&&result.error._tag!=="OperationMismatch")throw result.error;
+ }
 	async abort(): Promise<void> {
 		const result = await this.lane.abort(ctx);
 		if (!result.ok) throw result.error;
