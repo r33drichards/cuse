@@ -3,7 +3,7 @@ const GUIDANCE = {
  sessionBusy: "A turn is running; wait before manual compaction.",
  goalDelegation: "Goals cannot automate peer sends/questions or schedule mutations. Ask directly outside the goal; no additional model work was queued.",
  goalUnavailable: "Goals require CUSE_GOALS_ENABLED=true and CUSE_DURABLE_IRC=true.",
- goalInvalid: "Invalid goal, task/evidence, state or allowance. Use ,goal list/status. Start permits 1–200 steps; only one active goal per channel.",
+ goalInvalid: "Invalid goal, task/evidence, state or allowance. Use ,goal list/status. Start permits 1–200 steps and optional duration 1m–3d (m/h/d, default 30m); only one active goal per channel.",
  goalStopped: "Goal stopped, stale, expired or out of allowance. Inspect outcomes; only a direct human start can authorize further work.",
  goalRequestTimeout: "Goal request reached its bounded deadline. Tasks are saved; no automatic retry or allowance renewal occurred.",
  goalProviderAbort: "Goal provider stopped its request. Tasks are saved; no automatic retry or allowance renewal occurred.",
