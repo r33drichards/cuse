@@ -15,6 +15,7 @@ REQUIRED = (
     "format.ts", "fault-domain.ts", "join.ts", "irc-framework.d.ts", "run.ts",
     "computer-use.ts", "state.ts", "tools.ts", "main.ts", "model-selection.ts",
     "durable-session.ts", "durable-store.ts", "durable-delivery.ts",
+    "goal-types.ts", "goal-ledger.ts", "goal-tools.ts",
 )
 if not PI.is_relative_to((ROOT / ".runtime").resolve()):
     raise SystemExit("PI_SOURCE must be disposable under cuse/.runtime")

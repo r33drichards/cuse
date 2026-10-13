@@ -1,5 +1,13 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ sessionBusy: "A turn is running; wait before manual compaction.",
+ goalDelegation: "Goals cannot automate peer sends/questions or schedule mutations. Ask directly outside the goal; no additional model work was queued.",
+ goalUnavailable: "Goals require CUSE_GOALS_ENABLED=true and CUSE_DURABLE_IRC=true.",
+ goalInvalid: "Invalid goal, task/evidence, state or allowance. Use ,goal list/status. Start permits 1–20 steps; only one active goal per channel.",
+ goalStopped: "Goal stopped, stale, expired or out of allowance. Inspect outcomes; only a direct human start can authorize further work.",
+ goalRecovery: "A previous goal step needs recovery. Inspect unknown outcomes and reconcile the saved queue before starting again.",
+ goalOrigin: "Goal updates require the matching active goal continuation. Peers, schedules and ordinary turns cannot start or update a goal.",
+ goalDesktop: "Goals need this channel’s existing desktop. Send a normal prompt first; goals never create desktops.",
  desktopCreateRejected: "Replacement creation was rejected; no desktop was created. The original desktop and queue state were restored. Check permissions or available capacity, then retry.",
  desktopCreateUncertain: "Replacement creation may still be in progress. No matching desktop is visible yet. Wait and repeat the same confirmed command, or ask the private administrator to inspect it; no second create will be sent.",
  desktopOpening: "Desktop is still starting or temporarily unavailable. Your messages are saved; I will retry automatically.",

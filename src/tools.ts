@@ -7,6 +7,11 @@ import { defineTool, type ToolDefinition } from "../core/extensions/index.ts";
 import type { DesktopMcp, RemoteResult } from "./computer-use.ts";
 
 export interface ChannelDelegate {
+ goalEnabled?(): boolean;
+ goalRead?(room:string): unknown;
+ goalGuard?(room:string,operationId:string,kind:"check"|"model"|"tool",invocationId?:string): boolean;
+ goalUpdate?(room:string,operationId:string,requestId:string,input:import("./goal-types.ts").GoalUpdate): unknown;
+ goalBlock?(room:string,operationId:string): boolean;
  desktopControl?(room: string, action: string): Promise<unknown>;
  schedule?(request: ScheduleRequest & { room: string; requestId: string }): Promise<unknown>;
  listAgents?(room: string): { channel: string; busy: boolean }[];

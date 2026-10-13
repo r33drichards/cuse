@@ -1,3 +1,4 @@
+import { GoalLedger } from "./goal-ledger.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -72,6 +73,7 @@ export interface StoredOutboxMessage extends OutboxMessage {
  * A separate database holds the lock so inbox writes can still commit normally.
  */
 export class DurableIrcStore {
+	readonly goals: GoalLedger;
 	private readonly owner: DatabaseSync;
 	private readonly db: DatabaseSync;
 	private closed = false;
@@ -129,6 +131,7 @@ export class DurableIrcStore {
 				) {
 					this.db.exec("ALTER TABLE inbox ADD COLUMN peer_json TEXT");
 				}
+                this.goals = new GoalLedger(this.db, operation => this.transaction(operation), message => this.enqueue(message));
 			} catch (error) {
 				this.db.close();
 				throw error;
@@ -223,6 +226,8 @@ export class DurableIrcStore {
 			const message = this.listInbox().find((input) => input.id === id);
 			this.transition(id, "running", "completed");
 			for (const output of outputs) this.enqueueOutput(output);
+            const goalNotice = this.goals.finish(message!);
+            if (goalNotice) this.enqueueOutput({id: id + "/goal-status", channel: message!.channel, text: goalNotice.slice(0,380)});
 			if (message?.peer?.kind !== "question") return undefined;
 			const answer: InboxMessage = {
 				id: `${id}/answer`,
