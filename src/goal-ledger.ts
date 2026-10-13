@@ -13,12 +13,15 @@ export class GoalLedger {
   this.db=db;this.tx=tx;this.enqueue=enqueue;
   db.exec("CREATE TABLE IF NOT EXISTS goals(id TEXT PRIMARY KEY,channel TEXT NOT NULL,state_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS goal_runs(message_id TEXT PRIMARY KEY,goal_id TEXT NOT NULL,generation INTEGER NOT NULL,models_used INTEGER NOT NULL DEFAULT 0,tools_used INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS goal_tool_receipts(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL);");
   for(const column of ["models_used","tools_used"])if(!db.prepare("PRAGMA table_info(goal_runs)").all().some(row=>row.name===column))db.exec("ALTER TABLE goal_runs ADD COLUMN "+column+" INTEGER NOT NULL DEFAULT 0");
-  this.tx(()=>{for(const g of this.list())if(g.phase==="active")this.stop(g,"blocked","Restart interrupted a goal. Inspect unknown outcomes before explicitly starting again.");});
+  this.tx(()=>{for(const g of this.list()){
+   if(this.db.prepare("SELECT 1 FROM inbox WHERE state IN ('running','recovery-required') AND id IN (SELECT message_id FROM goal_runs WHERE goal_id=?) LIMIT 1").get(g.id)){g.recoveryRequired=true;this.save(g);}
+   if(g.phase==="active")this.stop(g,"blocked","Restart interrupted a goal. Inspect unknown outcomes before explicitly starting again.");
+  }});
  }
  list(channel?:string):Goal[]{
   const rows=channel===undefined?this.db.prepare("SELECT * FROM goals ORDER BY rowid LIMIT 257").all():this.db.prepare("SELECT * FROM goals WHERE channel=? ORDER BY rowid LIMIT 33").all(channel);
   if(rows.length>(channel===undefined?256:32))throw new PublicError("goalInvalid");
-  return rows.map(r=>{const g=JSON.parse(String(r.state_json)) as Goal;if(g.version!==1||g.id!==r.id||g.channel!==r.channel||!["active","paused","blocked","review","completed","cancelled"].includes(g.phase))throw new PublicError("goalInvalid");if(!g.objective?.trim()||g.objective.length>8000||typeof g.ordered!=="boolean"||!Number.isSafeInteger(g.stepsRemaining)||g.stepsRemaining<0||g.stepsRemaining>20||!Number.isSafeInteger(g.modelsRemaining)||g.modelsRemaining<0||g.modelsRemaining>160||!Number.isSafeInteger(g.toolsRemaining)||g.toolsRemaining<0||g.toolsRemaining>640||!Number.isSafeInteger(g.generation)||g.generation<0||!Number.isSafeInteger(g.sequence)||g.sequence<0||!Number.isSafeInteger(g.expiresAt))throw new PublicError("goalInvalid");validateTasks(g.tasks);return g;});
+  return rows.map(r=>{const g=JSON.parse(String(r.state_json)) as Goal;if(g.version!==1||g.id!==r.id||g.channel!==r.channel||!["active","paused","blocked","review","completed","cancelled"].includes(g.phase))throw new PublicError("goalInvalid");if(!g.objective?.trim()||g.objective.length>8000||typeof g.ordered!=="boolean"||!Number.isSafeInteger(g.stepsRemaining)||g.stepsRemaining<0||g.stepsRemaining>20||!Number.isSafeInteger(g.modelsRemaining)||g.modelsRemaining<0||g.modelsRemaining>160||!Number.isSafeInteger(g.toolsRemaining)||g.toolsRemaining<0||g.toolsRemaining>640||!Number.isSafeInteger(g.generation)||g.generation<0||!Number.isSafeInteger(g.sequence)||g.sequence<0||!Number.isSafeInteger(g.expiresAt))throw new PublicError("goalInvalid");if(g.recoveryRequired!==undefined&&typeof g.recoveryRequired!=="boolean")throw new PublicError("goalInvalid");validateTasks(g.tasks);return g;});
  }
  get(channel:string,id?:string):Goal {
   const rows=this.list(channel);const g=id?rows.find(g=>g.id===id):rows.at(-1);if(!g)throw new PublicError("goalInvalid");return g;
@@ -44,7 +47,13 @@ export class GoalLedger {
     this.db.prepare("INSERT INTO goals VALUES(?,?,?)").run(id,channel,JSON.stringify(g));return g;
    }
    const g=this.get(channel,request.id);
+   if(request.action==="recover"){
+    if(request.acknowledge!=="inspected"||g.phase==="active")throw new PublicError("goalInvalid");
+    if(this.db.prepare("SELECT 1 FROM inbox WHERE state!='completed' AND id IN (SELECT message_id FROM goal_runs WHERE goal_id=?) LIMIT 1").get(g.id))throw new PublicError("goalRecovery");
+    g.recoveryRequired=false;g.reason="Outcome inspection acknowledged by human; no work started or allowance renewed";this.save(g);return g;
+   }
    if(request.action==="start"){
+    if(this.list(channel).some(goal=>goal.recoveryRequired))throw new PublicError("goalRecovery");
     if(!["paused","blocked"].includes(g.phase)||!Number.isInteger(request.steps)||request.steps<1||request.steps>20)throw new PublicError("goalInvalid");
     if(this.list(channel).some(other=>other.id!==g.id&&other.phase==="active"))throw new PublicError("goalInvalid");
     if(this.db.prepare("SELECT 1 FROM inbox WHERE state!='completed' AND id IN (SELECT message_id FROM goal_runs WHERE goal_id=?) LIMIT 1").get(g.id))throw new PublicError("goalRecovery");
@@ -52,6 +61,7 @@ export class GoalLedger {
     this.queue(g);return g;
    }
    if(request.action==="approve"){
+    if(g.recoveryRequired)throw new PublicError("goalRecovery");
     if(g.phase!=="review"||g.tasks.some(t=>t.state!=="done"))throw new PublicError("goalInvalid");
     this.stop(g,"completed","Completion accepted by human "+sender+"; evidence references are reports, not automatic certification");return g;
    }
@@ -118,6 +128,10 @@ export class GoalLedger {
    } else throw new PublicError("goalInvalid");
    g.reportedRun=operationId;this.save(g);return g;
   });
+ }
+ quarantineRun(channel:string,operationId:string):boolean {
+  return this.tx(()=>{const run=this.runIdentity(channel,operationId);if(!run)return false;const g=this.get(channel,run.goalId);g.recoveryRequired=true;
+   if(g.phase!=="cancelled"&&g.phase!=="completed")this.stop(g,"blocked","Execution fault; inspect unknown outcomes before human recovery acknowledgement");else this.save(g);return true;});
  }
  blockRun(channel:string,operationId:string):void {
   this.tx(()=>{const run=this.db.prepare("SELECT * FROM goal_runs WHERE message_id=?").get(operationId);if(!run)return;const g=this.list(channel).find(g=>g.id===run.goal_id);if(g?.phase==="active"&&g.generation===Number(run.generation))this.stop(g,"blocked","Tool/model failed or was interrupted; inspect outcomes before explicit start");});

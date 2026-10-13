@@ -12,7 +12,7 @@ import {DefaultResourceLoader} from "../.runtime/pi/packages/coding-agent/src/co
 import {BACKGROUND_CONTEXT as ctx} from "../.runtime/pi/packages/agent/src/index.ts";
 async function fixture(t:any){
  const dir=mkdtempSync(join(tmpdir(),"cuse-goal-harness-"));let store=new DurableIrcStore(join(dir,"delivery"));const faux=fauxProvider();const models=createModels();models.setProvider(faux.provider);const runtime=Object.create(models);runtime.getAvailable=async()=>[faux.getModel()];let external=0;
- const delegate:any={send:async()=>{},goalEnabled:()=>true,goalRead:(room:string)=>store.goals.list(room),goalGuard:(room:string,id:string,kind:string,invocation:string)=>{if(!store.goals.isRun(id))return false;if(kind==="model")return store.goals.spendModel(room,id);if(kind==="tool")store.goals.spendTool(room,id,invocation);else store.goals.check(room,id);return true;},goalUpdate:(room:string,id:string,requestId:string,input:any)=>store.scheduleOperation("goal/update/"+requestId,JSON.stringify({id,input}),()=>store.goals.update(room,id,input)),goalBlock:(room:string,id:string)=>{if(!store.goals.isRun(id))return false;store.goals.blockRun(room,id);return true;}};
+ const delegate:any={send:async()=>{},goalEnabled:()=>true,goalRead:(room:string)=>store.goals.list(room),goalGuard:(room:string,id:string,kind:string,invocation:string)=>{if(!store.goals.isRun(id))return false;if(kind==="model")return store.goals.spendModel(room,id);if(kind==="tool")store.goals.spendTool(room,id,invocation);else store.goals.check(room,id);return true;},goalUpdate:(room:string,id:string,requestId:string,input:any)=>store.scheduleOperation("goal/update/"+requestId,JSON.stringify({id,input}),()=>store.goals.update(room,id,input)),goalFault:(room:string,id:string)=>store.goals.quarantineRun(room,id),goalBlock:(room:string,id:string)=>{if(!store.goals.isRun(id))return false;store.goals.blockRun(room,id);return true;}};
  const deps:any={cwd:dir,agentDir:dir,sessionDir:join(dir,"sessions"),modelRuntime:runtime,delegate,log:()=>{},desktop:{call:async()=>{external++;return {content:[{type:"text",text:"fixture external action"}]};}},createResources:async()=>{const settingsManager=SettingsManager.inMemory({defaultProvider:faux.getModel().provider,defaultModel:faux.getModel().id});const resourceLoader=new DefaultResourceLoader({cwd:dir,agentDir:dir,settingsManager,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true});await resourceLoader.reload();return {settingsManager,resourceLoader};}};
  let session=await DurableChannelSession.open("#a",deps);t.after(async()=>{await session.close();store.close();rmSync(dir,{recursive:true,force:true});});
  const start=()=>{store.goals.control("#a","human","g1",{action:"add",ordered:true,objective:"Test fixtures only"});store.goals.control("#a","human","r",{action:"start",id:"g1",steps:2});return store.claimNext("#a")!;};
@@ -50,7 +50,7 @@ test("tool immediate guard blocks a pause race after the hook; invocation identi
 test("model proxy preserves receiver, normal options, and enforces goal request caps/deadline options",async()=>{
  const calls:any[]=[];const models:any={streamSimple(...args:any[]){assert.equal(this,models);calls.push(args);return "stream";},getAvailable(){assert.equal(this,models);return [];} };let isGoal=false;
  const proxy=goalModels(models,{send:async()=>{},goalGuard:()=>isGoal},"#a",()=>"op");const original={maxTokens:2000,maxRetries:3,timeoutMs:2000};proxy.streamSimple({} as any,{} as any,original);assert.equal(calls[0][2],original);
- isGoal=true;proxy.streamSimple({} as any,{} as any,{maxTokens:9000,maxRetries:8,timeoutMs:120000});assert.ok(calls[1][2].signal instanceof AbortSignal);const {signal,...limited}=calls[1][2];assert.deepEqual(limited,{maxTokens:4096,maxRetries:0,timeoutMs:60000,transport:"sse",deferred:false});proxy.getAvailable();
+ isGoal=true;proxy.streamSimple({} as any,{} as any,{maxTokens:9000,maxRetries:8,timeoutMs:900000});assert.ok(calls[1][2].signal instanceof AbortSignal);const {signal,...limited}=calls[1][2];assert.deepEqual(limited,{maxTokens:4096,maxRetries:0,timeoutMs:300000,transport:"sse",deferred:false});proxy.getAvailable();
  const unknown=goalModels(models,{send:async()=>{}},"#a",()=>"");assert.equal((await unknown.streamSimple({} as any,{} as any).result()).stopReason,"error");assert.equal(calls.length,2);
 });
 
@@ -83,4 +83,45 @@ for(const name of ["run_js","desktop_control"])test("actual harness pause during
  f.delegate.goalGuard=(room:string,id:string,kind:string,invocation:string)=>{const admitted=original(room,id,kind,invocation);if(kind==="tool"&&!revoked){revoked=true;queueMicrotask(()=>f.store.goals.control("#a","human","p",{action:"pause",id:"g1"}));}return admitted;};
  f.faux.setResponses([fauxAssistantMessage([{type:"toolCall",id:"memo-race",name,arguments:name==="run_js"?{code:"console.log(1)"}:{action:"stop"}}],{stopReason:"toolUse"}),fauxAssistantMessage("must not call provider again")]);
  await f.session.promptDurable(m.id,m.body);f.store.complete(m.id);assert.equal(revoked,true);assert.equal(f.external(),0);assert.equal(lifecycle,0);assert.equal(f.faux.state.callCount,1);assert.equal(f.store.goals.get("#a","g1").phase,"paused");
+});
+
+test("provider-level aborted request must not strand goal delivery in recovery",async t=>{
+ const f=await fixture(t);const m=f.start();f.faux.setResponses([fauxAssistantMessage("",{stopReason:"aborted",errorMessage:"Request was aborted"})]);
+ await f.session.promptDurable(m.id,m.body);f.store.complete(m.id);assert.equal(f.store.goals.get("#a","g1").phase,"blocked");assert.equal(f.faux.state.callCount,1);assert.equal(f.external(),0);
+});
+
+test("legacy provider-abort fault can be cancelled on reopen without paid calls or replay, but human inspection remains required",async t=>{
+ const f=await fixture(t);const m=f.start();const original=f.delegate.goalGuard;
+ // Simulate the old adapter: charged request but no normalization of provider abort.
+ f.delegate.goalGuard=(room:string,id:string,kind:string,invocation:string)=>{const v=original(room,id,kind,invocation);return kind==="model"?false:v;};
+ f.faux.setResponses([fauxAssistantMessage("",{stopReason:"aborted",errorMessage:"Request was aborted"})]);
+ await assert.rejects(f.session.promptDurable(m.id,m.body));assert.equal(f.store.goals.get("#a","g1").recoveryRequired,true);
+ f.store.markRecoveryRequired(m.id);f.delegate.goalGuard=original;await f.reopen();
+ const before=f.faux.state.callCount;f.store.retry(m.id);assert.equal(f.store.claimNext("#a")?.id,m.id);await f.session.promptDurable(m.id,m.body);f.store.complete(m.id);
+ assert.equal(f.faux.state.callCount,before);assert.equal(f.external(),0);assert.equal((await f.session.lane.inspectExecution(ctx)).current,null);
+ assert.throws(()=>f.store.goals.control("#a","human","r",{action:"start",id:"g1",steps:1}),/Inspect unknown outcomes/);
+ const old=f.store.goals.get("#a","g1");f.store.receiptOperation("recover-once","inspected",()=>f.store.goals.control("#a","human","r",{action:"recover",id:"g1",acknowledge:"inspected"}));const now=f.store.goals.get("#a","g1");
+ assert.equal(now.recoveryRequired,false);assert.equal(now.modelsRemaining,old.modelsRemaining);assert.equal(now.toolsRemaining,old.toolsRemaining);assert.equal(now.phase,"blocked");assert.equal(f.store.listInbox("pending").length,0);
+ f.store.goals.quarantineRun("#a",m.id);const replay=f.store.receiptOperation("recover-once","inspected",()=>f.store.goals.control("#a","human","r",{action:"recover",id:"g1",acknowledge:"inspected"}));assert.equal(replay.replayed,true);assert.equal(f.store.goals.get("#a","g1").recoveryRequired,true);
+ f.store.goals.control("#a","human","g2",{action:"add",objective:"Inert second goal",ordered:false});assert.throws(()=>f.store.goals.control("#a","human","r",{action:"start",id:"g2",steps:1}),/Inspect unknown outcomes/);
+});
+test("request deadline is a normal failure while true caller cancellation stays aborted",async()=>{
+ const faux=fauxProvider();const models=createModels();models.setProvider(faux.provider);const proxy=goalModels(models,{send:async()=>{},goalGuard:()=>true},"#a",()=>"goal-op",5);
+ faux.setResponses([async(_context,options)=>{await new Promise<void>(resolve=>{const keepAlive=setTimeout(resolve,100);const done=()=>{clearTimeout(keepAlive);resolve();};if(options?.signal?.aborted)done();else options?.signal?.addEventListener("abort",done,{once:true});});return fauxAssistantMessage("",{stopReason:"aborted",errorMessage:"provider secret must not leak"});}]);
+ const deadline=await proxy.streamSimple(faux.getModel(),{messages:[]}).result();assert.equal(deadline.stopReason,"error");assert.match(deadline.errorMessage??"",/timed out/);assert.ok(!deadline.errorMessage?.includes("secret"));
+ const caller=new AbortController();let began!:()=>void;const ready=new Promise<void>(r=>{began=r;});
+ faux.setResponses([async(_context,options)=>{began();await new Promise<void>(resolve=>options?.signal?.addEventListener("abort",()=>resolve(),{once:true}));return fauxAssistantMessage("",{stopReason:"aborted"});}]);
+ const cancelProxy=goalModels(models,{send:async()=>{},goalGuard:()=>true},"#a",()=>"goal-op",1000);const running=cancelProxy.streamSimple(faux.getModel(),{messages:[]},{signal:caller.signal});await ready;caller.abort();const cancelled=await running.result();assert.equal(cancelled.stopReason,"aborted");
+});
+
+test("durable diagnostics emit fixed classifications without invoking hostile getters or leaking messages",async()=>{
+ const {durableDiagnostic}=await import("../.runtime/pi/packages/coding-agent/src/cuse/durable-diagnostic.ts");
+ const e=new Error("password=must-not-leak");e.name="HarnessFault";Object.defineProperty(e,"cause",{value:new Error("Assistant response is aborted while durable control is running")});assert.equal(durableDiagnostic(e),"provider-abort-control-mismatch");
+ const hostile={};Object.defineProperty(hostile,"name",{get(){throw Error("secret");}});assert.equal(durableDiagnostic(hostile),"unclassified");assert.equal(durableDiagnostic(new Error("token=hidden")),"unclassified");
+});
+
+test("aborted partial tool calls are recorded as failed responses, never dispatched",async t=>{
+ const f=await fixture(t);const m=f.start();f.faux.setResponses([fauxAssistantMessage([{type:"toolCall",id:"unfinished",name:"run_js",arguments:{code:"forbidden fixture effect"}}],{stopReason:"aborted"})]);
+ await f.session.promptDurable(m.id,m.body);f.store.complete(m.id);assert.equal(f.external(),0);assert.equal(f.faux.state.callCount,1);assert.equal(f.store.goals.get("#a","g1").phase,"blocked");
+ const {parseGoalCommand}=await import("../src/goal-types.ts");assert.equal(parseGoalCommand("recover g1"),undefined);assert.deepEqual(parseGoalCommand("recover g1 inspected"),{action:"recover",id:"g1",acknowledge:"inspected"});
 });

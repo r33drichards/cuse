@@ -5,19 +5,20 @@ export interface Goal {
  version: 1; id: string; channel: string; sender: string; objective: string; ordered: boolean;
  phase: GoalPhase; reason: string; generation: number; sequence: number; stepsRemaining: number;
  modelsRemaining: number; toolsRemaining: number; expiresAt: number; createdAt: number;
- tasks: GoalTask[]; reportedRun?: string;
+ tasks: GoalTask[]; reportedRun?: string; recoveryRequired?: boolean;
 }
 export type GoalCommand =
  | { action: "add"; objective: string; ordered: boolean }
  | { action: "list" | "status"; id?: string }
  | { action: "start"; id: string; steps: number }
- | { action: "pause" | "cancel" | "approve"; id: string };
+ | { action: "pause" | "cancel" | "approve"; id: string }
+ | { action: "recover"; id: string; acknowledge: "inspected" };
 export type GoalUpdate =
  | { action: "plan"; tasks: { id: string; title: string; parent?: string }[] }
  | { action: "task"; id: string; state: GoalTask["state"]; evidence?: GoalEvidence[] }
  | { action: "block"; reason: string }
  | { action: "submit" };
-export const GOAL_USAGE = "Usage: ,goal add [ordered] :: objective | list | status [ID] | start ID [1-20 steps, default 4] | pause/cancel/approve ID. Add is inert; start explicitly authorizes bounded continuation.";
+export const GOAL_USAGE = "Usage: ,goal add [ordered] :: objective | list | status [ID] | start ID [1-20 steps, default 4] | pause/cancel/approve ID | recover ID inspected. Add is inert; start explicitly authorizes bounded continuation.";
 export function parseGoalCommand(argument: string): GoalCommand | undefined {
  const value = argument.trim();
  if (!value || value === "list") return {action:"list"};
@@ -27,6 +28,8 @@ export function parseGoalCommand(argument: string): GoalCommand | undefined {
  if (status) return {action:"status",...(status[1] ? {id:status[1]} : {})};
  const start = /^start\s+([a-zA-Z0-9_-]{1,80})(?:\s+(\d+))?$/.exec(value);
  if (start) {const steps=Number(start[2]??4);if(Number.isInteger(steps)&&steps>=1&&steps<=20)return {action:"start",id:start[1]!,steps};}
+ const recovery=/^recover\s+([a-zA-Z0-9_-]{1,80})\s+inspected$/.exec(value);
+ if(recovery)return {action:"recover",id:recovery[1]!,acknowledge:"inspected"};
  const control = /^(pause|cancel|approve)\s+([a-zA-Z0-9_-]{1,80})$/.exec(value);
  return control ? {action:control[1] as "pause"|"cancel"|"approve",id:control[2]!} : undefined;
 }
@@ -56,5 +59,5 @@ export function taskOrder(tasks: GoalTask[]): GoalTask[] {
  const visit=(id:string)=>{for(const t of tasks.filter(t=>t.parent===id))visit(t.id);result.push(tasks.find(t=>t.id===id)!);};visit("objective");return result;
 }
 export function formatGoal(g:Goal):string {
- return `${g.id}: ${g.phase} · ${g.tasks.filter(t=>t.state==="done").length}/${g.tasks.length} tasks · ${g.stepsRemaining} steps, ${g.modelsRemaining} model requests, ${g.toolsRemaining} tools left · ${g.reason || g.objective.slice(0,100)}`;
+ return `${g.id}: ${g.phase} · ${g.tasks.filter(t=>t.state==="done").length}/${g.tasks.length} tasks · ${g.stepsRemaining} steps, ${g.modelsRemaining} model requests, ${g.toolsRemaining} tools left · ${g.reason || g.objective.slice(0,100)}${g.recoveryRequired?" · outcome inspection required: ,goal recover "+g.id+" inspected":""}`;
 }

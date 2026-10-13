@@ -25,7 +25,7 @@ Goals share the exclusive-owner delivery SQLite database. Allowance consumption,
 step acceptance, progress receipts, inbox completion and continuation/outbox
 commit are atomic. Each grant expires after 30 minutes and permits at most
 8 provider requests and 32 tool invocations per step; provider requests have
-a requested maxTokens=4096 limit, a separate 60-second AbortSignal, no internal
+a requested maxTokens=4096 limit, a separate 5-minute AbortSignal (shorter caller deadlines are preserved), no internal
 retry/deferred execution and SSE transport (no WebSocket fallback). Token limits
 are provider-dependent: the vendored Codex API does not honor maxTokens, so
 4096 is NOT a guaranteed output cap there. Persisted request/tool counts and
@@ -82,3 +82,11 @@ and Docker CI remain required before release.
 ### Pause/cancel and replay fences
 
 Human pause/cancel records revocation and, if that goal owns the currently-running generation, its exact goal ID, generation and durable operation ID atomically with its receipt. Only a newly applied command may request that exact lane operation abort; replayed (including legacy) receipts acknowledge without aborting newer work. Pausing an inert or different goal never aborts the current goal. Remote and desktop-lifecycle tools recheck revocation after awaited dispatch memos, immediately before invoking the remote function. Once a provider request or remote function has already been invoked, pause cannot undo costs/effects or guarantee that the remote server has stopped; inspect any uncertain result before starting again. Dispatched/uncertain memos remain fail-closed, even when the final admission check prevents dispatch.
+
+### Provider deadlines and recovery acknowledgement
+
+A provider abort/timeout while durable lane control is still running is normalized to a failed request, not misrepresented as a lane cancellation. Real caller/lane cancellation remains aborted. No automatic model retry or allowance refund is added. Goal requests have a maximum5-minute deadline; the30-minute future-admission grant and8 requests/32 tools perstep are unchanged.
+
+On restart/fault, a revoked goal lane is cancelled by its exact stored operation ID before settlement; no provider/tool action is replayed. Interrupted inbox/lane state is preserved until settlement. The goal retains recoveryRequired even after the lane settles. A direct human who has inspected uncertain outcomes uses `,goal recover ID inspected`; this only acknowledges inspection, never starts work, renews allowances, or marks tasks done. Then a separate human `,goal start ID [steps]` can grant new work. Receipt replay cannot acknowledge a later uncertainty. Until inspection, leave the goal blocked.
+
+Service diagnostics emit fixed codes (e.g.provider-abort-control-mismatch, harness-fault) rather than arbitrary error messages/stack/cause, tool arguments or secrets. Native/faux proofs do not certify live provider/remote effects.

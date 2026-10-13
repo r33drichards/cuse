@@ -36,7 +36,7 @@ export type IrcCommand = ControlCommand | SessionCommandAction;
 export const COMMAND_PREFIX = ",";
 
 const CONTROL_COMMANDS = [
- { usage: "goal …", description: "durable goal/task tree: add, start ID [steps], status/list, pause, cancel, approve; add is inert, start has finite model/tool allowances" },
+ { usage: "goal …", description: "durable goal/task tree: add, start ID [steps], status/list, pause, cancel, approve, recover ID inspected; recovery only acknowledges human inspection, add is inert, start has finite model/tool allowances" },
  { usage: "schedule …", description: "schedule durable prompts: list, every, once, cron, pause, resume, delete; timezone defaults to UTC" },
  { usage: "toggle mention", description: "toggle requiring a mention in this channel; saved across restarts" },
  { usage: "fork [#a,#b]", description: "copy conversation + independent disk snapshot; cold-start child, no live process clone or merge (currently unsupported)" },

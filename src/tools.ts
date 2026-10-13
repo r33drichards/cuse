@@ -12,6 +12,7 @@ export interface ChannelDelegate {
  goalGuard?(room:string,operationId:string,kind:"check"|"model"|"tool",invocationId?:string): boolean;
  goalUpdate?(room:string,operationId:string,requestId:string,input:import("./goal-types.ts").GoalUpdate): unknown;
  goalBlock?(room:string,operationId:string): boolean;
+ goalFault?(room:string,operationId:string): boolean;
  desktopControl?(room: string, action: string): Promise<unknown>;
  schedule?(request: ScheduleRequest & { room: string; requestId: string }): Promise<unknown>;
  listAgents?(room: string): { channel: string; busy: boolean }[];
