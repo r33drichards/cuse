@@ -1,4 +1,5 @@
-import { createGoalTools, goalModels, guardGoalTool } from "./goal-tools.ts";
+import { durableDiagnostic } from "./durable-diagnostic.ts";
+import { createGoalTools, goalModels, guardGoalTool, GOAL_TIMEOUT_MESSAGE, GOAL_PROVIDER_ABORT_MESSAGE } from "./goal-tools.ts";
 import { DESKTOP_TOOL_MANIFEST } from "./desktop-tool-manifest.ts";
 /** Durable IRC adapter. The host must hold exclusive ownership of sessionDir. */
 import { isDeepStrictEqual } from "node:util";
@@ -92,6 +93,7 @@ export class DurableChannelSession {
 	private thinking: ThinkingLevel;
  private readonly goalScope: {operationId:string};
  private readonly goalDelegate: ChannelSessionDeps["delegate"];
+ private readonly log:(line:string)=>void;
 	private constructor(
 		channel: string,
 		sessionId: string,
@@ -104,6 +106,7 @@ export class DurableChannelSession {
 		thinking: ThinkingLevel,
   goalScope: {operationId:string},
   goalDelegate: ChannelSessionDeps["delegate"],
+  log:(line:string)=>void,
 	) {
 		this.channel = channel;
 		this.sessionId = sessionId;
@@ -114,7 +117,7 @@ export class DurableChannelSession {
 		this.repo = repo;
 		this.model = model;
 		this.thinking = thinking;
-  this.goalScope=goalScope;this.goalDelegate=goalDelegate;
+  this.goalScope=goalScope;this.goalDelegate=goalDelegate;this.log=log;
 		harness.events.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
 			const lines = toIrcLines(
@@ -367,7 +370,7 @@ export class DurableChannelSession {
 				repo,
 				restored,
 				await lane.getThinkingLevel(ctx),
-    goalScope, deps.delegate,
+    goalScope, deps.delegate, deps.log,
 			);
 		} catch (error) {
 			await harness?.close(ctx);
@@ -383,6 +386,14 @@ export class DurableChannelSession {
 	get busy(): boolean {
 		return this.#depth > 0;
 	}
+ /** A stopped goal may only be cancelled by its exact persisted operation ID. */
+ private revokedGoal(operationId:string):boolean {
+  try{this.goalDelegate.goalGuard?.(this.channel,operationId,"check");return false;}
+  catch(error){if(publicError(error)===publicError(new PublicError("goalStopped")))return true;throw error;}
+ }
+ private async cancelRevokedGoal(operationId:string):Promise<void> {
+  if(this.revokedGoal(operationId))await this.abortDurable(operationId);
+ }
 	async promptDurable(
 		operationId: string,
 		body: string,
@@ -394,6 +405,7 @@ export class DurableChannelSession {
 				const state = await this.lane.inspectExecution(ctx);
 				if (state.current && state.current.id !== operationId) {
 					this.goalScope.operationId=state.current.id;
+                    await this.cancelRevokedGoal(state.current.id);
                     const recovered = await this.lane.drive(
 						{
 							operationId: state.current.id,
@@ -409,6 +421,7 @@ export class DurableChannelSession {
 						);
 				}
 				if (!state.current || state.current.id !== operationId) {
+                    if(this.revokedGoal(operationId))return {text:publicError(new PublicError("goalRecovery")),steered:false};
 					const accepted = await this.lane.accept(
 						{ kind: "prompt", operationId, prompt: body },
 						ctx,
@@ -416,6 +429,7 @@ export class DurableChannelSession {
 					if (!accepted.ok) throw accepted.error;
 				}
 				this.goalScope.operationId=operationId;
+                await this.cancelRevokedGoal(operationId);
                 const driven = await this.lane.drive(
 					{ operationId, waitForRetry: true, pollDeferred: true },
 					ctx,
@@ -425,9 +439,13 @@ export class DurableChannelSession {
 					throw new Error("Durable operation is waiting and must be resumed");
 				result = driven.value.outcome;
 			}
+			const failedEntry=result.tipId?await this.store.getEntry(result.tipId,ctx):undefined;
 			if (result.status === "failed" || result.status === "aborted") {
                 this.goalDelegate.goalBlock?.(this.channel,operationId);
-                return { text: publicError(undefined), steered: false };
+                const marker=failedEntry?.type==="message"&&failedEntry.message.role==="assistant"?failedEntry.message.errorMessage:undefined;
+                const code=marker===GOAL_TIMEOUT_MESSAGE?"goalRequestTimeout":marker===GOAL_PROVIDER_ABORT_MESSAGE?"goalProviderAbort":"generic";
+                if(code!=="generic")this.log("IRC: goal request failure in "+this.channel+": "+code);
+                return { text: publicError(new PublicError(code)), steered: false };
             }
 			const entry = result.tipId
 				? await this.store.getEntry(result.tipId, ctx)
@@ -442,6 +460,10 @@ export class DurableChannelSession {
 						: "",
 				steered: false,
 			};
+		} catch(error) {
+            this.log("IRC: durable diagnostic in "+this.channel+": "+durableDiagnostic(error));
+            if(this.goalDelegate.goalFault?.(this.channel,this.goalScope.operationId))throw new PublicError("goalRecovery");
+            throw error;
 		} finally {
 			this.#depth--;
 		}
@@ -471,6 +493,7 @@ export class DurableChannelSession {
 		const state = await this.lane.inspectExecution(ctx);
 		if (state.current) {
             this.goalScope.operationId=state.current.id;
+            await this.cancelRevokedGoal(state.current.id);
 			const result = await this.lane.drive(
 				{
 					operationId: state.current.id,

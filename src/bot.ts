@@ -169,7 +169,15 @@ export class IrcPiBot implements ChannelDelegate {
    open: async (channel) => {
     const session = await this.#sessionFor(channel);
     if (!session.promptDurable) throw new Error("Durable queue requires durable session adapter");
-    return {promptDurable: (id, body) => session.promptDurable!(id, body), abort: () => session.suspend ? session.suspend() : session.abort()};
+    return {promptDurable: async (id, body) => {
+     try{return await session.promptDurable!(id, body);}catch(error){
+      if(publicError(error)===publicError(new PublicError("goalRecovery"))){
+       if(this.#sessions.get(channel)===session)this.#sessions.delete(channel);
+       await session.close?.(); // Release only the faulted adapter; persisted identity/queue remain.
+      }
+      throw error;
+     }
+    }, abort: () => session.suspend ? session.suspend() : session.abort()};
    },
    canDeliver: (channel) => this.#connected && (!isChannel(channel) || this.#joins.has(channel)),
    deliver: async (channel, text) => {
@@ -858,6 +866,7 @@ export class IrcPiBot implements ChannelDelegate {
   this.goalGuard(room,operationId,"check");
   return this.#durableStore!.scheduleOperation("goal/update/"+room+"/"+requestId,JSON.stringify({operationId,input}),()=>this.#durableStore!.goals.update(room.toLowerCase(),operationId,input));
  }
+ goalFault(room:string,operationId:string):boolean{return this.#durableStore?.goals.quarantineRun(room.toLowerCase(),operationId)??false;}
  goalBlock(room:string,operationId:string):boolean {const ledger=this.#durableStore?.goals;if(!ledger?.isRun(operationId))return false;ledger.blockRun(room.toLowerCase(),operationId);return true;}
  async schedule(request: ScheduleRequest & {room: string; requestId: string}): Promise<unknown> {
   return this.#schedule(request, false);
