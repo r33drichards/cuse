@@ -19,7 +19,7 @@ import type { ChannelSession, ChannelSessionDeps, OpenChannelSession } from "./c
 import { HELP_LINES, type IrcCommand, isChannel, mentionText, parseCommand } from "./commands.ts";
 import { ComputerUseClient, DesktopMcp, DesktopCreateRejectedError, isTransientDesktopDiscoveryError, type Desktop } from "./computer-use.ts";
 import { PublicError, publicError, isDesktopOpenUnavailable, DesktopOpenUnavailableError } from "./public-error.ts";
-import { framePrompt } from "./format.ts";
+import { framePrompt, toIrcLines } from "./format.ts";
 import { JoinTracker } from "./join.ts";
 import { DurableIrcStore, type StoredSchedule } from "./durable-store.ts";
 import { DurableDelivery } from "./durable-delivery.ts";
@@ -936,7 +936,10 @@ export class IrcPiBot implements ChannelDelegate {
   if (ancestry.includes(target) || ancestry.length >= 4) throw new PublicError("agentLoop");
   this.#delivery.enqueue({id, channel: target, sender: source, body: question, peer: {
    kind: "question", source, rootId: active?.peer?.rootId ?? active?.id ?? id, ancestry: [...ancestry, target],
-  }});
+  }}, [source, target].flatMap(channel => toIrcLines(request.question).map((line, index) => ({
+   id: `${id}/peer-question/${channel}/${index}`, channel,
+   text: `[agent question ${source} -> ${target}] ${line}`,
+  }))));
   return {requestId: id, channel: target, status: "queued"};
  }
 

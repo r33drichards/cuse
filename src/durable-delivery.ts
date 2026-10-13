@@ -1,5 +1,5 @@
 import { isDesktopOpenUnavailable } from "./public-error.ts";
-import type { DurableIrcStore, InboxMessage } from "./durable-store.js";
+import type { DurableIrcStore, InboxMessage, OutboxMessage } from "./durable-store.js";
 import { toIrcLines } from "./format.js";
 
 export interface DurablePromptSession {
@@ -53,9 +53,11 @@ export class DurableDelivery {
 	}
 
 	/** Persistence completes synchronously before the caller may acknowledge acceptance. */
-	enqueue(message: InboxMessage): boolean {
+	enqueue(message: InboxMessage, outputs: OutboxMessage[] = []): boolean {
 		if (this.closing) throw new Error("Durable IRC delivery is closing");
-		const added = this.store.enqueue(message);
+		const added = this.store.enqueueWithOutputs(message, outputs);
+		// Outbox draining must not wait for a busy destination to finish its turn.
+		if (added && outputs.length) void this.drainOutputs();
 		this.kick(message.channel);
 		return added;
 	}

@@ -386,3 +386,30 @@ test("pause during own turn prevents next queued message from starting", async t
  gate.resolve();await controller.startChannel(message.channel);
  assert.equal(calls,1);assert.equal(store.listInbox().find(x=>x.id==="two")?.state,"pending");
 });
+
+test("accepted handoff drains while the destination is busy and replays do not duplicate it", async (t) => {
+	const started = deferred<void>();
+	const release = deferred<{ text: string; steered: boolean }>();
+	const delivered = deferred<void>();
+	const sent: string[] = [];
+	const { controller, store } = setup(t, {
+		open: async () => ({
+			promptDurable: async (id) => {
+				if (id === "busy") { started.resolve(); return release.promise; }
+				return { text: "done", steered: false };
+			},
+			abort: async () => { release.resolve({ text: "released", steered: false }); },
+		}),
+		deliver: async (_channel, text) => { sent.push(text); delivered.resolve(); },
+	});
+	controller.enqueue({ ...message, id: "busy" });
+	await started.promise;
+	const notice = { id: "one/notice", channel: "#test", text: "[agent question #source -> #test] work" };
+	assert.equal(controller.enqueue(message, [notice]), true);
+	await delivered.promise;
+	assert.deepEqual(sent, [notice.text]);
+	assert.equal(store.listInbox().find((row) => row.id === "one")?.state, "pending");
+	assert.equal(controller.enqueue(message, [notice]), false);
+	await controller.drainOutputs();
+	assert.deepEqual(sent, [notice.text]);
+});
