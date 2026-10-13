@@ -42,7 +42,8 @@ export function goalModels(models:Models,delegate:ChannelDelegate,room:string,op
 /** Recheck immediately before execution, including safe replay; hook checks alone have an async gap. */
 export function guardGoalTool(tool:AgentHarnessTool<undefined>,delegate:ChannelDelegate,room:string):AgentHarnessTool<undefined> {
  return {...tool,async execute(id,params,update,context,invocation,callContext){
-  delegate.goalGuard?.(room,invocation.operationId,"tool",invocation.invocationId);
+  const isGoal=delegate.goalGuard?.(room,invocation.operationId,"tool",invocation.invocationId);
+  if(isGoal && (["agent_ask","irc_send"].includes(tool.name)||(tool.name==="schedule_prompt"&&(params as {action?:string}).action!=="list")))throw new PublicError("goalDelegation");
   return tool.execute(id,params,update,context,invocation,callContext);
  }};
 }

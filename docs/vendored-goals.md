@@ -36,7 +36,9 @@ Normal human/peer/schedule turns retain their existing runtime behavior.
 
 New goal steps use the existing serial durable queue and the channel's existing
 desktop only. Goals cannot implicitly create a desktop, start another goal,
-grant themselves more allowance, or create schedules. No host filesystem/shell
+grant themselves more allowance, send peer messages/questions, or mutate
+schedules. Peer automation is excluded so goals cannot indirectly spawn model
+work outside their persisted allowance; schedule listing remains read-only. No host filesystem/shell
 tools or new model/provider fallback are enabled. Tools bind the actual persisted
 operation and invocation identities, not a user-controlled prompt prefix.
 Admission checks run again at actual model/tool boundaries, including recovery.

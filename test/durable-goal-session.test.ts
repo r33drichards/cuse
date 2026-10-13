@@ -64,3 +64,15 @@ test("actual interrupted goal recovery cannot borrow a newer human message's aut
  const reply=await f.session.promptDurable("new-human-inspect","Inspect the prior uncertain action, do not repeat it.");
  assert.match(reply.text,/Ordinary human inspection/);assert.equal(effects,1);assert.equal(f.faux.state.callCount,2);assert.equal(f.store.goals.get("#a","g1").phase,"blocked");
 });
+
+test("goals cannot escape model allowances by delegating peers or resuming/deleting schedules; normal human turns unchanged",async()=>{
+ let effects=0;let isGoal=true;const delegate={send:async()=>{},goalGuard:()=>isGoal};
+ for(const [name,params] of [["agent_ask",{}],["irc_send",{}],["schedule_prompt",{action:"create"}],["schedule_prompt",{action:"resume"}],["schedule_prompt",{action:"delete"}]]){
+  const tool=guardGoalTool({name:name as string,label:"fixture",description:"fixture",parameters:{} as any,execute:async()=>{effects++;return {content:[],details:{}};}},delegate,"#a");
+  await assert.rejects(tool.execute("c",params as any,()=>{},undefined,{operationId:"goal/g/1/1",invocationId:"stable"} as any,ctx));
+  assert.equal(effects,0);
+ }
+ const list=guardGoalTool({name:"schedule_prompt",label:"fixture",description:"fixture",parameters:{} as any,execute:async()=>{effects++;return {content:[],details:{}};}},delegate,"#a");
+ await list.execute("c",{action:"list"},()=>{},undefined,{operationId:"goal/g/1/1",invocationId:"list"} as any,ctx);assert.equal(effects,1);
+ isGoal=false;await list.execute("c",{action:"resume"},()=>{},undefined,{operationId:"human",invocationId:"resume"} as any,ctx);assert.equal(effects,2);
+});

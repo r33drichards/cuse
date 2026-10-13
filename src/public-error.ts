@@ -1,6 +1,7 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
  sessionBusy: "A turn is running; wait before manual compaction.",
+ goalDelegation: "Goals cannot automate peer sends/questions or schedule mutations. Ask directly outside the goal; no additional model work was queued.",
  goalUnavailable: "Goals require CUSE_GOALS_ENABLED=true and CUSE_DURABLE_IRC=true.",
  goalInvalid: "Invalid goal, task/evidence, state or allowance. Use ,goal list/status. Start permits 1–20 steps; only one active goal per channel.",
  goalStopped: "Goal stopped, stale, expired or out of allowance. Inspect outcomes; only a direct human start can authorize further work.",
