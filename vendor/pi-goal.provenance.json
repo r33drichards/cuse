@@ -1,0 +1,93 @@
+{
+  "repository": "https://github.com/Michaelliv/pi-goal",
+  "commit": "3f100be5434454d3388755a119d01caca9127c16",
+  "tag": "v0.1.7",
+  "version": "0.1.7",
+  "license": "MIT",
+  "files": [
+    {
+      "path": ".github/workflows/release.yml",
+      "gitBlob": "046597940e0ea41959e332a42d3639398c529bce",
+      "sha256": "4da4f56c3af172b2728d33d8a4daa8bae39c270f74006417e4728434da916f1e"
+    },
+    {
+      "path": ".gitignore",
+      "gitBlob": "274c48dc283d338b1c665a9b05068f80ee600b7f",
+      "sha256": "1a3d9fdb1cc0b6fd5889be2567c21791eaf1ad79802d2af5e831e2fce42e9cbf"
+    },
+    {
+      "path": ".pi/extensions/pi-goal/goal-state.ts",
+      "gitBlob": "5213087ee2f61acba320a56081b93e6aa84aaefd",
+      "sha256": "1f671e4e95947df42fdda7734b5a91c1c5665f8b5e78176f79a842ae54abb7b3"
+    },
+    {
+      "path": ".pi/extensions/pi-goal/index.ts",
+      "gitBlob": "148a79dcab7b212d22e305119fbef9a0eb5b15ea",
+      "sha256": "66eb8f896134cd5c4a2f04a1016ba285a9e193e47aa921558a9fe17285aece1f"
+    },
+    {
+      "path": ".pi/extensions/pi-goal/usage.ts",
+      "gitBlob": "29f1e3b668124ea4a54e901a2fbde0ea9dc3fe9a",
+      "sha256": "afcd41e916608a7573c66e94523dde4ed5f68698e136fcdc0546aea50959fbeb"
+    },
+    {
+      "path": "LICENSE",
+      "gitBlob": "d6728b46da5ebf7f6eeb800add4598baa39f2b00",
+      "sha256": "c0a992d41b009a2c7a367002d80fedb0efff1292e0b8956526e0279d75ad09ee"
+    },
+    {
+      "path": "README.md",
+      "gitBlob": "a7fb11a7241e0f936e538e394d721e3456888012",
+      "sha256": "ba3da04db000a2d4ba3200461198bcbed5c64cd69829db185bdff9b44df82841"
+    },
+    {
+      "path": "docs/assets/pi-goal-poster.png",
+      "gitBlob": "abee0cff71f6d8870ca8b95fd6d9e039027071f2",
+      "sha256": "fac2010fe493c78fc0a814661b7e94b4c8edfcf338ce7bb87d4e4c677fe8301c"
+    },
+    {
+      "path": "docs/assets/pi-goal-poster.tsx",
+      "gitBlob": "63009102e7e125f856a2abd071946e7de0914be2",
+      "sha256": "e77cdd95773d90bfe6228b688f2d83b6e023e29b340365505b783e38d2d4ffc3"
+    },
+    {
+      "path": "package.json",
+      "gitBlob": "04edf1ee97fb34c840c5190bf2174ac07231b860",
+      "sha256": "bc5b8e603aa6565262310321a3e95a6635730240bc48b747a1c40b2f688a0c49"
+    },
+    {
+      "path": "skills/pi-goal-writer/SKILL.md",
+      "gitBlob": "dcb8dc07a2f471b6b491ceab73c743347e2101fe",
+      "sha256": "afa8688bd765f9fcd988bc05a7ba20f7e281e9fb58f420513180be8d04b0645c"
+    },
+    {
+      "path": "test/continuation-contract.test.cjs",
+      "gitBlob": "6ae957dc1060184ca07bbeee3acf7723ce9e5187",
+      "sha256": "5ba2471791df25975d96a2d955ec44b813a1a3650aefb97c948ad4758b5c0ddd"
+    },
+    {
+      "path": "test/goal-state.test.cjs",
+      "gitBlob": "790e4ea1117487bd511a4ea8f7f132c154a7cc20",
+      "sha256": "d56e8e92cea6f03f1523eb64b148c13c30acbf51f3746ab27f8a8c15984d1198"
+    },
+    {
+      "path": "test/source-contract.test.cjs",
+      "gitBlob": "f82bbb2d046ceb8d4972049647b70f4067981bf3",
+      "sha256": "ac34e58a5e61555215ec3dc6af9aa81eab931c718de40e6b0f2381d9f67daccf"
+    },
+    {
+      "path": "test/usage.test.cjs",
+      "gitBlob": "52090e5961c4be00245f2c78aa30b882f9ab0e4b",
+      "sha256": "61b02be79ca1670c0fac9ed27ccf59753311bdf23d21808d28beb566eebfdf48"
+    }
+  ],
+  "runtimeCustomizations": [
+    {
+      "path": "src/pi-goal-upstream/skills/pi-goal-writer/SKILL.md",
+      "upstreamPath": "skills/pi-goal-writer/SKILL.md",
+      "upstreamSha256": "afa8688bd765f9fcd988bc05a7ba20f7e281e9fb58f420513180be8d04b0645c",
+      "sha256": "74c0a813c1c0cc65db8d9a6a60fd8102041fe700e5a3cf93146492b792f111b1",
+      "reason": "User-requested cuse IRC workflow: create, read and update mutable per-channel MCPJS /data/memory goal files; use stable short references and reread current contents."
+    }
+  ]
+}

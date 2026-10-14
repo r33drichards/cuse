@@ -1,5 +1,6 @@
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import type { ScheduleRequest } from "./schedule-commands.ts";
+import type { PiGoalDelegate } from "./pi-goal.ts";
 import { PublicError } from "./public-error.ts";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type TSchema, Type } from "typebox";
@@ -7,12 +8,7 @@ import { defineTool, type ToolDefinition } from "../core/extensions/index.ts";
 import type { DesktopMcp, RemoteResult } from "./computer-use.ts";
 
 export interface ChannelDelegate {
- goalEnabled?(): boolean;
- goalRead?(room:string): unknown;
- goalGuard?(room:string,operationId:string,kind:"check"|"model"|"tool",invocationId?:string): boolean;
- goalUpdate?(room:string,operationId:string,requestId:string,input:import("./goal-types.ts").GoalUpdate): unknown;
- goalBlock?(room:string,operationId:string): boolean;
- goalFault?(room:string,operationId:string): boolean;
+ piGoal?(room: string): PiGoalDelegate | undefined;
  desktopControl?(room: string, action: string): Promise<unknown>;
  schedule?(request: ScheduleRequest & { room: string; requestId: string }): Promise<unknown>;
  listAgents?(room: string): { channel: string; busy: boolean }[];
@@ -137,8 +133,6 @@ export function desktopControlTool(delegate: ChannelDelegate, room: string): Age
   if (previous) return previous as any;
   if (await invocation.getMemo("desktop.dispatched")) return {content:[{type:"text",text:"Previous desktop control outcome unknown. Inspect status; do not repeat the mutation."}],details:{ambiguous:true}};
   if (input.action !== "status") await invocation.setMemo("desktop.dispatched", true);
-  // Awaited memos may yield to pause/cancel; recheck at lifecycle dispatch.
-  delegate.goalGuard?.(room,invocation.operationId,"check");
   const result = await delegate.desktopControl(room, input.action);
   const response = {content:[{type:"text" as const,text:JSON.stringify(result)}],details:result};
   await invocation.setMemo("desktop.result", JSON.parse(JSON.stringify(response)));

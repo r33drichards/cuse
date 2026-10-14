@@ -142,11 +142,3 @@ test("host desktop controls bind room, reject extra privileges and receipt mutat
  assert.equal((await execute({action:"stop"})).details.ambiguous,true);
  assert.equal(calls.length,1);
 });
-
-test("desktop lifecycle rechecks revocation after asynchronous dispatch memos",async()=>{
- let calls=0,revoked=false;const memo=new Map<string,unknown>();
- const tool=createDurableAgentTools({send:async()=>{},goalGuard:(room,op,kind)=>{assert.equal(room,"#own");assert.equal(op,"goal-op");assert.equal(kind,"check");if(revoked)throw Error("revoked");return true;},desktopControl:async()=>{calls++;return{};}},"#own","sid").find(t=>t.name==="desktop_control")!;
- const invocation={operationId:"goal-op",getMemo:async(k:string)=>memo.get(k),setMemo:async(k:string,v:unknown)=>{memo.set(k,v);revoked=true;}};
- await assert.rejects((tool.execute as any)("i",{action:"stop"},undefined,undefined,invocation),/revoked/);assert.equal(calls,0);
- assert.equal((await(tool.execute as any)("i",{action:"stop"},undefined,undefined,invocation)).details.ambiguous,true);assert.equal(calls,0);
-});

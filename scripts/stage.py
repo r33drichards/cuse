@@ -7,5 +7,7 @@ if not pi.is_relative_to((root/'.runtime').resolve()):
     raise SystemExit('PI_SOURCE must be disposable under cuse/.runtime')
 dest=pi/'packages/coding-agent/src/cuse'
 dest.mkdir(parents=True,exist_ok=True)
-for source in (root/'src').glob('*.ts'): shutil.copyfile(source,dest/source.name)
+# Replace only disposable overlay output, so removed source cannot linger.
+shutil.rmtree(dest)
+shutil.copytree(root/'src', dest)
 print('Staged runtime in',dest)

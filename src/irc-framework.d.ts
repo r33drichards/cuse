@@ -35,6 +35,7 @@ declare module "irc-framework" {
 		connect(options: IrcConnectOptions): void;
 		join(channel: string, key?: string): void;
 		part(channel: string, message?: string): void;
+		setTopic(channel: string, topic: string): void;
 		say(target: string, message: string, tags?: Record<string, string>): void;
 		notice(target: string, message: string): void;
 		quit(message?: string): void;
@@ -47,6 +48,8 @@ declare module "irc-framework" {
 		on(event: "reconnecting", handler: (event: { attempt: number; max_retries: number; wait: number }) => void): this;
 		on(event: "socket close", handler: (error: unknown) => void): this;
 		on(event: "join", handler: (event: { channel: string; nick: string }) => void): this;
+		on(event: "topic", handler: (event: { channel: string; topic: string; nick?: string }) => void): this;
+		on(event: "server options", handler: (event: { options: Record<string, unknown> }) => void): this;
 		on(event: "part", handler: (event: { channel: string; nick: string; message?: string }) => void): this;
 		on(
 			event: "kick",

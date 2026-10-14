@@ -20,6 +20,7 @@ import {
 	createNodeSqliteFactory,
 } from "../.runtime/pi/packages/session-backends/sqlite-node/src/index.ts";
 import { BACKGROUND_CONTEXT as ctx } from "../.runtime/pi/packages/agent/src/index.ts";
+import { durableDiagnostic } from "../.runtime/pi/packages/coding-agent/src/cuse/durable-diagnostic.ts";
 
 test("committed operation survives reopen without another provider request", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "cuse-durable-"));
@@ -278,10 +279,14 @@ test("dispatch memo prevents replay after process interruption", async () => {
 	assert.match((result.content[0] as any).text, /outcome is unknown/);
 });
 
-test("remote dispatch rechecks revocation after awaited memo without replaying an unknown marker",async()=>{
- let calls=0,revoked=false;const memo=new Map<string,unknown>();
- const tool=guardTool({name:"run_js",label:"run_js",description:"fixture",parameters:{} as any,execute:async()=>{calls++;return{content:[],details:{}};}},op=>{assert.equal(op,"goal-op");if(revoked)throw Error("revoked");});
- const invocation={operationId:"goal-op",getMemo:async(k:string)=>memo.get(k),setMemo:async(k:string,v:unknown)=>{memo.set(k,v);revoked=true;}};
- await assert.rejects((tool.execute as any)("i",{},undefined,undefined,invocation,{}),/revoked/);assert.equal(calls,0);
- assert.equal((await(tool.execute as any)("i",{},undefined,undefined,invocation,{})).details.ambiguous,true);assert.equal(calls,0);
+
+test("durable diagnostics classify errors without leaking arbitrary messages", () => {
+ const error = new Error("password=must-not-leak");
+ error.name = "HarnessFault";
+ Object.defineProperty(error, "cause", {value: new Error("Assistant response is aborted while durable control is running")});
+ assert.equal(durableDiagnostic(error), "provider-abort-control-mismatch");
+ const hostile = {};
+ Object.defineProperty(hostile, "name", {get() {throw Error("secret");}});
+ assert.equal(durableDiagnostic(hostile), "unclassified");
+ assert.equal(durableDiagnostic(new Error("token=hidden")), "unclassified");
 });
