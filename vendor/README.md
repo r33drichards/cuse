@@ -15,16 +15,22 @@ Do not make maintained edits in `.runtime`. Docker builds copy this same tree.
 For a future upstream update, import a reviewed revision, preserve any cuse
 patches, update this provenance, and run the repository validation workflow.
 
-## pi-goal-x
+## pi-goal
 
-pi-goal-x/ contains the complete tracked upstream source tree from
-https://github.com/tmonk/pi-goal-x at 64c5ace87f3400c0b55ef87f2d2912167f53dbaa (v0.32.3).
-Its MIT license and copyright are preserved unchanged. Per-file Git blob and
-SHA-256 hashes are recorded in pi-goal-x.provenance.json. No submodule, npm
-source download, Git metadata, local state, or dependencies are included.
+`pi-goal/` is the complete, unchanged Michaelliv/pi-goal v0.1.7 tracked tree at
+`3f100be5434454d3388755a119d01caca9127c16`, imported with `git archive`.
+Repository: https://github.com/Michaelliv/pi-goal
+MIT license and copyright are preserved. `pi-goal.provenance.json` records each
+file's Git blob and SHA-256; packaging tests verify the exact 15-file snapshot.
 
-This is an unmodified upstream snapshot, NOT automatically loaded into cuse.
-It targets Pi 1.0-era APIs and interactive UI; cuse uses a separately pinned
-Pi runtime and headless, per-channel durable scheduling. Integration requires
-a reviewed adapter and tests rather than enabling the extension wholesale.
-Keep cuse adaptations outside the snapshot so updates stay auditable.
+The extension itself is not loaded into the durable harness. The explicit host
+port lives in `../src/pi-goal*.ts`: SQLite state/receipts and the durable inbox
+replace extension globals and microtasks. Two pure TypeScript helpers are copied
+byte-for-byte into `../src/pi-goal-upstream` for the runtime build, with an
+integrity check against this snapshot. The continuation and budget prompts are
+ported verbatim and checked too. See `../docs/pi-goal.md` for behavior differences.
+The runtime writer skill is intentionally customized for mutable MCPJS
+`/data/memory` goal files and short IRC references, as requested by the user.
+The pristine skill remains in this snapshot. `runtimeCustomizations` in the
+provenance manifest records original/local hashes and the purpose of this edit.
+There is no dependency install or source download at runtime.

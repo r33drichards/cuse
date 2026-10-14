@@ -1,5 +1,4 @@
 import { durableDiagnostic } from "./durable-diagnostic.ts";
-import { createGoalTools, goalModels, guardGoalTool, GOAL_TIMEOUT_MESSAGE, GOAL_PROVIDER_ABORT_MESSAGE } from "./goal-tools.ts";
 import { DESKTOP_TOOL_MANIFEST } from "./desktop-tool-manifest.ts";
 /** Durable IRC adapter. The host must hold exclusive ownership of sessionDir. */
 import { isDeepStrictEqual } from "node:util";
@@ -45,6 +44,9 @@ import {
 } from "./tools.ts";
 import { describeToolCall, describeToolResult, toIrcLines } from "./format.ts";
 import { PublicError, publicError } from "./public-error.ts";
+import { createPiGoalTools } from "./pi-goal-tools.ts";
+import type { GoalTurnSnapshot, PiGoalDelegate } from "./pi-goal.ts";
+import { budgetLimitPrompt, continuationPrompt } from "./pi-goal-prompts.ts";
 
 const ambiguous =
 	"The previous process stopped after dispatching this tool. Its outcome is unknown. Do not repeat the action; inspect the desktop or ask the user before retrying.";
@@ -61,7 +63,6 @@ const textOf = (content: unknown): string =>
 /** A durable dispatch marker deliberately prefers a missed action over duplicate side effects. */
 export function guardTool(
 	tool: AgentHarnessTool<undefined>,
- beforeDispatch?: (operationId:string)=>void,
 ): AgentHarnessTool<undefined> {
 	return {
 		...tool,
@@ -73,7 +74,6 @@ export function guardTool(
 					details: { ambiguous: true },
 				};
 			await invocation.setMemo("cuse.dispatched", true);
-   beforeDispatch?.(invocation.operationId);
 			return tool.execute(id, params, update, context, invocation, callContext);
 		},
 	};
@@ -91,9 +91,8 @@ export class DurableChannelSession {
 	readonly repo: SqliteSessionRepo;
 	private model: Model<Api>;
 	private thinking: ThinkingLevel;
- private readonly goalScope: {operationId:string};
- private readonly goalDelegate: ChannelSessionDeps["delegate"];
  private readonly log:(line:string)=>void;
+	private readonly goal: PiGoalDelegate | undefined;
 	private constructor(
 		channel: string,
 		sessionId: string,
@@ -104,9 +103,8 @@ export class DurableChannelSession {
 		repo: SqliteSessionRepo,
 		model: Model<Api>,
 		thinking: ThinkingLevel,
-  goalScope: {operationId:string},
-  goalDelegate: ChannelSessionDeps["delegate"],
   log:(line:string)=>void,
+		goal: PiGoalDelegate | undefined,
 	) {
 		this.channel = channel;
 		this.sessionId = sessionId;
@@ -117,7 +115,38 @@ export class DurableChannelSession {
 		this.repo = repo;
 		this.model = model;
 		this.thinking = thinking;
-  this.goalScope=goalScope;this.goalDelegate=goalDelegate;this.log=log;
+  this.log=log;
+		this.goal = goal;
+		if (goal) {
+			const requestGoals = new Map<string, GoalTurnSnapshot>();
+			// before_request precedes turn_start. Capture before later async hooks
+			// can replace the goal underneath this already-prepared request.
+			harness.hooks.on("before_request", (event) => {
+				if (event.step !== "assistant") return;
+				const current = goal.read();
+				requestGoals.set(event.runId, { goalId: current?.id ?? null, active: current?.status === "active" });
+				return undefined;
+			}, { id: "cuse.pi-goal.request" });
+			harness.hooks.on("transform_context", (event) => {
+				const current = goal.read();
+				const goalContext = !current ? "No persistent goal is set. Do not continue pursuing a cleared goal."
+					: current.status === "active" ? continuationPrompt(current)
+					: current.status === "budget_limited" ? budgetLimitPrompt(current)
+					: current.status === "paused" ? `The active goal has been paused by the user. Stop pursuing it for now and wait for further instructions.\n\nObjective: ${current.objective}`
+					: `The goal has been marked complete.\n\nObjective: ${current.objective}`;
+				return { systemPrompt: `${event.systemPrompt}\n\n${goalContext}` };
+			}, { id: "cuse.pi-goal.context" });
+			harness.events.on("turn_start", (event) => { goal.beginTurn(`${sessionId}:${event.turnId}`, event.runId, requestGoals.get(event.runId)); });
+			harness.events.on("turn_end", (event) => { goal.endTurn(`${sessionId}:${event.turnId}`, event.message.usage); });
+			harness.events.on("run_end", (event) => {
+				requestGoals.delete(event.runId);
+				if (event.status !== "completed") goal.fault(event.runId);
+			});
+			harness.events.on("handler_error", () => {
+				goal.fault();
+				this.log(`IRC: ${channel}: goal accounting interrupted; goal paused`);
+			});
+		}
 		harness.events.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
 			const lines = toIrcLines(
@@ -283,7 +312,7 @@ export class DurableChannelSession {
 								throw new Error(publicError(undefined));
 							}
 						},
-					}, operationId=>deps.delegate.goalGuard?.(channel,operationId,"check")),
+					}),
 				);
 			if (!tools.some((t) => t.name === "run_js"))
 				throw new Error("Desktop does not expose run_js");
@@ -307,16 +336,16 @@ export class DurableChannelSession {
 					},
 				}),
 			);
-			tools.push(...createDurableAgentTools(deps.delegate, channel, sessionId), ...createGoalTools(deps.delegate, channel));
-            const goalScope = {operationId: ""};
-            const guardedTools = tools.map(tool => guardGoalTool(tool, deps.delegate, channel));
+			tools.push(...createDurableAgentTools(deps.delegate, channel, sessionId));
+			const goal = deps.delegate.piGoal?.(channel);
+			if (goal) tools.push(...createPiGoalTools(goal, sessionId));
 			({ harness } = await AgentHarness.create<undefined>(
 				{
 					session: store,
-					models: goalModels(deps.modelRuntime, deps.delegate, channel, () => goalScope.operationId),
+					models: deps.modelRuntime,
 					model,
 					thinkingLevel: thinking,
-					tools: guardedTools,
+					tools,
 					toolExecution: "sequential",
 					toProviderMessages: convertToLlm,
 					systemPrompt: [
@@ -324,6 +353,9 @@ export class DurableChannelSession {
 							"You are cuse, an IRC computer-use assistant. Use only this channel's isolated desktop tools. Never repeat an action whose outcome is unknown; inspect its result first.",
 						"If a tool reports an unknown outcome after interruption, do not repeat its action. Inspect the desktop or ask the user before retrying. Remote tools belong to this channel isolated desktop. desktop_control runs on the host and remains available if the desktop fails. Use status to diagnose, then start/stop/sleep only as needed for recovery; stop preserves disk but loses unsaved process state. Never replay an uncertain remote action after recovery.",
 						AGENT_ASK_DESCRIPTION,
+                        // cuse has no host read tool: make the bundled writer skill usable
+                        // directly, while its file operations remain on the channel desktop.
+                        ...(goal ? [readFileSync(new URL("./pi-goal-upstream/skills/pi-goal-writer/SKILL.md", import.meta.url), "utf8")] : []),
 						...resourceLoader.getAppendSystemPrompt(),
 						...resourceLoader
 							.getAgentsFiles()
@@ -341,18 +373,20 @@ export class DurableChannelSession {
 				},
 				ctx,
 			));
-			harness.hooks.on("before_request", event=>{if(!goalScope.operationId)goalScope.operationId=event.runId;return undefined;},{id:"cuse.goal.request-identity.v1"});
-            harness.hooks.on("before_tool", event=>{try{deps.delegate.goalGuard?.(channel,event.runId,"check");}catch{return {block:{reason:"Goal stopped. Inspect outcomes; direct human start required.",terminate:true}};}return undefined;},{id:"cuse.goal.tool-admission.v1"});
-            harness.hooks.on("after_tool", event=>{if(event.isError&&deps.delegate.goalBlock?.(channel,event.runId))return {terminate:true};return undefined;},{id:"cuse.goal.tool-error.v1"});
             const lane = await harness.lane("main", ctx);
-            // Registry updates do not change an existing lane's persisted allowlist.
-            // Append the recovery capability without replacing model/thinking/history
-            // or altering an in-flight operation's frozen execution configuration.
+            const execution = await lane.inspectExecution(ctx);
+            if (execution.current?.id.startsWith("goal/")) throw new PublicError("legacyGoalsMigration");
+            // Registry changes must not silently rewrite an old goal configuration.
             const activeTools = await lane.getActiveTools(ctx);
-            const goalNames=["goal_status","goal_update"];
-            const desired=[...activeTools.filter(name=>deps.delegate.goalEnabled?.()||!goalNames.includes(name))];
-            for(const name of ["desktop_control",...(deps.delegate.goalEnabled?.()?goalNames:[])])if(!desired.includes(name))desired.push(name);
-            if(!isDeepStrictEqual(desired,activeTools))await lane.setActiveTools(desired,ctx);
+            if (activeTools.some(name => name === "goal_status" || name === "goal_update")) throw new PublicError("legacyGoalsMigration");
+            // Append the recovery capability without replacing model/thinking/history.
+            if (!activeTools.includes("desktop_control")) await lane.setActiveTools([...activeTools, "desktop_control"], ctx);
+			// Harness tool snapshots are durable. Register the three native goal
+			// tools explicitly on reopen, and remove them when goal mode is disabled.
+			const goalNames = ["create_goal", "get_goal", "update_goal"];
+			const currentTools = await lane.getActiveTools(ctx);
+			const nextTools = goal ? [...new Set([...currentTools, ...goalNames])] : currentTools.filter(name => !goalNames.includes(name));
+			if (!isDeepStrictEqual(currentTools, nextTools)) await lane.setActiveTools(nextTools, ctx);
 			const restored = await lane.getModel(ctx);
 			if (!restored) throw new Error("Persisted durable model is unavailable");
 			await requireExplicitModel(
@@ -370,7 +404,8 @@ export class DurableChannelSession {
 				repo,
 				restored,
 				await lane.getThinkingLevel(ctx),
-    goalScope, deps.delegate, deps.log,
+    deps.log,
+				goal,
 			);
 		} catch (error) {
 			await harness?.close(ctx);
@@ -386,26 +421,30 @@ export class DurableChannelSession {
 	get busy(): boolean {
 		return this.#depth > 0;
 	}
- /** A stopped goal may only be cancelled by its exact persisted operation ID. */
- private revokedGoal(operationId:string):boolean {
-  try{this.goalDelegate.goalGuard?.(this.channel,operationId,"check");return false;}
-  catch(error){if(publicError(error)===publicError(new PublicError("goalStopped")))return true;throw error;}
- }
- private async cancelRevokedGoal(operationId:string):Promise<void> {
-  if(this.revokedGoal(operationId))await this.abortDurable(operationId);
- }
+
+	/** Restart recovery can settle a revoked goal operation but cannot run its
+	 * provider or tools again. A live pause does not interrupt an admitted turn.
+	 */
+	private async revokeStoppedGoal(operationId: string): Promise<void> {
+		if (!operationId.startsWith("pi-goal/") || this.goal?.canRun(operationId)) return;
+		await this.abortDurable(operationId);
+	}
 	async promptDurable(
 		operationId: string,
 		body: string,
 	): Promise<{ text: string; steered: boolean }> {
+        if (operationId.startsWith("goal/")) throw new PublicError("legacyGoalsMigration");
 		this.#depth++;
 		try {
+			this.goal?.admit(operationId);
 			let result = await this.lane.getResult(operationId, ctx);
 			if (!result) {
 				const state = await this.lane.inspectExecution(ctx);
+                if (state.current?.id.startsWith("goal/")) throw new PublicError("legacyGoalsMigration");
+				if (operationId.startsWith("pi-goal/") && !this.goal?.canRun(operationId) && state.current?.id !== operationId) return { text: "", steered: false };
 				if (state.current && state.current.id !== operationId) {
-					this.goalScope.operationId=state.current.id;
-                    await this.cancelRevokedGoal(state.current.id);
+					this.goal?.admit(state.current.id);
+					await this.revokeStoppedGoal(state.current.id);
                     const recovered = await this.lane.drive(
 						{
 							operationId: state.current.id,
@@ -421,15 +460,13 @@ export class DurableChannelSession {
 						);
 				}
 				if (!state.current || state.current.id !== operationId) {
-                    if(this.revokedGoal(operationId))return {text:publicError(new PublicError("goalRecovery")),steered:false};
 					const accepted = await this.lane.accept(
 						{ kind: "prompt", operationId, prompt: body },
 						ctx,
 					);
 					if (!accepted.ok) throw accepted.error;
 				}
-				this.goalScope.operationId=operationId;
-                await this.cancelRevokedGoal(operationId);
+				await this.revokeStoppedGoal(operationId);
                 const driven = await this.lane.drive(
 					{ operationId, waitForRetry: true, pollDeferred: true },
 					ctx,
@@ -439,13 +476,8 @@ export class DurableChannelSession {
 					throw new Error("Durable operation is waiting and must be resumed");
 				result = driven.value.outcome;
 			}
-			const failedEntry=result.tipId?await this.store.getEntry(result.tipId,ctx):undefined;
 			if (result.status === "failed" || result.status === "aborted") {
-                this.goalDelegate.goalBlock?.(this.channel,operationId);
-                const marker=failedEntry?.type==="message"&&failedEntry.message.role==="assistant"?failedEntry.message.errorMessage:undefined;
-                const code=marker===GOAL_TIMEOUT_MESSAGE?"goalRequestTimeout":marker===GOAL_PROVIDER_ABORT_MESSAGE?"goalProviderAbort":"generic";
-                if(code!=="generic")this.log("IRC: goal request failure in "+this.channel+": "+code);
-                return { text: publicError(new PublicError(code)), steered: false };
+                return { text: publicError(undefined), steered: false };
             }
 			const entry = result.tipId
 				? await this.store.getEntry(result.tipId, ctx)
@@ -461,8 +493,8 @@ export class DurableChannelSession {
 				steered: false,
 			};
 		} catch(error) {
+            this.goal?.fault(operationId);
             this.log("IRC: durable diagnostic in "+this.channel+": "+durableDiagnostic(error));
-            if(this.goalDelegate.goalFault?.(this.channel,this.goalScope.operationId))throw new PublicError("goalRecovery");
             throw error;
 		} finally {
 			this.#depth--;
@@ -492,8 +524,9 @@ export class DurableChannelSession {
 	async recover(): Promise<void> {
 		const state = await this.lane.inspectExecution(ctx);
 		if (state.current) {
-            this.goalScope.operationId=state.current.id;
-            await this.cancelRevokedGoal(state.current.id);
+            if (state.current.id.startsWith("goal/")) throw new PublicError("legacyGoalsMigration");
+			this.goal?.admit(state.current.id);
+			await this.revokeStoppedGoal(state.current.id);
 			const result = await this.lane.drive(
 				{
 					operationId: state.current.id,
@@ -557,7 +590,6 @@ export class DurableChannelSession {
 	}
 	async compact(instructions: string | null): Promise<void> {
         if(this.busy)throw new PublicError("sessionBusy");
-        this.goalScope.operationId="";
 		const result = await this.lane.compact(
 			{ customInstructions: instructions ?? undefined },
 			ctx,

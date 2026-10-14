@@ -1,4 +1,5 @@
-import { GoalLedger } from "./goal-ledger.ts";
+import { PublicError } from "./public-error.ts";
+import { PiGoalLedger } from "./pi-goal.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -68,12 +69,38 @@ export interface StoredOutboxMessage extends OutboxMessage {
 	deliveryUncertain: boolean;
 }
 
+/** Read-only barrier: old work must never acquire ordinary-turn authority. */
+function assertNoUnresolvedLegacyGoals(db: DatabaseSync): void {
+ const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)));
+ try {
+  if (tables.has("goals")) {
+   for (const row of db.prepare("SELECT id,channel,state_json FROM goals").all()) {
+    const goal = JSON.parse(String(row.state_json));
+    if (!goal || goal.version !== 1 || goal.id !== row.id || goal.channel !== row.channel ||
+     !["completed", "cancelled"].includes(goal.phase) ||
+     (goal.recoveryRequired !== undefined && goal.recoveryRequired !== false)) throw new Error();
+   }
+  }
+  if (tables.has("inbox") && db.prepare("SELECT 1 FROM inbox WHERE state != 'completed' AND (id GLOB 'goal/*' OR sender GLOB 'goal:*') LIMIT 1").get()) throw new Error();
+  if (tables.has("goal_runs") && db.prepare("SELECT 1 FROM goal_runs LIMIT 1").get()) {
+   if (!tables.has("inbox") || !tables.has("goals")) throw new Error();
+   if (db.prepare("SELECT 1 FROM goal_runs r LEFT JOIN inbox i ON i.id=r.message_id LEFT JOIN goals g ON g.id=r.goal_id WHERE i.id IS NULL OR i.state != 'completed' OR g.id IS NULL LIMIT 1").get()) throw new Error();
+  }
+ } catch {
+  throw new PublicError("legacyGoalsMigration");
+ }
+}
+
+function isLegacyGoalMessage(message: Pick<InboxMessage, "id" | "sender">): boolean {
+ return message.id.startsWith("goal/") || message.sender.startsWith("goal:");
+}
+
 /** Single-host ownership. The OS releases this lock even after SIGKILL.
  * The directory must reside on a persistent filesystem with SQLite locking support.
  * A separate database holds the lock so inbox writes can still commit normally.
  */
 export class DurableIrcStore {
-	readonly goals: GoalLedger;
+	readonly piGoals: PiGoalLedger;
 	private readonly owner: DatabaseSync;
 	private readonly db: DatabaseSync;
 	private closed = false;
@@ -93,6 +120,7 @@ export class DurableIrcStore {
 		try {
 			this.db = new DatabaseSync(join(rootDir, "irc-delivery.sqlite"));
 			try {
+                assertNoUnresolvedLegacyGoals(this.db);
 				this.db.exec(`
 					PRAGMA journal_mode=WAL;
 					PRAGMA synchronous=FULL;
@@ -131,7 +159,7 @@ export class DurableIrcStore {
 				) {
 					this.db.exec("ALTER TABLE inbox ADD COLUMN peer_json TEXT");
 				}
-                this.goals = new GoalLedger(this.db, operation => this.transaction(operation), message => this.enqueue(message));
+                this.piGoals = new PiGoalLedger(this.db, operation => this.transaction(operation), message => this.enqueue(message));
 			} catch (error) {
 				this.db.close();
 				throw error;
@@ -144,6 +172,7 @@ export class DurableIrcStore {
 
 	/** Call before acknowledging acceptance. Reusing an ID with different contents is an error. */
 	enqueue(message: InboxMessage, now = Date.now()): boolean {
+        if (isLegacyGoalMessage(message)) throw new PublicError("legacyGoalsMigration");
 		const previous = this.db
 			.prepare("SELECT * FROM inbox WHERE id=?")
 			.get(message.id);
@@ -198,6 +227,7 @@ export class DurableIrcStore {
 				(item) => channel === undefined || item.channel === channel,
 			);
 			if (!message) return undefined;
+            if (isLegacyGoalMessage(message)) throw new PublicError("legacyGoalsMigration");
 			this.db
 				.prepare(
 					"UPDATE inbox SET state='running' WHERE id=? AND state='pending'",
@@ -226,8 +256,7 @@ export class DurableIrcStore {
 			const message = this.listInbox().find((input) => input.id === id);
 			this.transition(id, "running", "completed");
 			for (const output of outputs) this.enqueueOutput(output);
-            const goalNotice = this.goals.finish(message!);
-            if (goalNotice) this.enqueueOutput({id: id + "/goal-status", channel: message!.channel, text: goalNotice.slice(0,380)});
+            this.piGoals.finish(message!);
 			if (message?.peer?.kind !== "question") return undefined;
 			const answer: InboxMessage = {
 				id: `${id}/answer`,

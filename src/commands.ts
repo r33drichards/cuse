@@ -16,12 +16,11 @@
  * bare `,command` is honored in the control channel and DMs.
  */
 
-import { parseGoalCommand, GOAL_USAGE, type GoalCommand } from "./goal-types.ts";
 import { parseScheduleCommand, SCHEDULE_USAGE, type ScheduleRequest } from "./schedule-commands.ts";
 import { parseSessionCommand, SESSION_COMMANDS, type SessionCommandAction } from "./session-commands.ts";
 
 export type ControlCommand =
- | { kind: "goal"; request: GoalCommand }
+ | { kind: "goal"; args: string }
  | { kind: "schedule"; request: ScheduleRequest }
  | { kind: "toggle-mention" }
  | { kind: "join"; channels: string[] }
@@ -36,7 +35,7 @@ export type IrcCommand = ControlCommand | SessionCommandAction;
 export const COMMAND_PREFIX = ",";
 
 const CONTROL_COMMANDS = [
- { usage: "goal …", description: "durable goal/task tree: add, start ID [steps], status/list, pause, cancel, approve, recover ID inspected; recovery only acknowledges human inspection, add is inert, start has finite model/tool allowances" },
+ { usage: "goal [--tokens 50k] <objective> | status | pause | resume | clear | topic on/off", description: "pursue one persistent Pi Goal; optional token budget is a soft stopping threshold" },
  { usage: "schedule …", description: "schedule durable prompts: list, every, once, cron, pause, resume, delete; timezone defaults to UTC" },
  { usage: "toggle mention", description: "toggle requiring a mention in this channel; saved across restarts" },
  { usage: "fork [#a,#b]", description: "copy conversation + independent disk snapshot; cold-start child, no live process clone or merge (currently unsupported)" },
@@ -94,10 +93,7 @@ export function parseCommand(line: string): IrcCommand | undefined {
 	const session = parseSessionCommand(name!, argument);
 	if (session) return session;
 	switch (name!.toLowerCase()) {
-		case "goal": {
-            const request = parseGoalCommand(argument);
-            return request ? {kind: "goal", request} : {kind: "error", message: GOAL_USAGE};
-        }
+		case "goal": return { kind: "goal", args: argument };
         case "schedule": {
 			const request = parseScheduleCommand(argument);
 			return request ? { kind: "schedule", request } : { kind: "error", message: SCHEDULE_USAGE };

@@ -184,7 +184,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 		log(
 			`IRC: connecting to ${config.server}:${config.port}${config.tls ? " (tls)" : ""} as ${config.nick}, control ${config.controlChannel}`,
 		);
-		if(goalsEnabled)log("Goals: native durable adapter enabled; direct human start required, finite allowances, human review.");
+		if(goalsEnabled)log("Pi Goal: durable continuation enabled; optional soft token budget, pause on restart or fault.");
         await bot.start();
 		await new Promise<void>((resolve, reject) => {
 			const cleanup = (): void => {

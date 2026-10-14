@@ -480,15 +480,12 @@ Durable sessions use the checked-in desktopjs tool manifest and initialize MCP o
 when a remote tool is called, keeping recovery tools available during an outage.
 Classic extension sessions retain their existing remote-discovery behavior.
 
-## Vendored goal-engine source
+## Pi Goal
 
-The complete MIT-licensed pi-goal-x v0.32.3 source is preserved under
-vendor/pi-goal-x with pinned provenance and an import-integrity regression test.
-The native durable adapter is opt-in: CUSE_DURABLE_IRC=true and
-CUSE_GOALS_ENABLED=true. Use ,goal add :: objective, then
-,goal start ID [steps] [duration] (default 4 steps and 30m; maximum 200 steps
-and 3d).
-Pause/cancel revoke queued work; restart blocks goals until inspected and
-explicitly restarted. Completion needs human review/approve. The upstream
-ExtensionAPI and automatic auditor are not loaded. See docs/vendored-goals.md
-for commands, finite allowances and the v1 acceptance boundary.
+The MIT-licensed Michaelliv/pi-goal v0.1.7 source is pinned under `vendor/pi-goal`.
+Its single-goal behavior is ported to the existing durable runtime: enable
+`CUSE_DURABLE_IRC=true` and `CUSE_GOALS_ENABLED=true`, then use
+`,goal [--tokens 50k] <objective>`, `,goal status`, `pause`, `resume`, or `clear`.
+The old bespoke goal/task engine has been removed. No runner switch is needed.
+See [Pi Goal behavior and migration](docs/pi-goal.md) before deploying over old
+state. Persisted old work is retained and unresolved legacy goals block startup.

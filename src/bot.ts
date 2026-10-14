@@ -9,11 +9,11 @@
  * this object instead of going through a control socket.
  */
 
-import { formatGoal, type Goal, type GoalUpdate } from "./goal-types.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Client as IrcClient, type IrcPrivmsgEvent } from "irc-framework";
+import { HarnessFault } from "@earendil-works/pi-agent-core";
 import type { ModelRuntime } from "../core/model-runtime.ts";
 import type { ChannelSession, ChannelSessionDeps, OpenChannelSession } from "./channel-session.ts";
 import { HELP_LINES, type IrcCommand, isChannel, mentionText, parseCommand } from "./commands.ts";
@@ -28,8 +28,8 @@ import type { ScheduleRequest } from "./schedule-commands.ts";
 import { filterModels } from "./session-commands.ts";
 import { ChannelSessionStore } from "./state.ts";
 import type { ChannelDelegate } from "./tools.ts";
-
-type GoalControlReceipt={goalControlVersion:1;result:Goal|Goal[];abortTarget?:{operationId:string;goalId:string;generation:number}};
+import type { PiGoalDelegate } from "./pi-goal.ts";
+import { GoalTopics } from "./goal-topic.ts";
 
 /** Structural session surface used by the transport; offline tests can implement it. */
 export type BotSession = Pick<ChannelSession,
@@ -40,8 +40,6 @@ export type BotSession = Pick<ChannelSession,
  setThinkingLevel(level: Parameters<ChannelSession["setThinkingLevel"]>[0]): void | Promise<void>;
  cycleThinkingLevel(): ReturnType<ChannelSession["cycleThinkingLevel"]> | Promise<ReturnType<ChannelSession["cycleThinkingLevel"]>>;
  promptDurable?(id: string, body: string): Promise<{text: string; steered: boolean}>;
- /** Abort only this durable operation; never fall back to aborting arbitrary current work. */
- abortDurable?(operationId:string): Promise<void>;
  close?(): Promise<void>;
  suspend?(): Promise<void>;
 };
@@ -153,6 +151,7 @@ export class IrcPiBot implements ChannelDelegate {
 	#closed = false;
  readonly #delivery?: DurableDelivery;
  readonly #durableStore?: DurableIrcStore;
+ readonly #goalTopics?: GoalTopics;
  #scheduleTimer?: ReturnType<typeof setInterval>;
  #scheduleFaulted = false;
  readonly #scheduleReady = new Set<string>();
@@ -164,16 +163,23 @@ export class IrcPiBot implements ChannelDelegate {
 		this.#irc = options.createClient ? options.createClient() : new IrcClient();
 		this.#store = new ChannelSessionStore(options.statePath);
   if (options.durable) this.#durableStore = new DurableIrcStore(join(dirname(options.statePath), "delivery"));
+  if (options.goalsEnabled && this.#durableStore) this.#goalTopics = new GoalTopics({
+   read: channel => this.#durableStore!.piGoals.topicEnabled(channel) ? this.#durableStore!.piGoals.read(channel) : null,
+   query: channel => this.#irc.raw("TOPIC", channel),
+   set: (channel, topic) => this.#irc.setTopic(channel, topic),
+   notice: (channel, text) => this.say(channel, text),
+  });
   if (this.#durableStore) this.#delivery = new DurableDelivery(this.#durableStore, {
    canOpen: (channel) => !this.#desktopChanging.has(channel) && !this.#store.get(channel)?.desktopPaused && !this.#store.get(channel)?.desktopDeleted && !this.#store.get(channel)?.desktopOperation,
    open: async (channel) => {
     const session = await this.#sessionFor(channel);
     if (!session.promptDurable) throw new Error("Durable queue requires durable session adapter");
     return {promptDurable: async (id, body) => {
-     try{return await session.promptDurable!(id, body);}catch(error){
-      if(publicError(error)===publicError(new PublicError("goalRecovery"))){
-       if(this.#sessions.get(channel)===session)this.#sessions.delete(channel);
-       await session.close?.(); // Release only the faulted adapter; persisted identity/queue remain.
+     try { return await session.promptDurable!(id, body); }
+     catch (error) {
+      if (error instanceof HarnessFault && this.#sessions.get(channel) === session) {
+       try { await session.close?.(); }
+       finally { if (this.#sessions.get(channel) === session) this.#sessions.delete(channel); }
       }
       throw error;
      }
@@ -259,6 +265,7 @@ export class IrcPiBot implements ChannelDelegate {
 			// Without this a reconnect would skip every channel the tracker still
 			// believed it was in, and the bot would come back deaf in most of them.
 			this.#joins.onDisconnected();
+   this.#goalTopics?.disconnected();
 			void this.#joinWanted();
    void this.#delivery?.drainOutputs();
    void this.#delivery?.startDirectMessages();
@@ -270,6 +277,7 @@ export class IrcPiBot implements ChannelDelegate {
 			if (event.nick !== this.#nick) return;
 			log(`IRC: joined ${event.channel}`);
 			this.#joins.onJoined(event.channel);
+   this.#goalTopics?.joined(event.channel);
    this.#delivery?.startChannel(event.channel.toLowerCase());
    void this.#delivery?.drainOutputs();
 			if (this.#forking.has(event.channel.toLowerCase())) return;
@@ -280,12 +288,13 @@ export class IrcPiBot implements ChannelDelegate {
 			});
 		});
 		this.#irc.on("part", (event) => {
-			if (event.nick === this.#nick) { this.#joins.onLeft(event.channel); this.#scheduleReady.delete(event.channel.toLowerCase()); }
+			if (event.nick === this.#nick) { this.#joins.onLeft(event.channel); this.#goalTopics?.left(event.channel); this.#scheduleReady.delete(event.channel.toLowerCase()); }
 		});
 		this.#irc.on("kick", (event) => {
 			if (event.kicked === this.#nick) {
 				log(`IRC: kicked from ${event.channel}`);
 				this.#joins.onLeft(event.channel);
+    this.#goalTopics?.left(event.channel);
     this.#scheduleReady.delete(event.channel.toLowerCase());
 			}
 		});
@@ -297,23 +306,29 @@ export class IrcPiBot implements ChannelDelegate {
 		});
 		// `close` only fires once auto-reconnect gives up; `socket close` fires on
 		// every drop, which is when membership stops being true.
-		this.#irc.on("socket close", () => { this.#connected = false; this.#joins.onDisconnected(); });
+		this.#irc.on("topic", event => this.#goalTopics?.observe(event.channel, event.topic,
+   event.nick === undefined ? "query" : event.nick.toLowerCase() === this.#nick.toLowerCase() ? "self" : "other"));
+		this.#irc.on("server options", event => this.#goalTopics?.serverOptions(event.options));
+		this.#irc.on("socket close", () => { this.#connected = false; this.#joins.onDisconnected(); this.#goalTopics?.disconnected(); });
 		this.#irc.on("close", (error) => {
 			log(`IRC: connection closed${error ? " (error)" : ""}`);
    this.#connected = false;
 			this.#joins.onDisconnected();
+   this.#goalTopics?.disconnected();
 		});
 		this.#irc.on("reconnecting", (event) =>
 			log(`IRC: reconnecting (attempt ${event.attempt}, wait ${event.wait}ms)`),
 		);
 		this.#irc.on("irc error", (event) => {
 			log("IRC: server error; details withheld");
+   this.#goalTopics?.error(event);
 			// A refusal answers whoever is waiting on that JOIN.
 			if (this.#joins.onError(event)) return;
 			// `+n` rejects messages from outside the channel, so a send that hits it
 			// proves the membership record is stale. Drop it and the next send rejoins.
 			if (event.error === "cannot_send_to_channel" && event.channel !== undefined) {
 				this.#joins.onLeft(event.channel);
+    this.#goalTopics?.left(event.channel);
     this.#scheduleReady.delete(event.channel.toLowerCase());
 			}
 		});
@@ -591,27 +606,24 @@ export class IrcPiBot implements ChannelDelegate {
 		if (await this.#onSessionCommand(command, room)) return;
 		switch (command.kind) {
 			case "goal": {
-    if(!this.goalEnabled()||!this.#durableStore||!this.#delivery)throw new PublicError("goalUnavailable");
-    if(command.request.action==="start"&&(!this.#store.get(room)?.desktopId||this.#store.get(room)?.desktopDeleted))throw new PublicError("goalDesktop");
-    const request=command.request;
-    const receipt=this.#durableStore.receiptOperation<Goal|Goal[]|GoalControlReceipt>("goal/control/"+room+"/"+commandId,JSON.stringify({request,sender}),()=>{
-     let abortTarget:GoalControlReceipt["abortTarget"];
-     if(request.action==="pause"||request.action==="cancel"){
-      const prior=this.#durableStore!.goals.get(room,request.id);
-      const active=this.#delivery!.currentMessage(room);
-      const lineage=active?this.#durableStore!.goals.runIdentity(room,active.id):undefined;
-      if(prior.phase==="active"&&active&&lineage?.goalId===prior.id&&lineage.generation===prior.generation)
-       abortTarget={operationId:active.id,goalId:prior.id,generation:prior.generation};
-     }
-     const result=this.#durableStore!.goals.control(room,sender,createHash("sha256").update(room+":"+commandId).digest("hex").slice(0,24),request);
-     return {goalControlVersion:1,result,abortTarget};
-    });
-    // Legacy receipts contain a bare Goal/array. Both legacy and new replays are acknowledgements only.
-    const record=!Array.isArray(receipt.value)&&"goalControlVersion" in receipt.value?receipt.value:undefined;
-    const result=record?record.result:receipt.value as Goal|Goal[];
-    this.say(room,Array.isArray(result)?(result.length?result.map(formatGoal):["No goals in this channel. Add is inert; start explicitly authorizes a bounded run."]):formatGoal(result));
-    if(request.action==="start"&&!receipt.replayed)this.#delivery.resumePending(room);
-    if(!receipt.replayed&&record?.abortTarget)await this.#sessions.get(room)?.abortDurable?.(record.abortTarget.operationId);
+    if (!this.#options.goalsEnabled || !this.#durableStore || !this.#delivery) throw new PublicError("goalUnavailable");
+    const receipt = this.#durableStore.receiptOperation(
+     "pi-goal/control/" + room + "/" + commandId,
+     JSON.stringify({ args: command.args, sender }),
+     () => this.#durableStore!.piGoals.command(room, command.args),
+    );
+    this.#goalTopics?.refresh(room);
+    const recovering = this.#durableStore.listInbox("recovery-required").filter(message => message.channel === room);
+    const unrelatedRecovery = recovering.some(message => !message.id.startsWith("pi-goal/") || this.#durableStore!.piGoals.canRun(message.id));
+    this.say(room, command.args.trim() === "resume" && unrelatedRecovery
+     ? receipt.value + " Work is still held by interrupted non-goal messages; inspect and recover those separately."
+     : receipt.value);
+    if (!receipt.replayed && command.args.trim() === "resume" && recovering.length &&
+     recovering.every(message => message.id.startsWith("pi-goal/") && !this.#durableStore!.piGoals.canRun(message.id))) {
+     // Explicit goal recovery only settles revoked goal operations by their exact IDs.
+     // Ordinary failed work requires its own recovery; a repeated command is only an acknowledgement.
+     await this.#delivery.startChannel(room);
+    } else this.#delivery.resumePending(room);
     return;
    }
    case "schedule": {
@@ -852,22 +864,38 @@ export class IrcPiBot implements ChannelDelegate {
   }
  }
 
- goalEnabled():boolean{return !!this.#options.goalsEnabled&&!!this.#durableStore;}
- goalRead(room:string):unknown {if(!this.goalEnabled())throw new PublicError("goalUnavailable");return this.#durableStore!.goals.list(room.toLowerCase());}
- goalGuard(room:string,operationId:string,kind:"check"|"model"|"tool",invocationId?:string):boolean {
-  const ledger=this.#durableStore?.goals;if(!ledger?.isRun(operationId))return false;
-  if(!this.goalEnabled())throw new PublicError("goalStopped");
-  if(kind==="model")return ledger.spendModel(room.toLowerCase(),operationId);
-  if(kind==="tool")ledger.spendTool(room.toLowerCase(),operationId,invocationId!);else ledger.check(room.toLowerCase(),operationId);
-  return true;
+ piGoal(room: string): PiGoalDelegate | undefined {
+  if (!this.#options.goalsEnabled || !this.#durableStore) return undefined;
+  const store = this.#durableStore;
+  const channel = room.toLowerCase();
+  return {
+   read: () => store.piGoals.read(channel),
+   canRun: operationId => store.piGoals.canRun(operationId),
+   create: (objective, tokenBudget, requestId, turnId) => {
+    const goal = store.receiptOperation(
+    "pi-goal/tool/" + channel + "/" + requestId,
+    JSON.stringify({ action: "create", objective, tokenBudget, turnId }),
+    () => store.piGoals.create(channel, objective, tokenBudget, turnId),
+    ).value;
+    this.#goalTopics?.refresh(channel);
+    return goal;
+   },
+   update: (status, requestId, turnId) => {
+    const goal = store.receiptOperation(
+    "pi-goal/tool/" + channel + "/" + requestId,
+    JSON.stringify({ action: "update", status, turnId }),
+    () => store.piGoals.update(channel, status, turnId),
+    ).value;
+    this.#goalTopics?.refresh(channel);
+    return goal;
+   },
+   admit: operationId => store.piGoals.admit(channel, operationId),
+   beginTurn: (turnId, operationId, snapshot) => store.piGoals.beginTurn(channel, turnId, undefined, operationId, snapshot),
+   endTurn: (turnId, usage) => { store.piGoals.endTurn(channel, turnId, usage); this.#goalTopics?.refresh(channel); },
+   fault: operationId => { store.piGoals.fault(channel, operationId); this.#goalTopics?.refresh(channel); },
+  };
  }
- goalUpdate(room:string,operationId:string,requestId:string,input:GoalUpdate):unknown {
-  if(!this.goalEnabled())throw new PublicError("goalUnavailable");
-  this.goalGuard(room,operationId,"check");
-  return this.#durableStore!.scheduleOperation("goal/update/"+room+"/"+requestId,JSON.stringify({operationId,input}),()=>this.#durableStore!.goals.update(room.toLowerCase(),operationId,input));
- }
- goalFault(room:string,operationId:string):boolean{return this.#durableStore?.goals.quarantineRun(room.toLowerCase(),operationId)??false;}
- goalBlock(room:string,operationId:string):boolean {const ledger=this.#durableStore?.goals;if(!ledger?.isRun(operationId))return false;ledger.blockRun(room.toLowerCase(),operationId);return true;}
+
  async schedule(request: ScheduleRequest & {room: string; requestId: string}): Promise<unknown> {
   return this.#schedule(request, false);
  }
@@ -878,7 +906,7 @@ export class IrcPiBot implements ChannelDelegate {
   if (isChannel(room) && !this.#joins.has(room)) throw new PublicError("scheduleChannel");
   if (request.action === "list") return this.#durableStore.listSchedules(room);
   const active = this.#delivery.currentMessage(room);
-  if (!human && request.action === "create" && (active?.peer || active?.id.startsWith("schedule/") || (active && this.#durableStore.goals.isRun(active.id)))) throw new PublicError("scheduleOrigin");
+  if (!human && request.action === "create" && (active?.peer || active?.id.startsWith("schedule/"))) throw new PublicError("scheduleOrigin");
   const {room: _room, requestId, ...input} = request;
   const operationId = createHash("sha256").update(`${room}:${requestId}`).digest("hex");
   try {
@@ -1002,6 +1030,7 @@ export class IrcPiBot implements ChannelDelegate {
 
 	async close(): Promise<void> {
 		this.#closed = true;
+  this.#goalTopics?.disconnected();
   if (this.#scheduleTimer) clearInterval(this.#scheduleTimer);
 		this.#irc.quit("cuse shutting down");
 		await this.#delivery?.close();
