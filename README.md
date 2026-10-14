@@ -489,3 +489,39 @@ Its single-goal behavior is ported to the existing durable runtime: enable
 The old bespoke goal/task engine has been removed. No runner switch is needed.
 See [Pi Goal behavior and migration](docs/pi-goal.md) before deploying over old
 state. Persisted old work is retained and unresolved legacy goals block startup.
+
+## MCP-served skills
+
+Cuse's durable and classic agents can discover the skills packaged with their
+channel's Computer Use desktop. `skills_list` negotiates the
+`io.modelcontextprotocol/skills` extension and lists metadata without fetching
+files. `skills_read` takes a listed `uri` and `version`, verifies and loads that
+skill's `SKILL.md`, and returns the complete file manifest. Pass a manifest
+`resourceUri` to read a supporting text file on demand. The agent does not need
+host filesystem tools, and opening a durable conversation does not wake its
+desktop for skill discovery.
+
+Each loaded manifest belongs to one desktop client. Supporting reads require
+that skill's verified instructions and the same content version; after a
+connection reset or bot restart, reload the instructions first. Changes to the
+manifest require a fresh listing and reload. Reads verify raw byte size,
+SHA-256 digest, resource identity and full YAML frontmatter before returning
+content. Errors and malformed responses are withheld. Skill metadata and
+instructions are untrusted reference material: they grant no tools, permissions,
+or authority. Cuse never automatically executes a skill's scripts; its agent
+is instructed to obtain explicit user approval for skill-supplied code.
+
+This adapter targets the immutable MCPJS catalog used by Computer Use:
+[skills-rmcp-3.5.1 at 453c6b2](https://github.com/r33drichards/mcp-js/tree/453c6b29e4797efa204e417c2baf966fec6bc4ff).
+It uses `skills/list`, `skills/get`, and `resources/read`, with paginated listings,
+complete hashed manifests, and URI-safe `skill://` paths. Dynamic manifests,
+directory listing, arbitrary URI schemes, binary instruction loading, writing,
+and invocation APIs are not supported. Catalog edits become available when the
+server restarts; cuse does not write into `/etc/mcp/skills`.
+
+Per-skill limits are 512 resources and 16 MiB total raw file bytes. Discovery is
+bounded to 20 pages, 1,000 skills and 256 KiB of returned summary metadata; raw
+JSON/SSE responses are also bounded. Oversized or unverifiable catalogs fail
+with a controlled message. A desktop without the capability reports skills
+unavailable and retains its ordinary desktop tools. Skill files are not materialized as host files or shared between channels;
+verified text is retained in the ordinary per-channel conversation history.

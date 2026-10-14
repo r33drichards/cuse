@@ -1,3 +1,4 @@
+import { createClassicSkillTools } from "./skill-tools.ts";
 import { publicError } from "./public-error.ts";
 /**
  * One IRC channel's agent session.
@@ -136,7 +137,7 @@ export class ChannelSession {
 		}
 
 		const customTools: ToolDefinition[] = await createDesktopTools(deps.desktop);
-		customTools.push(...createDelegationTools(deps.delegate, channel, sessionId));
+		customTools.push(...createDelegationTools(deps.delegate, channel, sessionId), ...createClassicSkillTools(deps.desktop));
 
 		const { resourceLoader, settingsManager } = await deps.createResources(deps.cwd);
 		const channelSettings = desktopSettings(settingsManager);
