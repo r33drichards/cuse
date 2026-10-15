@@ -240,7 +240,12 @@ export async function startNativeWeeChat(options: WeeChatNetworkOptions, identit
  const env = safeEnvironment(identity.profile);
  // Crucially the SDK only spawns bridge.py. Its disposable discovery sibling
  // shares this socket; it never opens a second WeeChat profile/IRC connection.
- const child = spawn(options.weechatCommand ?? "weechat-headless", weechatLaunchArguments(options, identity), {env, stdio: ["ignore", "ignore", "ignore"]});
+ // WeeChat 3.8 flocks its log destination even with --stdout. "ignore"
+ // maps stdout to /dev/null, so separate identities would contend on the
+ // same inode and all but one exit before loading MCP. Each pipe is private;
+ // drain it without retaining or forwarding potentially private native text.
+ const child = spawn(options.weechatCommand ?? "weechat-headless", weechatLaunchArguments(options, identity), {env, stdio: ["ignore", "pipe", "ignore"]});
+ child.stdout?.resume();
  let failure: WeeChatProcessError | undefined;
  let reportStopped!: (error: unknown) => void;
  const stoppedPromise = new Promise<unknown>(resolve => { reportStopped = resolve; });

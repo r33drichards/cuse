@@ -32,7 +32,7 @@ const port=(server.address() as {port:number}).port;
 const root=mkdtempSync(join(tmpdir(),'cuse-live-weechat-'));
 // Only this credential-free fixture captures native output. Production never logs it.
 const launcher=join(root,'native-launcher');
-writeFileSync(launcher,'#!/bin/sh\nexec weechat-headless "$@" >> "$(dirname "$0")/native.log" 2>&1\n',{mode:0o700});
+writeFileSync(launcher,'#!/bin/sh\nexec weechat-headless "$@" 2>> "$(dirname "$0")/native.log"\n',{mode:0o700});
 const options={server:'127.0.0.1',port,tls:false,nick:'testcuse',profileRoot:root,upstreamDir:'/opt/cuse-vendor/weechat-mcp',pythonCommand:'/opt/cuse-weechat/bin/python',weechatCommand:launcher,peerChannels:{'#alpha':['#beta']},joinTimeoutMs:20000};
 const transport=new WeeChatNetwork(options);const messages:WeeChatMessage[]=[];const joined=new Set<string>();const faults:string[]=[];
 transport.setHandlers({message:async m=>{messages.push(m);},joined:c=>joined.add(c),disconnected:c=>joined.delete(c),topic:()=>{},fault:(c)=>faults.push(c)});
