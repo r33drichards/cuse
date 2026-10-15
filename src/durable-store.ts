@@ -32,6 +32,7 @@ export type InboxState =
 	| "completed"
 	| "recovery-required";
 export interface InboxMessage {
+ replyTarget?: string;
 	id: string;
 	channel: string;
 	sender: string;
@@ -51,6 +52,7 @@ export interface StoredInboxMessage extends InboxMessage {
 	createdAt: number;
 }
 export interface OutboxMessage {
+ replyTarget?: string;
 	id: string;
 	channel: string;
 	text: string;
@@ -188,6 +190,9 @@ export class DurableIrcStore {
  UPDATE inbox SET state='recovery-required' WHERE state='running';
 					UPDATE outbox SET state='pending', delivery_uncertain=1 WHERE state='sending';
 				`);
+                for (const table of ["inbox", "outbox"]) {
+                 if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(column => column.name === "reply_target")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN reply_target TEXT`);
+                }
                 this.piGoals = new PiGoalLedger(this.db, operation => this.transaction(operation), message => this.enqueue(message));
 			} catch (error) {
 				this.db.close();
@@ -202,6 +207,7 @@ export class DurableIrcStore {
 	/** Call before acknowledging acceptance. Reusing an ID with different contents is an error. */
 	enqueue(message: InboxMessage, now = Date.now()): boolean {
         assertChannelDestination(message.channel);
+        if (message.replyTarget !== undefined) assertChannelDestination(message.replyTarget);
         if (isLegacyGoalMessage(message)) throw new PublicError("legacyGoalsMigration");
         if (isLegacyPeerMessage(message)) throw new PublicError("legacyPeersMigration");
 		const previous = this.db
@@ -211,7 +217,7 @@ export class DurableIrcStore {
 			if (
 				previous.channel !== message.channel ||
 				previous.sender !== message.sender ||
-				previous.body !== message.body
+				previous.body !== message.body || (previous.reply_target ?? undefined) !== message.replyTarget
 			) {
 				throw new Error(`Inbox ID collision: ${message.id}`);
 			}
@@ -219,14 +225,14 @@ export class DurableIrcStore {
 		}
 		this.db
 			.prepare(
-				"INSERT INTO inbox(id,channel,sender,body,created_at,state) VALUES(?,?,?,?,?,'pending')",
+				"INSERT INTO inbox(id,channel,sender,body,created_at,reply_target,state) VALUES(?,?,?,?,?,?,'pending')",
 			)
 			.run(
 				message.id,
 				message.channel,
 				message.sender,
 				message.body,
-				now,
+				now, message.replyTarget ?? null,
 			);
 		return true;
 	}
@@ -280,9 +286,10 @@ export class DurableIrcStore {
   */
  admitNative(message: InboxMessage, origin: "peer" | "human", legacyPeerTurns = 0, now = Date.now()): NativeAdmission {
   assertChannelDestination(message.channel);
+        if (message.replyTarget !== undefined) assertChannelDestination(message.replyTarget);
   if (origin !== "peer" && origin !== "human") throw new Error("Invalid native input origin");
   if (!Number.isSafeInteger(legacyPeerTurns) || legacyPeerTurns < 0 || legacyPeerTurns > 4) throw new Error("Invalid legacy peer budget");
-  const fingerprint = JSON.stringify([origin, message.channel, message.sender, message.body]);
+  const fingerprint = JSON.stringify([origin, message.channel, message.sender, message.body, ...(message.replyTarget ? [message.replyTarget] : [])]);
   return this.transaction(() => {
    const receipt = this.db.prepare("SELECT fingerprint,admitted FROM irc_admissions WHERE id=?").get(message.id);
    if (receipt) {
@@ -313,6 +320,7 @@ export class DurableIrcStore {
 			channel: String(row.channel),
 			sender: String(row.sender),
 			body: String(row.body),
+   ...(row.reply_target === null ? {} : {replyTarget: String(row.reply_target)}),
 			state: row.state as InboxState,
 			createdAt: Number(row.created_at),
 		}));
@@ -356,13 +364,14 @@ export class DurableIrcStore {
 
 	enqueueOutput(message: OutboxMessage): boolean {
         assertChannelDestination(message.channel);
+        if (message.replyTarget !== undefined) assertChannelDestination(message.replyTarget);
 		const previous = this.db
 			.prepare("SELECT * FROM outbox WHERE id=?")
 			.get(message.id);
 		if (previous) {
 			if (
 				previous.channel !== message.channel ||
-				previous.text !== message.text
+				previous.text !== message.text || (previous.reply_target ?? undefined) !== message.replyTarget
 			) {
 				throw new Error(`Outbox ID collision: ${message.id}`);
 			}
@@ -370,9 +379,9 @@ export class DurableIrcStore {
 		}
 		this.db
 			.prepare(
-				"INSERT INTO outbox(id,channel,text,state) VALUES(?,?,?,'pending')",
+				"INSERT INTO outbox(id,channel,text,reply_target,state) VALUES(?,?,?,?,'pending')",
 			)
-			.run(message.id, message.channel, message.text);
+			.run(message.id, message.channel, message.text, message.replyTarget ?? null);
 		return true;
 	}
 
@@ -384,6 +393,7 @@ export class DurableIrcStore {
 				id: String(row.id),
 				channel: String(row.channel),
 				text: String(row.text),
+    ...(row.reply_target === null ? {} : {replyTarget: String(row.reply_target)}),
 				state: row.state as StoredOutboxMessage["state"],
 				deliveryUncertain: row.delivery_uncertain === 1,
 			}));

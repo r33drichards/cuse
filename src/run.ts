@@ -15,7 +15,7 @@ import { DefaultResourceLoader } from "../core/resource-loader.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { type IrcBotOptions, IrcPiBot } from "./bot.ts";
 import { requireExplicitModel } from "./model-selection.ts";
-import { WeeChatNetwork } from "./weechat.ts";
+import { WeeChatNetwork, weechatFullControl } from "./weechat.ts";
 import { ComputerUseClient } from "./computer-use.ts";
 import { clearFaultingDomain, faultingDomain, installFaultDomains } from "./fault-domain.ts";
 
@@ -113,6 +113,7 @@ export interface RunIrcOptions {
 export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): Promise<void> {
 	const log = options.log ?? ((line: string) => console.log(line));
 	const env = options.env ?? process.env;
+ const fullControl = weechatFullControl(env.WEECHAT_MCP_FULL_CONTROL);
 	const agentDir = getAgentDir();
 	const cwd = command.cwd ?? process.cwd();
 	const config = resolveIrcConfig(command, env, agentDir);
@@ -161,7 +162,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
    profileRoot: join(config.statePath, "..", "weechat"),
    upstreamDir: env.CUSE_WEECHAT_DIR ?? "/opt/cuse-vendor/weechat-mcp",
    pythonCommand: env.CUSE_WEECHAT_PYTHON ?? "/opt/cuse-weechat/bin/python",
-   weechatCommand: env.CUSE_WEECHAT_BIN ?? "weechat-headless", peerChannels,
+   weechatCommand: env.CUSE_WEECHAT_BIN ?? "weechat-headless", peerChannels, fullControl, mentionChannels: (env.CUSE_WEECHAT_MENTION_CHANNELS ?? "").split(",").map(value => value.trim()).filter(Boolean),
   }),
   durable,
   nativeHistoryAfter: env.CUSE_WEECHAT_HISTORY_AFTER,

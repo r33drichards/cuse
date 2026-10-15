@@ -1,14 +1,14 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 # WeeChat MCP
 
-A FastMCP server for scoped WeeChat commands and live buffer resources. WeeChat
+A FastMCP server for unrestricted native WeeChat commands and live buffer resources. WeeChat
 owns IRC; the MCP server runs in a separate Python process. All WeeChat API calls
 stay on WeeChat's event loop.
 
 ## Architecture
 
-- `weechat_mcp.py`: dependency-free WeeChat plugin. Exposes allowlisted buffers,
-  safe command adapters and native buffer data over private local IPC.
+- `weechat_mcp.py`: dependency-free WeeChat plugin. Exposes generated native command tools
+  and native buffer data over private local IPC, with an explicit restricted mode.
 - `native_buffer.py`: read-only official hdata traversal. WeeChat owns the lines;
   the adapter holds only cursor/lifecycle metadata, never a second content cache.
 - `bridge.py`: FastMCP 4.1.0 server. Dynamic providers discover available commands
@@ -32,6 +32,13 @@ Requirements: WeeChat with its Python plugin, Python 3.10+ for the external serv
 Unix sockets, and permitted DNS/TCP access to your IRC server. Use an isolated
 WeeChat profile rather than your normal private-message history.
 
+Full control is the default: every registered command and native buffer is
+accessible, including scripting/process commands and private-message history.
+Use a trusted single-owner MCP client. To retain the six safe command adapters
+and configured buffer allowlist, set `WEECHAT_MCP_FULL_CONTROL=0` in WeeChat's
+environment before launch. Only `0` and `1` are accepted; invalid values fail
+closed. Setting it on the bridge alone cannot change a running WeeChat policy.
+
 Install the external server dependencies:
 
 ```sh
@@ -47,7 +54,8 @@ WeeChat's embedded Python needs only the standard library. Load the plugin:
 
 Configure your server locally in WeeChat, using alias `railway` (or update the
 buffer allowlist), connect and join `#wchat`. Verify TLS before using credentials.
-The plugin neither requires nor exports credentials.
+The bootstrap does not require credentials. Full-control commands can inspect
+native configuration; do not put secrets in a shared profile.
 
 Configure your MCP host:
 
@@ -105,7 +113,9 @@ Persistence:
   WeeChat or the bridge run; the home must not be world/group-writable.
 
 The fixed server alias is `docker`; exposed buffers are `irc.docker.#wchat`, etc.
-Only configured channels are exposed, never all IRC buffers or direct messages.
+Full mode exposes every current native buffer, including newly joined channels,
+server/core/plugin buffers and direct messages. With `WEECHAT_MCP_FULL_CONTROL=0`,
+only configured channels are exposed.
 For a local plaintext IRC test set both `IRC_TLS=false` and `IRC_PORT=6667` (or
 its actual port). Container localhost means the container itself: use an IRC
 service name on a private Docker network, or the appropriate host gateway.
@@ -123,7 +133,7 @@ Default `MCP_AUTH_MODE=bearer` startup fails closed without `MCP_AUTH_TOKEN` (at
 characters). Supply a high-entropy runtime secret through your secret manager;
 clients send `Authorization: Bearer <token>`. This is single-owner backend
 protection, not an OAuth login service. Everyone with this secret shares one IRC
-identity and the same allowlisted channel history.
+identity and the history exposed by the selected control policy.
 
 With `MCP_AUTH_TOKEN` already injected into the shell environment:
 
@@ -173,12 +183,16 @@ uv run python docker_test.py --host --loopback-ipc \
 
 ## Tools and resources
 
+Full mode uses the [generated native command tools](#generated-full-command-mapping-default).
+The six legacy adapters described below require `WEECHAT_MCP_FULL_CONTROL=0`.
+
 `weechat_buffers` lists exposed buffers. `weechat_command_catalog` discovers
 registered slash commands and marks which have execution adapters. The scoped
 adapters are `msg`, `say`, `me`, `names`, `who` and `topic`, when registered by the
 installed WeeChat version (`say` is absent in WeeChat 4.6.3).
 
-`weechat_buffers` with no arguments lists the current read-allowlisted buffers.
+`weechat_buffers` with no arguments lists the current exposed buffers (all native contexts in full mode,
+configured allowlist in restricted mode).
 Pass `buffer` to read that buffer's native metadata and printed line data, plus
 optional `limit` (default 100; 1–500) and opaque `cursor`. This extends the existing
 buffer interface; the old `weechat_read_recent_messages` tool has been removed,
@@ -192,9 +206,10 @@ The data comes directly from WeeChat's official `hdata_get`, `hdata_pointer`,
 `hdata_*` typed getters, and `buffer_get_*` bindings. It can include lines printed
 before the MCP plugin was loaded. Only the selected buffer's `own_lines` are
 traversed; merged windows do not broaden access to other buffers. Every request,
-including pagination, checks the current read allowlist. Full-control command
-contexts do not grant additional buffer-read access. No arbitrary hdata pointers,
-paths, configuration or credentials are exposed.
+including pagination, checks the current policy and live buffer set. Full-control
+contexts also grant buffer-read access. The buffer API accepts no arbitrary hdata
+pointers or filesystem paths. Full-control commands can read or change native
+configuration and may expose secrets, so use an isolated credential-free profile.
 
 Native buffer data semantics:
 
@@ -234,14 +249,14 @@ A command result confirms only local dispatch. To inspect subsequent output,
 read an exposed buffer, then read again after native resource-change events or
 when a delayed server reply is expected. Output can be interleaved, routed to a
 server/core buffer, or arrive later; the adapter does not invent command/output
-correlation or claim command completion. Unexposed destination buffers remain
+correlation or claim command completion. In restricted mode, unexposed destination buffers remain
 unreadable until separately allowed.
 
 ```json
 {"name":"weechat_msg","arguments":{"buffer":"irc.railway.#wchat","arguments":"hello"}}
 ```
 
-Arguments cannot override the selected channel. Control characters and multiline
+In restricted mode, arguments cannot override the selected channel. Control characters and multiline
 commands are rejected. Arbitrary `exec`, scripting, server configuration and
 secret-bearing commands are not exposed. A successful result means local command
 acceptance, not delivery confirmation. Add typed scoped adapters for new commands
@@ -339,22 +354,23 @@ upstream [WeeChat](https://github.com/weechat/weechat), maintained by Sébastien
 Helleu and contributors. WeeChat and miniircd are separate runtime dependencies
 with their own notices and licenses.
 
-## Generated full-command mapping (local opt-in)
+## Generated full-command mapping (default)
 
-The default deployment policy remains the original six scoped adapters. The new
-mapping is deliberately separate from permission to expose or execute full
-WeeChat control. **Do not enable this on a public service without a separate
-access-policy review.** Full control includes shell/process commands, config,
+Unrestricted native command access is the default. Set
+`WEECHAT_MCP_FULL_CONTROL=0` before starting WeeChat for the original six scoped
+adapters and buffer allowlist. **Keep the MCP endpoint private and authenticated.** Full control includes shell/process commands, config,
 script loading, server management, and commands which execute other commands.
 Neither schema validation nor buffer selection is a sandbox for those effects.
 
-For an isolated profile, launch WeeChat with `WEECHAT_MCP_FULL_CONTROL=1`. The
-bridge then discovers one `weechat_cmd_<plugin>_<command>_<identity-hash>` tool for
+With the variable unset or set to `1`, the bridge discovers one `weechat_cmd_<plugin>_<command>_<identity-hash>` tool for
 every current command-hook registration, with no command allowlist ceiling.
 `weechat_command_manifest` returns the versioned inventory and coverage counts;
 `weechat_command_contexts` lists exact execution buffers, including core and
-plugin buffers. Existing buffer data, resources and their read allowlist
-are unchanged. No new streams, tasks, listeners or response collectors are added.
+plugin buffers. Full-mode buffer reads and resources expose those same native
+contexts dynamically, so a newly joined channel can be read immediately.
+MCP Events still requires an explicit authorized subscription and only accepts
+IRC channel buffers, never private messages or core/plugin buffers. No stream or
+event subscription is created automatically on startup, join or discovery.
 
 Runtime metadata is authoritative: command name, plugin, description, args,
 args_description, completion, keep_spaces_right and WeeChat version. Plugin

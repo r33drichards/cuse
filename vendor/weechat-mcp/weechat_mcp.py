@@ -15,6 +15,14 @@ MAX_FRAME = 65536
 SAFE_COMMANDS = {"msg", "say", "me", "names", "who", "topic"}
 
 
+def full_control_enabled():
+    """Full access by default; an explicit 0 retains the restricted policy."""
+    value = os.environ.get("WEECHAT_MCP_FULL_CONTROL", "1")
+    if value not in ("0", "1"):
+        raise ValueError("WEECHAT_MCP_FULL_CONTROL must be 0 or 1")
+    return value == "1"
+
+
 class BridgeProtocol:
     """Private local IPC, not MCP. WeeChat operations stay on its event loop."""
 
@@ -48,9 +56,7 @@ class WeeChatAPI:
     def __init__(self, w, full_control=None):
         self.w = w
         self.full_control = (
-            os.environ.get("WEECHAT_MCP_FULL_CONTROL") == "1"
-            if full_control is None
-            else full_control
+            full_control_enabled() if full_control is None else full_control
         )
         self.command_source = None
         source_path = os.environ.get("WEECHAT_MCP_SOURCE_MANIFEST")
@@ -60,14 +66,15 @@ class WeeChatAPI:
         self.native = NativeBuffers(w)
 
     def buffers(self):
-        # Explicit scope: other channels, private messages, and core buffers are not exposed.
+        # Restricted mode exposes only the current configured allowlist.
+        # Full mode reads the same live contexts that generated commands can use.
         allowed = set(self.w.config_get_plugin("buffers").split(","))
         result = {}
         il = self.w.infolist_get("buffer", "", "")
         try:
             while self.w.infolist_next(il):
                 name = self.w.infolist_string(il, "full_name")
-                if name in allowed:
+                if self.full_control or name in allowed:
                     result[name] = self.w.infolist_pointer(il, "pointer")
         finally:
             self.w.infolist_free(il)
@@ -115,7 +122,7 @@ class WeeChatAPI:
         )
 
     def command_buffers(self):
-        """Execution contexts only; never broadens existing history/resources."""
+        """Current native execution contexts, also readable in full-control mode."""
         result = {}
         il = self.w.infolist_get("buffer", "", "")
         try:
@@ -331,7 +338,7 @@ class WeeChatAPI:
         return b
 
     def buffer_data(self, b, limit=100, cursor=None):
-        # Always resolve the current allowlist, including when using a cursor.
+        # Always resolve the current policy and live buffers, including with a cursor.
         pointer = self.buffers().get(b)
         if not pointer:
             raise ValueError("Buffer is not exposed")
@@ -341,7 +348,9 @@ class WeeChatAPI:
         if not isinstance(uri, str) or not uri.startswith("weechat://buffer/"):
             raise ValueError("Unknown resource")
         b = unquote(uri[len("weechat://buffer/") :])
-        if b not in set(self.w.config_get_plugin("buffers").split(",")):
+        if not self.full_control and b not in set(
+            self.w.config_get_plugin("buffers").split(",")
+        ):
             raise ValueError("Buffer is not exposed")
         pointer = self.buffers().get(b)
         if not pointer:
@@ -467,7 +476,7 @@ if weechat and weechat.register(
     "Robert Wendt",
     "0.1.0",
     "GPL3",
-    "Scoped MCP tools and buffer subscriptions",
+    "Native MCP command tools and buffer subscriptions",
     "shutdown",
     "",
 ):

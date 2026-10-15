@@ -2,7 +2,7 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 const root=path.resolve(__dirname,'../..');
 test('pinned WeeChat runtime retains upstream files and GPL license without local artifacts',()=>{
  const manifest=JSON.parse(fs.readFileSync(path.join(root,'vendor/weechat-mcp.provenance.json'),'utf8'));
- assert.equal(manifest.repository,'https://github.com/r33drichards/weechat-mcp');assert.equal(manifest.commit,'49bfd98f15853c2cec2228ee2cc978512fbd10c1');assert.equal(manifest.license,'GPL-3.0-or-later');
+ assert.equal(manifest.repository,'https://github.com/r33drichards/weechat-mcp');assert.equal(manifest.commit,'43251ca1f23ba18da5edc1ff16bc2b715491b2df');assert.equal(manifest.license,'GPL-3.0-or-later');
  assert.deepEqual(fs.readdirSync(path.join(root,'vendor/weechat-mcp')).sort(),manifest.files.map(f=>f.path).sort());
  for(const file of manifest.files)assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'vendor/weechat-mcp',file.path))).digest('hex'),file.sha256,file.path);
  assert.match(fs.readFileSync(path.join(root,'vendor/weechat-mcp/LICENSE'),'utf8'),/GNU GENERAL PUBLIC LICENSE/);

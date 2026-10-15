@@ -21,11 +21,13 @@ export interface CommunicationClient {
  tools(): Promise<RemoteTool[]>;
  call(name: string, args: unknown, signal?: AbortSignal): Promise<RemoteResult>;
 }
-export interface WeeChatMessage { target: string; nick: string; message: string; id: string }
+export interface WeeChatMessage { target: string; source?: string; nick: string; message: string; id: string }
 export interface WeeChatHandlers {
  /** Must durably persist the inbox record before resolving. The ID is idempotent. */
  message(event: WeeChatMessage): Promise<void>;
  joined(channel: string): void;
+ /** A configured reply destination rejoined; retry saved outputs without a new session. */
+ deliveryReady?(channel: string): void;
  disconnected(channel: string): void;
  topic(channel: string, topic: string): void;
  fault(channel: string, error: unknown): void;
@@ -36,7 +38,7 @@ export interface WeeChatTransport {
  close(): Promise<void>;
  nickFor(channel: string): string;
  communication(channel: string): CommunicationClient;
- say(channel: string, text: string): Promise<void>;
+ say(channel: string, text: string, target?: string): Promise<void>;
  queryTopic(channel: string): Promise<void>;
  setTopic(channel: string, topic: string): Promise<void>;
  setHandlers(handlers: WeeChatHandlers): void;
@@ -69,6 +71,10 @@ export interface WeeChatNetworkOptions {
  pythonCommand?: string;
  weechatCommand?: string;
  peerChannels?: Record<string, readonly string[]>;
+ /** Startup policy; defaults to WEECHAT_MCP_FULL_CONTROL (unset means true). */
+ fullControl?: boolean;
+ /** Explicit shared channels whose addressed messages wake this home identity. */
+ mentionChannels?: readonly string[];
  joinTimeoutMs?: number;
  /** Test seam: a native MCP client, never an IRC-client compatibility adapter. */
  createSession?: (identity: WeeChatIdentity) => Promise<NativeWeeChatSession>;
@@ -111,6 +117,7 @@ interface IdentityState {
  inMessage?: boolean;
  membershipId: number;
  peers: Map<string, PeerMembership>;
+ mentions: Map<string, Cursor | undefined>;
  failure?: unknown;
  disposing?: Promise<void>;
  title?: string;
@@ -243,7 +250,7 @@ function assertContinuity(snapshot: NativeSnapshot, cursor?: Cursor): void {
  if (snapshot.last_assigned_id > Math.max(last, newest)) throw new Error("WeeChat unread native lines were cleared; operator recovery required");
 }
 
-/** Safe startup arguments; full-control commands and unrelated environment are never inherited. */
+/** Validated startup arguments; unrelated environment is never inherited. */
 export function weechatLaunchArguments(options: WeeChatNetworkOptions, identity: WeeChatIdentity): string[] {
  const script = resolve(options.upstreamDir, "weechat_mcp.py");
  if (!/^[A-Za-z0-9_./-]+$/.test(script)) throw new Error("WeeChat upstream path contains unsafe command characters");
@@ -265,8 +272,16 @@ export function weechatLaunchArguments(options: WeeChatNetworkOptions, identity:
  ];
  return ["-d", identity.profile, "-p", "-a", "--stdout", ...commands.flatMap(command => ["-r", command])];
 }
-function safeEnvironment(home: string): Record<string, string> {
- const env: Record<string, string> = {HOME: home, MCP_TRANSPORT: "stdio", WEECHAT_MCP_FULL_CONTROL: "0", LC_ALL: "C", LANG: "C"};
+export function weechatFullControl(value: string | undefined): boolean {
+ if (value !== undefined && value !== "0" && value !== "1") throw new Error("WEECHAT_MCP_FULL_CONTROL must be 0 or 1");
+ return value !== "0";
+}
+function fullControl(options: WeeChatNetworkOptions): boolean {
+ if (options.fullControl !== undefined && typeof options.fullControl !== "boolean") throw new Error("Invalid WeeChat full-control policy");
+ return options.fullControl ?? weechatFullControl(process.env.WEECHAT_MCP_FULL_CONTROL);
+}
+function safeEnvironment(home: string, enabled: boolean): Record<string, string> {
+ const env: Record<string, string> = {HOME: home, MCP_TRANSPORT: "stdio", WEECHAT_MCP_FULL_CONTROL: enabled ? "1" : "0", LC_ALL: "C", LANG: "C"};
  for (const name of ["PATH", "TZ", "SYSTEMROOT", "WINDIR"]) if (process.env[name]) env[name] = process.env[name]!;
  return env;
 }
@@ -296,7 +311,7 @@ export class WeeChatProcessError extends Error {
  }
 }
 export async function startNativeWeeChat(options: WeeChatNetworkOptions, identity: WeeChatIdentity): Promise<NativeWeeChatSession> {
- const env = safeEnvironment(identity.profile);
+ const env = safeEnvironment(identity.profile, fullControl(options));
  // Crucially the SDK only spawns bridge.py. Its disposable discovery sibling
  // shares this socket; it never opens a second WeeChat profile/IRC connection.
  // WeeChat 3.8 flocks its log destination even with --stdout. "ignore"
@@ -350,7 +365,9 @@ export class WeeChatNetwork implements WeeChatTransport {
   if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(options.server) || !Number.isInteger(options.port) || options.port < 1 || options.port > 65535 || typeof options.tls !== "boolean") throw new Error("Invalid WeeChat IRC server configuration");
   if (!isAbsolute(options.profileRoot) || !isAbsolute(options.upstreamDir)) throw new Error("WeeChat paths must be absolute");
   weechatNick(options.nick, "#validation");
-  this.#options = options;
+  this.#options = {...options, fullControl: fullControl(options), mentionChannels: [...new Set((options.mentionChannels ?? []).map(canonical))]};
+  if (this.#options.mentionChannels!.length > 20) throw new Error("Too many mention channels");
+  if (!this.#options.fullControl && this.#options.mentionChannels!.length) throw new Error("Mention channels require full control");
   for (const [home, peers] of Object.entries(options.peerChannels ?? {})) {
    const key = canonical(home);
    if (this.#peers.has(key)) throw new Error("Duplicate WeeChat home channel configuration");
@@ -398,8 +415,8 @@ export class WeeChatNetwork implements WeeChatTransport {
    rmSync(join(profile, "mcp", "bridge.sock"), {force: true});
    const nickPath = join(directory, "nick.json");
    const savedNick = readNick(nickPath, this.#options.nick, key);
-   const state: IdentityState = {channel: key, nick: savedNick ?? weechatNick(this.#options.nick, key), nickPath, savedNick, channels: this.#peers.get(key) ?? [key], profile, lock,
-    start: Promise.resolve(), queue: Promise.resolve(), abort: new AbortController(), ready: false, closing: false, membershipId: -1, peers: new Map()};
+   const state: IdentityState = {channel: key, nick: savedNick ?? weechatNick(this.#options.nick, key), nickPath, savedNick, channels: [...new Set([...(this.#peers.get(key) ?? [key]), ...this.#options.mentionChannels!])], profile, lock,
+    start: Promise.resolve(), queue: Promise.resolve(), abort: new AbortController(), ready: false, closing: false, membershipId: -1, peers: new Map(), mentions: new Map(this.#options.mentionChannels!.filter(channel => channel !== key).map(channel => [channel, undefined]))};
    this.#identities.set(key, state);
    state.start = this.#start(state).catch(async error => { this.#fault(state, error); await this.#dispose(state); throw error; });
    return state.start;
@@ -415,8 +432,8 @@ export class WeeChatNetwork implements WeeChatTransport {
   void state.session.stopped.then(error => { if (!state.closing) this.#fault(state, error ?? new Error("WeeChat stopped")); });
   const client = state.session.client;
   client.setNotificationHandler("notifications/resources/updated", notification => {
-   // Peer reads are available to the home agent; peer traffic never wakes it.
-   if (notification.params.uri === weechatResource(state.channel) && state.subscription && !state.closing && !state.failure) void this.#refresh(state).catch(error => this.#fault(state, error));
+   // Only explicit mention channels are additional event sources.
+   if ([state.channel, ...state.mentions.keys()].some(channel => notification.params.uri === weechatResource(channel)) && state.subscription && !state.closing && !state.failure) void this.#refresh(state).catch(error => this.#fault(state, error));
   });
   const deadline = Date.now() + (this.#options.joinTimeoutMs ?? 20_000);
   for (;;) {
@@ -438,8 +455,8 @@ export class WeeChatNetwork implements WeeChatTransport {
    if (Date.now() >= deadline) throw new Error("WeeChat did not confirm every configured channel JOIN");
    await delay(50, undefined, {signal: state.abort.signal});
   }
-  state.subscription = await client.listen({resourceSubscriptions: [weechatResource(state.channel)]}, {signal: state.abort.signal, timeout: this.#options.joinTimeoutMs ?? 20_000});
-  if (!state.subscription.honoredFilter.resourceSubscriptions?.includes(weechatResource(state.channel))) throw new Error("WeeChat did not honor the home buffer subscription");
+  state.subscription = await client.listen({resourceSubscriptions: [state.channel, ...state.mentions.keys()].map(weechatResource)}, {signal: state.abort.signal, timeout: this.#options.joinTimeoutMs ?? 20_000});
+  if (![state.channel, ...state.mentions.keys()].every(channel => state.subscription!.honoredFilter.resourceSubscriptions?.includes(weechatResource(channel)))) throw new Error("WeeChat did not honor the home buffer subscription");
   void state.subscription.closed.then(() => { if (!state.closing) this.#fault(state, new Error("WeeChat subscription ended")); });
   // Subscribe first, then snapshot: events during discovery cannot be lost.
   await this.#refresh(state);
@@ -523,6 +540,7 @@ export class WeeChatNetwork implements WeeChatTransport {
     // which the durable inbox must deduplicate; it cannot lose an input.
     state.cursor = {epoch: snapshot.data_epoch, lastId: line.id};
    }
+   for (const channel of state.mentions.keys()) await this.#refreshMentions(state, channel);
    if (!state.cursor) {
     state.cursor = {epoch: snapshot.data_epoch, lastId: -1};
    }
@@ -530,6 +548,38 @@ export class WeeChatNetwork implements WeeChatTransport {
   const checked = work.catch(error => { this.#fault(state, error); throw error; });
   state.queue = checked.catch(() => {});
   return checked;
+ }
+ async #refreshMentions(state: IdentityState, channel: string): Promise<void> {
+  const snapshot = await this.#read(state, channel);
+  const cursor = state.mentions.get(channel);
+  assertContinuity(snapshot, cursor);
+  // A retained buffer is not membership. Do not consume until an own JOIN.
+  if (!state.ready || !await this.#checkPeerMembership(state, channel, false)) return;
+  const nick = snapshot.buffer.localvar_nick;
+  const escaped = fold(nick).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const addressed = new RegExp(`(^|[^a-z0-9_\\[\\]\\\\\x60^{|}~-])@?${escaped}(?![a-z0-9_\\[\\]\\\\\x60^{|}~-])`);
+  for (const line of snapshot.lines) {
+   if (line.id <= (cursor?.lastId ?? -1)) continue;
+   if (state.closing || state.failure) return;
+   if (line.tags.some(tag => ["irc_privmsg", "irc_action"].includes(tag)) && !isSelf(line, nick) && addressed.test(fold(line.message))) {
+    if (this.#historyCutoff !== undefined) {
+     const time = nativeTag(line, "time");
+     const stamp = time && /^\d{4}-\d\d-\d\dT.*Z$/.test(time) ? Date.parse(time) : NaN;
+     if (!Number.isFinite(stamp)) throw new PublicError("nativeTimeRequired");
+     if (stamp <= this.#historyCutoff) { state.mentions.set(channel, {epoch: snapshot.data_epoch, lastId: line.id}); continue; }
+    }
+    const msgid = nativeTag(line, "msgid");
+    if (!msgid) throw new PublicError("nativeMsgidRequired");
+    const sender = author(line);
+    if (!sender) throw new Error("Native WeeChat message has no author tag");
+    state.inMessage = true;
+    try {
+     await this.#handlers!.message({target: state.channel, source: channel, nick: sender, message: line.message,
+      id: nativeMessageId(this.#options, channel, msgid) + "/identity/" + encodeURIComponent(state.channel)});
+    } finally { state.inMessage = false; }
+   }
+   state.mentions.set(channel, {epoch: snapshot.data_epoch, lastId: line.id});
+  }
  }
  #fault(state: IdentityState, error: unknown): void {
   if (state.failure || state.closing) return;
@@ -547,11 +597,12 @@ export class WeeChatNetwork implements WeeChatTransport {
   return state;
  }
  /** Inspect peer membership on demand, without subscribing peer traffic or delivering it to the model. */
- async #checkPeerMembership(state: IdentityState, channel: string): Promise<void> {
+ async #checkPeerMembership(state: IdentityState, channel: string, required = true): Promise<boolean> {
   const peer = state.peers.get(channel);
   if (!peer) throw new Error("WeeChat peer membership is not confirmed");
   const checked = peer.queue.then(async () => {
    const snapshot = await this.#read(state, channel);
+   const wasReady = peer.ready;
    assertContinuity(snapshot, peer.cursor);
    let nick = peer.nick;
    const latestNick = snapshot.buffer.localvar_nick;
@@ -578,10 +629,12 @@ export class WeeChatNetwork implements WeeChatTransport {
    if (!latestNick || fold(nick) !== fold(latestNick)) peer.ready = false;
    peer.nick = latestNick || nick;
    peer.cursor = {epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id};
-   if (!peer.ready) throw new Error("WeeChat peer membership is not confirmed");
+   if (!wasReady && peer.ready && state.mentions.has(channel)) this.#handlers?.deliveryReady?.(state.channel);
+   if (required && !peer.ready) throw new Error("WeeChat peer membership is not confirmed");
   });
   peer.queue = checked.catch(() => {});
   await checked;
+  return peer.ready;
  }
  communication(channel: string): CommunicationClient {
   const home = canonical(channel);
@@ -591,21 +644,46 @@ export class WeeChatNetwork implements WeeChatTransport {
     const state = this.#get(home);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("WeeChat tool arguments must be an object");
     const args = value as Record<string, unknown>;
-    if (args.buffer !== undefined && !state.channels.map(weechatBuffer).includes(String(args.buffer))) throw new Error("WeeChat buffer is outside this identity's peer allowlist");
+    if (!this.#options.fullControl && args.buffer !== undefined && !state.channels.map(weechatBuffer).includes(String(args.buffer))) throw new Error("WeeChat buffer is outside this identity's peer allowlist");
     const target = state.channels.find(channel => weechatBuffer(channel) === args.buffer);
     // History remains readable after PART/KICK. Commands require fresh target
     // membership; a retained buffer and a healthy home channel are insufficient.
-    if (target && target !== home && name !== "weechat_buffers") await this.#checkPeerMembership(state, target);
+    if (!this.#options.fullControl && target && target !== home && name !== "weechat_buffers") await this.#checkPeerMembership(state, target);
     this.#get(home); // The home identity may have disconnected during the read.
     return state.session!.client.callTool({name, arguments: args}, {signal});
    },
   };
  }
- async #command(channel: string, name: string, text: string): Promise<void> {
-  const result = await this.communication(channel).call(name, {buffer: weechatBuffer(channel), arguments: text});
+ async #command(channel: string, name: "msg" | "topic", text: string, target = channel): Promise<void> {
+  target = canonical(target);
+  if (target !== channel && !this.#get(channel).mentions.has(target)) throw new Error("Host reply target is not an explicit mention channel");
+  if (target !== channel) await this.#checkPeerMembership(this.#get(channel), target);
+  // Host messages keep their fixed target and historical one-line size limit.
+  if (/[\x00-\x1f\x7f]/.test(text) || Buffer.byteLength(text, "utf8") > 350) throw new Error("Invalid host WeeChat command text");
+  const communication = this.communication(channel);
+  let tool = "weechat_" + name;
+  let args: Record<string, unknown> = {buffer: weechatBuffer(target), arguments: text};
+  if (this.#options.fullControl) {
+   const result = await communication.call("weechat_command_manifest", {});
+   if (result.isError) throw new Error("WeeChat command discovery failed");
+   const contents = result.content?.filter((part): part is {type: "text"; text: string} => !!part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string");
+   if (!contents || contents.length !== 1) throw new Error("Invalid WeeChat command manifest");
+   const manifest = JSON.parse(contents[0].text) as {schema_version?: unknown; commands?: unknown};
+   if (manifest?.schema_version !== 1 || !Array.isArray(manifest.commands)) throw new Error("Invalid WeeChat command manifest");
+   const matches = manifest.commands.filter((command: Record<string, unknown>) => command?.plugin === "irc" && command.name === name);
+   const item = matches[0];
+   if (matches.length !== 1 || typeof item?.tool_name !== "string" || !item.tool_name.startsWith("weechat_cmd_irc_")
+    || typeof item.revision !== "string" || !/^[a-f0-9]{64}$/.test(item.revision) || item.raw_fallback !== true) throw new Error("Native IRC command is unavailable");
+   tool = item.tool_name;
+   // Dispatch the exact IRC registration, never a same-named alias/script hook.
+   args = {buffer: weechatBuffer(target), registry_revision: item.revision, syntax: "raw",
+    params: {arguments: (name === "msg" ? "*" : canonical(channel)) + (text ? " " + text : "")}};
+  }
+  const result = await communication.call(tool, args);
+  // Never retry here: accepted dispatch can still have an uncertain outcome.
   if (result.isError) throw new Error("WeeChat command was rejected");
  }
- async say(channel: string, text: string): Promise<void> {
+ async say(channel: string, text: string, target?: string): Promise<void> {
   // Only host-generated display output is framed. Model calls retain exactly
   // the native arguments/schema, including native rejection of invalid input.
   for (const line of text.replace(/\r\n?/g, "\n").split("\n")) {
@@ -613,17 +691,17 @@ export class WeeChatNetwork implements WeeChatTransport {
    let bytes = 0;
    for (const char of line.replace(/[\x00-\x1f\x7f]/g, " ")) {
     const size = Buffer.byteLength(char, "utf8");
-    if (bytes + size > 350) { await this.#command(channel, "weechat_msg", chunk); chunk = ""; bytes = 0; }
+    if (bytes + size > 350) { await this.#command(channel, "msg", chunk, target); chunk = ""; bytes = 0; }
     chunk += char; bytes += size;
    }
-   if (chunk) await this.#command(channel, "weechat_msg", chunk);
+   if (chunk) await this.#command(channel, "msg", chunk, target);
   }
  }
  async queryTopic(channel: string): Promise<void> {
-  await this.#command(channel, "weechat_topic", "");
+  await this.#command(channel, "topic", "");
   await this.#refresh(this.#get(channel), true);
  }
- async setTopic(channel: string, topic: string): Promise<void> { await this.#command(channel, "weechat_topic", topic); }
+ async setTopic(channel: string, topic: string): Promise<void> { await this.#command(channel, "topic", topic); }
  async #dispose(state: IdentityState): Promise<void> {
   if (state.disposing) return state.disposing;
   state.disposing = (async () => {
