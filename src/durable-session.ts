@@ -1,3 +1,4 @@
+import { createDurableSkillTools, SKILL_GUIDANCE, SKILL_TOOL_NAMES } from "./skill-tools.ts";
 import { durableDiagnostic } from "./durable-diagnostic.ts";
 import { DESKTOP_TOOL_MANIFEST } from "./desktop-tool-manifest.ts";
 /** Durable IRC adapter. The host must hold exclusive ownership of sessionDir. */
@@ -336,7 +337,7 @@ export class DurableChannelSession {
 					},
 				}),
 			);
-			tools.push(...createDurableAgentTools(deps.delegate, channel, sessionId));
+			tools.push(...createDurableAgentTools(deps.delegate, channel, sessionId), ...createDurableSkillTools(deps.desktop));
 			const goal = deps.delegate.piGoal?.(channel);
 			if (goal) tools.push(...createPiGoalTools(goal, sessionId));
 			({ harness } = await AgentHarness.create<undefined>(
@@ -353,6 +354,7 @@ export class DurableChannelSession {
 							"You are cuse, an IRC computer-use assistant. Use only this channel's isolated desktop tools. Never repeat an action whose outcome is unknown; inspect its result first.",
 						"If a tool reports an unknown outcome after interruption, do not repeat its action. Inspect the desktop or ask the user before retrying. Remote tools belong to this channel isolated desktop. desktop_control runs on the host and remains available if the desktop fails. Use status to diagnose, then start/stop/sleep only as needed for recovery; stop preserves disk but loses unsaved process state. Never replay an uncertain remote action after recovery.",
 						AGENT_ASK_DESCRIPTION,
+                        SKILL_GUIDANCE,
                         // cuse has no host read tool: make the bundled writer skill usable
                         // directly, while its file operations remain on the channel desktop.
                         ...(goal ? [readFileSync(new URL("./pi-goal-upstream/skills/pi-goal-writer/SKILL.md", import.meta.url), "utf8")] : []),
@@ -380,7 +382,8 @@ export class DurableChannelSession {
             const activeTools = await lane.getActiveTools(ctx);
             if (activeTools.some(name => name === "goal_status" || name === "goal_update")) throw new PublicError("legacyGoalsMigration");
             // Append the recovery capability without replacing model/thinking/history.
-            if (!activeTools.includes("desktop_control")) await lane.setActiveTools([...activeTools, "desktop_control"], ctx);
+            const desiredTools = [...new Set([...activeTools, "desktop_control", ...SKILL_TOOL_NAMES])];
+            if (!isDeepStrictEqual(activeTools, desiredTools)) await lane.setActiveTools(desiredTools, ctx);
 			// Harness tool snapshots are durable. Register the three native goal
 			// tools explicitly on reopen, and remove them when goal mode is disabled.
 			const goalNames = ["create_goal", "get_goal", "update_goal"];

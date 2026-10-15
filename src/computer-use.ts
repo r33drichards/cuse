@@ -1,5 +1,6 @@
 import { PublicError } from "./public-error.ts";
 import { createHash } from "node:crypto";
+import { McpSkills, SKILLS_EXTENSION, SkillError, boundedSkillResponse } from "./mcp-skills.ts";
 
 export interface Desktop {
  id: string; name: string; state: string; message?: string; policy?: { state: string };
@@ -183,7 +184,12 @@ export class DesktopMcp {
  #session?: string;
  #protocol = "2025-06-18";
  #handshake?: Promise<void>;
- constructor(client: ComputerUseClient, id: string) { this.client = client; this.id = id; }
+ #hasSkills = false;
+ readonly skills: McpSkills;
+ constructor(client: ComputerUseClient, id: string) {
+  this.client = client; this.id = id;
+  this.skills = new McpSkills((method, params, signal) => this.#toolRequest(method, params, signal, true));
+ }
  async #post(method: string, params: unknown, signal?: AbortSignal, notification = false): Promise<unknown> {
   const generation = this.#generation;
   const sessionId = this.#session;
@@ -200,7 +206,7 @@ export class DesktopMcp {
     const session = response.headers.get("Mcp-Session-Id");
     if (session && generation === this.#generation) this.#session = session;
     if (notification) { await response.arrayBuffer(); return undefined; }
-    const text = await response.text();
+    const text = method.startsWith("skills/") || method === "resources/read" ? await boundedSkillResponse(response) : await response.text();
     return parseRpc(text, id, response.headers.get("Content-Type")?.includes("text/event-stream") ?? false).result;
    } catch (error) {
     if (error instanceof McpSessionNotFoundError) error.generation = generation;
@@ -221,14 +227,20 @@ export class DesktopMcp {
   if (!this.#handshake) {
    const generation = this.#generation;
    this.#handshake = (async () => {
-    const result = await this.#post("initialize", { protocolVersion: this.#protocol, capabilities: {}, clientInfo: { name: "cuse", version: "0.1.0" } }, signal) as { protocolVersion?: string };
+    const result = await this.#post("initialize", { protocolVersion: this.#protocol, capabilities: { extensions: { [SKILLS_EXTENSION]: {} } }, clientInfo: { name: "cuse", version: "0.1.0" } }, signal) as { protocolVersion?: string; capabilities?: { resources?: unknown; extensions?: Record<string, unknown> } };
     this.#protocol = result.protocolVersion ?? this.#protocol;
+    const extension = result.capabilities?.extensions?.[SKILLS_EXTENSION];
+    const resources = result.capabilities?.resources;
+    this.#hasSkills = !!extension && typeof extension === "object" && !Array.isArray(extension)
+     && !!resources && typeof resources === "object" && !Array.isArray(resources);
     await this.#post("notifications/initialized", undefined, signal, true);
    })().catch(error => {
     if (generation === this.#generation) {
      this.#generation++;
      this.#session = undefined;
      this.#handshake = undefined;
+     this.#hasSkills = false;
+     this.skills.reset();
     }
     throw error;
    });
@@ -236,8 +248,9 @@ export class DesktopMcp {
   await this.#handshake;
  }
  /** Replay only an explicit pre-dispatch session rejection, at most once. */
- async #toolRequest(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+ async #toolRequest(method: string, params: unknown, signal?: AbortSignal, skills = false): Promise<unknown> {
   await this.initialize(signal);
+  if (skills && !this.#hasSkills) throw new SkillError("unavailable");
   try { return await this.#post(method, params, signal); }
   catch (error) {
    if (!(error instanceof McpSessionNotFoundError)) throw error;
@@ -247,8 +260,11 @@ export class DesktopMcp {
     this.#generation++;
     this.#session = undefined;
     this.#handshake = undefined;
+    this.#hasSkills = false;
+    this.skills.reset();
    }
    await this.initialize(signal);
+   if (skills && !this.#hasSkills) throw new SkillError("unavailable");
    return this.#post(method, params, signal);
   }
  }
