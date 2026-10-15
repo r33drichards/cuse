@@ -394,8 +394,15 @@ export class DurableChannelSession {
 			const goalNames = ["create_goal", "get_goal", "update_goal"];
 			const currentTools = await lane.getActiveTools(ctx);
 			const removedMailboxTools = new Set(["agent_ask", "agent_list", "irc_send"]);
-			const retainedTools = currentTools.filter(name => !removedMailboxTools.has(name));
 			const communicationNames = communicationTools.map(tool => tool.name);
+			// Full control replaces the restricted bridge's SAFE_COMMANDS aliases.
+			// Only retire that closed set when the full registry is present; unknown
+			// missing tools must still fail closed. This changes future selection,
+			// never captured operations, settled results, or conversation history.
+			const fullControlRegistry = communicationNames.includes("weechat_command_manifest") && communicationNames.includes("weechat_command_contexts");
+			const restrictedAliases = new Set(["weechat_me", "weechat_msg", "weechat_names", "weechat_say", "weechat_topic", "weechat_who"]);
+			const retainedTools = currentTools.filter(name => !removedMailboxTools.has(name) &&
+				!(fullControlRegistry && restrictedAliases.has(name) && !communicationNames.includes(name)));
 			const nextTools = [...new Set([
 				...retainedTools.filter(name => goal || !goalNames.includes(name)),
 				...communicationNames,
