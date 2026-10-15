@@ -40,8 +40,10 @@ the library's random generator. Channel case does not change the result. Long
 prefixes are shortened to keep both words intact and the nick within 30 ASCII
 characters. The IRC network must support this nickname length.
 
-WeeChat receives five deterministic readable candidates and tries the next one
-when the server rejects an occupied nickname. Its unbounded automatic alternate
+WeeChat receives up to five deterministic readable candidates and tries the next
+one when the server rejects an occupied nickname. A saved native nickname is
+tried first; if it is not among the generated candidates, the list has up to six
+names. Its unbounded automatic alternate
 nick generation stays disabled. If all candidates are occupied, JOIN readiness
 times out without starting channel work. No existing IRC user is displaced.
 The confirmed nick is atomically saved in `nick.json` beside the existing
