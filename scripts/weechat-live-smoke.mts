@@ -1,7 +1,7 @@
 /** Credential-free integration: actual WeeChat + Python bridge + TS MCP SDK on loopback IRC. */
 import assert from 'node:assert/strict';
 import {createServer,type Socket} from 'node:net';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {WeeChatNetwork,weechatBuffer,type WeeChatMessage} from '../packages/coding-agent/src/cuse/weechat.ts';
@@ -30,7 +30,10 @@ const server=createServer(socket=>{
 await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
 const port=(server.address() as {port:number}).port;
 const root=mkdtempSync(join(tmpdir(),'cuse-live-weechat-'));
-const options={server:'127.0.0.1',port,tls:false,nick:'testcuse',profileRoot:root,upstreamDir:'/opt/cuse-vendor/weechat-mcp',pythonCommand:'/opt/cuse-weechat/bin/python',peerChannels:{'#alpha':['#beta']},joinTimeoutMs:20000};
+// Only this credential-free fixture captures native output. Production never logs it.
+const launcher=join(root,'native-launcher');
+writeFileSync(launcher,'#!/bin/sh\nexec weechat-headless "$@" 2>> "$(dirname "$0")/native.log"\n',{mode:0o700});
+const options={server:'127.0.0.1',port,tls:false,nick:'testcuse',profileRoot:root,upstreamDir:'/opt/cuse-vendor/weechat-mcp',pythonCommand:'/opt/cuse-weechat/bin/python',weechatCommand:launcher,peerChannels:{'#alpha':['#beta']},joinTimeoutMs:20000};
 const transport=new WeeChatNetwork(options);const messages:WeeChatMessage[]=[];const joined=new Set<string>();const faults:string[]=[];
 transport.setHandlers({message:async m=>{messages.push(m);},joined:c=>joined.add(c),disconnected:c=>joined.delete(c),topic:()=>{},fault:(c)=>faults.push(c)});
 try{
@@ -52,6 +55,9 @@ try{
  const restarted=new WeeChatNetwork(options);restarted.setHandlers({message:async()=>{throw Error('must not consume new epoch');},joined:()=>{},disconnected:()=>{},topic:()=>{},fault:()=>{}});
  try{await assert.rejects(restarted.join('#beta'),/epoch|history|cursor/i);}finally{await restarted.close();}
  console.log('Native WeeChat integration OK: distinct identities, scoped tools, visible IRC delivery, cursor, self suppression, reconnect, cleanup, new-epoch barrier');
+}catch(error){
+ if(existsSync(join(root,'native.log')))console.error(readFileSync(join(root,'native.log'),'utf8'));
+ throw error;
 }finally{
  await transport.close();for(const p of peers)p.socket.destroy();await new Promise<void>(r=>server.close(()=>r()));rmSync(root,{recursive:true,force:true});
 }

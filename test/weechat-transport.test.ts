@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -484,4 +484,34 @@ test('unreconciled peer nick metadata cannot imply continued membership', async 
   await assert.rejects(send(), /membership/); await assert.rejects(send(), /membership/);
   assert.equal(a.calls.length, 0);
  } finally { await t.cleanup(); }
+});
+
+test("concurrent native stdout locks are isolated and private output is continuously drained", async () => {
+ const root = mkdtempSync(join(tmpdir(), "wc-stdout-"));
+ const executable = join(root, "locking-native-fixture");
+ // Match WeeChat 3.8 log_open: lock stdout, then write enough to fill an
+ // undrained pipe. No IRC socket, credentials, or MCP server are involved.
+ writeFileSync(executable, `#!/usr/bin/env python3
+import fcntl, os, pathlib, sys, time
+fcntl.flock(sys.stdout.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+for _ in range(256):
+    os.write(sys.stdout.fileno(), b'PRIVATE_NATIVE_OUTPUT' * 1024)
+pathlib.Path(sys.argv[sys.argv.index('-d') + 1], 'stdout-drained').write_text('ready')
+time.sleep(30)
+`, {mode: 0o700});
+ const controllers = [new AbortController(), new AbortController()];
+ const profiles = [join(root, "alpha"), join(root, "beta")];
+ for (const profile of profiles) mkdirSync(profile);
+ const starts = profiles.map((profile, index) => startNativeWeeChat({server: "private.invalid", port: 16667, tls: false,
+  nick: "cuse", profileRoot: root, upstreamDir: "/private/upstream", weechatCommand: executable, joinTimeoutMs: 3000},
+ {channel: index ? "#beta" : "#alpha", nick: "private_nick", channels: [index ? "#beta" : "#alpha"], profile, signal: controllers[index].signal})
+ .then(() => { throw new Error("fixture must never establish an MCP session"); }, error => error));
+ try {
+  await until(() => profiles.every(profile => existsSync(join(profile, "stdout-drained"))));
+  assert(profiles.every(profile => !existsSync(join(profile, "weechat.log"))), "native output is never persisted");
+ } finally {
+  for (const controller of controllers) controller.abort();
+  await Promise.all(starts);
+  rmSync(root, {recursive: true, force: true});
+ }
 });
