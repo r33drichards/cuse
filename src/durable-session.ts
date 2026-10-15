@@ -1,5 +1,5 @@
 import { createDurableSkillTools, SKILL_GUIDANCE, SKILL_TOOL_NAMES } from "./skill-tools.ts";
-import { durableDiagnostic } from "./durable-diagnostic.ts";
+import { durableDiagnostic, settledDiagnostic, toolDiagnostic } from "./durable-diagnostic.ts";
 import { DESKTOP_TOOL_MANIFEST } from "./desktop-tool-manifest.ts";
 /** Durable IRC adapter. The host must hold exclusive ownership of sessionDir. */
 import { isDeepStrictEqual } from "node:util";
@@ -183,6 +183,7 @@ export class DurableChannelSession {
 				relay.tool(describeToolCall(event.toolName, event.args));
 		});
 		harness.events.on("tool_end", (event) => {
+			if (event.isError) this.reportDiagnostic(toolDiagnostic(event.toolName));
 			for (const relay of this.#relays)
 				relay.tool(
 					describeToolResult(
@@ -432,6 +433,11 @@ export class DurableChannelSession {
 		this.#relays.add(relay);
 		return () => this.#relays.delete(relay);
 	}
+	/** Diagnostics must never change settlement, goal accounting or replay behavior. */
+	private reportDiagnostic(category: string): void {
+		try { this.log(`IRC: durable diagnostic in ${this.channel}: ${category}`); }
+		catch { /* An unavailable logger cannot fail or replay an operation. */ }
+	}
 	get busy(): boolean {
 		return this.#depth > 0;
 	}
@@ -491,11 +497,17 @@ export class DurableChannelSession {
 				result = driven.value.outcome;
 			}
 			if (result.status === "failed" || result.status === "aborted") {
+                this.reportDiagnostic(settledDiagnostic(result));
                 return { text: publicError(undefined), steered: false };
             }
 			const entry = result.tipId
 				? await this.store.getEntry(result.tipId, ctx)
 				: undefined;
+			if (entry?.type === "message" && entry.message.role === "assistant" &&
+				(entry.message.stopReason === "error" || entry.message.stopReason === "aborted")) {
+				this.reportDiagnostic(settledDiagnostic({ status: entry.message.stopReason === "aborted" ? "aborted" : "failed",
+					error: { code: "assistant_error", message: entry.message.errorMessage } }));
+			}
 			return {
 				text:
 					entry?.type === "message" && entry.message.role === "assistant"
@@ -508,7 +520,7 @@ export class DurableChannelSession {
 			};
 		} catch(error) {
             this.goal?.fault(operationId);
-            this.log("IRC: durable diagnostic in "+this.channel+": "+durableDiagnostic(error));
+            this.reportDiagnostic(durableDiagnostic(error));
             throw error;
 		} finally {
 			this.#depth--;
@@ -526,8 +538,10 @@ export class DurableChannelSession {
 		operationId: string,
 	): Promise<{ text: string; entryId?: string }> {
 		const result = await this.lane.getResult(operationId, ctx);
-		if (result?.status === "failed" || result?.status === "aborted")
+		if (result?.status === "failed" || result?.status === "aborted") {
+			this.reportDiagnostic(settledDiagnostic(result));
 			return { text: publicError(undefined) };
+		}
 		const entry = result?.tipId
 			? await this.store.getEntry(result.tipId, ctx)
 			: undefined;
@@ -550,6 +564,10 @@ export class DurableChannelSession {
 				ctx,
 			);
 			if (!result.ok) throw result.error;
+			if (result.value.kind === "settled" &&
+				(result.value.outcome.status === "failed" || result.value.outcome.status === "aborted")) {
+				this.reportDiagnostic(settledDiagnostic(result.value.outcome));
+			}
 		}
 	}
  /** Atomically targets one operation; a settled/stale target never aborts its successor. */
