@@ -465,14 +465,30 @@ export class WeeChatNetwork implements WeeChatTransport {
   const checked = peer.queue.then(async () => {
    const snapshot = await this.#read(state, channel);
    assertContinuity(snapshot, peer.cursor);
-   const oldNick = peer.nick;
-   if (snapshot.buffer.localvar_nick) peer.nick = snapshot.buffer.localvar_nick;
+   let nick = peer.nick;
+   const latestNick = snapshot.buffer.localvar_nick;
    for (const line of snapshot.lines) {
     if (line.id <= peer.cursor.lastId) continue;
-    if (line.tags.includes("irc_join") && (isSelf(line, peer.nick) || isSelf(line, oldNick))) peer.ready = true;
-    else if (membershipLost(line, peer.nick) || membershipLost(line, oldNick)) peer.ready = false;
+    // WeeChat prints own NICK changes with these native tags, not nick_.
+    // Follow them in order: A -> B, KICK B, then localvar_nick=C must not
+    // erase the intervening loss of membership.
+    if (line.tags.includes("irc_nick")) {
+     const before = line.tags.find(tag => tag.startsWith("irc_nick1_"))?.slice(10);
+     const after = line.tags.find(tag => tag.startsWith("irc_nick2_"))?.slice(10);
+     if (before && fold(before) === fold(nick)) {
+      if (after) nick = after;
+      else peer.ready = false;
+     }
+    }
+    if (line.tags.includes("irc_join") && (isSelf(line, nick) || (!!latestNick && isSelf(line, latestNick)))) {
+     peer.ready = true;
+     nick = author(line) || latestNick || nick;
+    } else if (membershipLost(line, nick) || (!!latestNick && membershipLost(line, latestNick))) peer.ready = false;
    }
-   if (!snapshot.buffer.localvar_nick) peer.ready = false;
+   // Retained channel buffers also get nick updates while parted. Preserve
+   // that name for a future JOIN, but never infer a JOIN from the metadata.
+   if (!latestNick || fold(nick) !== fold(latestNick)) peer.ready = false;
+   peer.nick = latestNick || nick;
    peer.cursor = {version: 1, channel, epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id};
    if (!peer.ready) throw new Error("WeeChat peer membership is not confirmed");
   });
