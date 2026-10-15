@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client, type McpSubscription } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { PublicError } from "./public-error.ts";
 import type { RemoteResult, RemoteTool } from "./computer-use.ts";
 
 // node-petname's public generator uses Math.random. Select from its pinned word
@@ -39,6 +40,10 @@ export interface WeeChatTransport {
  queryTopic(channel: string): Promise<void>;
  setTopic(channel: string, topic: string): Promise<void>;
  setHandlers(handlers: WeeChatHandlers): void;
+ /** One-time reviewed legacy migration boundary, restored from durable receipts. */
+ setHistoryCutoff?(cutoff: number): void;
+ /** Existence only, for one-time upgrade review; never reads old positions. */
+ hasLegacyHistory?(channels: readonly string[]): boolean;
 }
 export type NativeMcpClient = Pick<Client, "listResources" | "listTools" | "callTool" | "readResource" | "listen" | "setNotificationHandler">;
 export interface NativeWeeChatSession {
@@ -79,7 +84,8 @@ export interface NativeSnapshot {
  last_assigned_id: number;
  has_more: boolean;
 }
-interface Cursor { version: 1; channel: string; epoch: string; lastId: number }
+/** Native positions only have meaning during this running identity. Never persist. */
+interface Cursor { epoch: string; lastId: number }
 interface PeerMembership {
  cursor: Cursor;
  nick: string;
@@ -94,7 +100,6 @@ interface IdentityState {
  channels: string[];
  profile: string;
  lock: string;
- cursorPath: string;
  cursor?: Cursor;
  session?: NativeWeeChatSession;
  subscription?: McpSubscription;
@@ -144,6 +149,25 @@ function readNick(path: string, base: string, channel: string): string | undefin
  // An explicit IRC_NICK change requests a new prefix, not new session state.
  return data.base === base ? data.nick : undefined;
 }
+/** WeeChat 3.8 uses underscores; newer versions use '='. Values are opaque.
+ * 3.8 maps commas to semicolons, so that form cannot losslessly identify a
+ * value containing ';'. Refuse ambiguous/duplicate tags rather than guess.
+ */
+export function nativeTag(line: NativeLine, key: "msgid" | "time"): string | undefined {
+ const prefixes = ["irc_tag_" + key + "=", "irc_tag_" + key + "_"];
+ const tags = line.tags.filter(tag => prefixes.some(prefix => tag.startsWith(prefix)));
+ if (tags.length !== 1) return;
+ const prefix = prefixes.find(prefix => tags[0].startsWith(prefix))!;
+ const value = tags[0].slice(prefix.length);
+ if (!value || /[\x00-\x20\x7f]/.test(value) || (prefix.endsWith("_") && value.includes(";"))) return;
+ return value;
+}
+/** Scope to the configured IRC endpoint + canonical channel, never nick/epoch.
+ * JSON preserves the exact, case-sensitive opaque server ID without ordering it.
+ */
+export function nativeMessageId(network: Pick<WeeChatNetworkOptions, "server" | "port" | "tls">, channel: string, msgid: string): string {
+ return "irc-msgid:" + JSON.stringify([network.server.toLowerCase(), network.port, network.tls, canonical(channel), msgid]);
+}
 function author(line: NativeLine): string { return line.tags.find(tag => tag.startsWith("nick_"))?.slice(5) ?? ""; }
 function isSelf(line: NativeLine, nick: string): boolean { return line.tags.includes("notify_self") || (!!author(line) && fold(author(line)) === fold(nick)); }
 function membershipLost(line: NativeLine, nick: string): boolean {
@@ -192,14 +216,6 @@ function parseSnapshot(result: Awaited<ReturnType<NativeMcpClient["readResource"
   || (data.omitted_through_id !== null && (!data.lines.length || data.omitted_through_id >= data.lines[0].id))) throw new Error("Invalid native WeeChat watermarks");
  return data;
 }
-function readCursor(path: string, channel: string): Cursor | undefined {
- let data: Cursor;
- try { data = JSON.parse(readFileSync(path, "utf8")) as Cursor; }
- catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
- if (!data || data.version !== 1 || data.channel !== channel || typeof data.epoch !== "string" || !data.epoch
-  || !(data.lastId === -1 || lineId(data.lastId))) throw new Error("Invalid durable WeeChat cursor; operator recovery required");
- return data;
-}
 /** Flush both the replacement file and its directory before publishing state. */
 function saveJson(path: string, value: unknown): void {
  const temp = path + "." + randomUUID() + ".tmp";
@@ -212,10 +228,13 @@ function saveJson(path: string, value: unknown): void {
  } finally { if (fd !== undefined) closeSync(fd); rmSync(temp, {force: true}); }
 }
 function assertContinuity(snapshot: NativeSnapshot, cursor?: Cursor): void {
+ // A new process reads all available history. Bounded history before this
+ // snapshot is not a continuity failure or permission to jump to the tail.
+ if (!cursor) return;
  if (cursor && snapshot.data_epoch !== cursor.epoch) throw new Error("WeeChat data epoch changed; operator recovery required");
  const last = cursor?.lastId ?? -1;
  if (snapshot.last_assigned_id < last) throw new Error("WeeChat native watermark regressed; operator recovery required");
- if (snapshot.omitted_through_id !== null && snapshot.omitted_through_id > last) throw new Error("WeeChat unread lines were omitted; operator recovery required");
+ if (cursor && snapshot.omitted_through_id !== null && snapshot.omitted_through_id > last) throw new Error("WeeChat unread lines were omitted; operator recovery required");
  // Native IDs can be sparse (newer WeeChat uses microsecond IDs). Require the
  // committed anchor to remain visible instead of inventing contiguous IDs.
  if (cursor && last >= 0 && snapshot.last_assigned_id > last
@@ -239,6 +258,7 @@ export function weechatLaunchArguments(options: WeeChatNetworkOptions, identity:
   "/set irc.server.docker.nicks " + weechatNicks(options.nick, identity.channel, identity.nick).join(","),
   "/set irc.server.docker.autojoin " + identity.channels.join(","),
   "/set irc.server.docker.autoreconnect on",
+  "/set irc.server.docker.capabilities message-tags,server-time",
   "/set irc.server.docker.autorejoin off",
   "/set irc.server.docker.nicks_alternate off",
   "/connect docker",
@@ -325,6 +345,7 @@ export class WeeChatNetwork implements WeeChatTransport {
  readonly #peers = new Map<string, string[]>();
  #handlers?: WeeChatHandlers;
  #closed = false;
+ #historyCutoff?: number;
  constructor(options: WeeChatNetworkOptions) {
   if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(options.server) || !Number.isInteger(options.port) || options.port < 1 || options.port > 65535 || typeof options.tls !== "boolean") throw new Error("Invalid WeeChat IRC server configuration");
   if (!isAbsolute(options.profileRoot) || !isAbsolute(options.upstreamDir)) throw new Error("WeeChat paths must be absolute");
@@ -339,6 +360,13 @@ export class WeeChatNetwork implements WeeChatTransport {
   }
  }
  setHandlers(handlers: WeeChatHandlers): void { this.#handlers = handlers; }
+ hasLegacyHistory(channels: readonly string[]): boolean {
+  return channels.some(channel => existsSync(join(identityDirectory(this.#options.profileRoot, channel), "cursor.json")));
+ }
+ setHistoryCutoff(cutoff: number): void {
+  if (this.#identities.size || !Number.isFinite(cutoff)) throw new Error("Invalid WeeChat history cutoff");
+  this.#historyCutoff = cutoff;
+ }
  nickFor(channel: string): string {
   const key = canonical(channel);
   return this.#identities.get(key)?.nick
@@ -371,8 +399,7 @@ export class WeeChatNetwork implements WeeChatTransport {
    const nickPath = join(directory, "nick.json");
    const savedNick = readNick(nickPath, this.#options.nick, key);
    const state: IdentityState = {channel: key, nick: savedNick ?? weechatNick(this.#options.nick, key), nickPath, savedNick, channels: this.#peers.get(key) ?? [key], profile, lock,
-    cursorPath: join(directory, "cursor.json"), start: Promise.resolve(), queue: Promise.resolve(), abort: new AbortController(), ready: false, closing: false, membershipId: -1, peers: new Map()};
-   state.cursor = readCursor(state.cursorPath, key);
+    start: Promise.resolve(), queue: Promise.resolve(), abort: new AbortController(), ready: false, closing: false, membershipId: -1, peers: new Map()};
    this.#identities.set(key, state);
    state.start = this.#start(state).catch(async error => { this.#fault(state, error); await this.#dispose(state); throw error; });
    return state.start;
@@ -402,7 +429,7 @@ export class WeeChatNetwork implements WeeChatTransport {
      for (const [index, channel] of state.channels.entries()) {
       if (channel === state.channel) continue;
       const snapshot = snapshots[index];
-      state.peers.set(channel, {cursor: {version: 1, channel, epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id},
+      state.peers.set(channel, {cursor: {epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id},
        nick: snapshot.buffer.localvar_nick, ready: true, queue: Promise.resolve()});
      }
      break;
@@ -472,23 +499,32 @@ export class WeeChatNetwork implements WeeChatTransport {
      // Do not consume messages while offline. A retained-epoch own JOIN will
      // make the next snapshot replay them, using the same durable input IDs.
      if (!state.ready) return;
+     if (this.#historyCutoff !== undefined) {
+      const time = nativeTag(line, "time");
+      const timestamp = time && /^\d{4}-\d\d-\d\dT.*Z$/.test(time) ? Date.parse(time) : NaN;
+      if (!Number.isFinite(timestamp)) throw new PublicError("nativeTimeRequired");
+      if (timestamp <= this.#historyCutoff) {
+       state.cursor = {epoch: snapshot.data_epoch, lastId: line.id};
+       continue;
+      }
+     }
+     const msgid = nativeTag(line, "msgid");
+     if (!msgid) throw new PublicError("nativeMsgidRequired");
      const nick = author(line);
      if (!nick) throw new Error("Native WeeChat message has no author tag");
      state.inMessage = true;
      try {
       await this.#handlers!.message({target: state.channel, nick, message: line.message,
-       id: "weechat:" + createHash("sha256").update(JSON.stringify([state.channel, snapshot.data_epoch, line.id])).digest("hex")});
+       id: nativeMessageId(this.#options, state.channel, msgid)});
      } finally { state.inMessage = false; }
      if (state.closing || state.failure) return;
     }
     // Inbox persistence is awaited above. A crash here may replay the same ID,
     // which the durable inbox must deduplicate; it cannot lose an input.
-    const cursor: Cursor = {version: 1, channel: state.channel, epoch: snapshot.data_epoch, lastId: line.id};
-    saveJson(state.cursorPath, cursor); state.cursor = cursor;
+    state.cursor = {epoch: snapshot.data_epoch, lastId: line.id};
    }
    if (!state.cursor) {
-    const cursor: Cursor = {version: 1, channel: state.channel, epoch: snapshot.data_epoch, lastId: -1};
-    saveJson(state.cursorPath, cursor); state.cursor = cursor;
+    state.cursor = {epoch: snapshot.data_epoch, lastId: -1};
    }
   });
   const checked = work.catch(error => { this.#fault(state, error); throw error; });
@@ -501,7 +537,8 @@ export class WeeChatNetwork implements WeeChatTransport {
   const ready = state.ready; state.ready = false;
   if (ready) this.#handlers?.disconnected(state.channel);
   this.#handlers?.fault(state.channel, state.failure);
-  // Leave the persisted cursor intact. Never reconnect/reseed across an epoch.
+  // A fresh identity starts from available history and durable server receipts.
+  // Never conceal an in-process gap or retry uncertain persistence here.
   void this.#dispose(state).catch(() => {});
  }
  #get(channel: string): IdentityState {
@@ -540,7 +577,7 @@ export class WeeChatNetwork implements WeeChatTransport {
    // that name for a future JOIN, but never infer a JOIN from the metadata.
    if (!latestNick || fold(nick) !== fold(latestNick)) peer.ready = false;
    peer.nick = latestNick || nick;
-   peer.cursor = {version: 1, channel, epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id};
+   peer.cursor = {epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id};
    if (!peer.ready) throw new Error("WeeChat peer membership is not confirmed");
   });
   peer.queue = checked.catch(() => {});

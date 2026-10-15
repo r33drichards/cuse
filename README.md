@@ -311,10 +311,12 @@ New exact-HEAD CI and independent source approval remain parent barriers.
 
 Send `,toggle mention` in a channel to switch between requiring that channel's bot nickname (for example `cuse-settling-mayfly:`) and responding to every message. The bot confirms whether mentions are ON (required) or OFF. The setting is per channel and survives restarts; channels without an override use `IRC_RESPOND_TO_ALL`. The toggle works without a bot prefix in any channel. DMs always accept messages.
 
-### Opt-in durable IRC runtime
+### Durable IRC runtime
 
-Set `CUSE_DURABLE_IRC=true` to use pi's SQLite-backed AgentHarness and the
-persistent IRC inbox/outbox. Keep the existing persistent `/data/agent`
+Native WeeChat intake requires `CUSE_DURABLE_IRC=true`, using pi's SQLite-backed
+AgentHarness and the persistent IRC inbox/outbox. Review the [one-time legacy
+replay migration](docs/weechat-transport.md#one-time-legacy-migration-subject-to-review)
+before upgrading an existing installation. Keep the existing persistent `/data/agent`
 volume and run one replica. The process takes an exclusive SQLite ownership
 lock before opening durable conversations; a process crash releases that lock.
 This is single-host recovery, not multi-host failover or a substitute for backups.
@@ -351,8 +353,11 @@ IRC also has no end-to-end delivery acknowledgement here. An uncertain reply
 may be duplicated after a crash, and local socket acceptance does not prove
 receipt. Messages sent while the bot was offline cannot be recovered unless
 the IRC server replays them. Server message IDs deduplicate received replays;
-without those IDs, each received line is a distinct input. Administrative
-commands and live tool progress are outside the persistent prompt queue.
+without a lossless ID, intake pauses rather than inventing one. Administrative
+commands reserve separate durable receipts before their effects; uncertain
+commands are not automatically repeated. Live tool progress remains outside the
+persistent prompt queue. Native positions are process-local, so a fresh WeeChat
+epoch does not block routine restart.
 
 Run `npm run test:durable` with Node 24 to exercise inbox ownership/crash
 recovery, runtime checkpoints, and IRC transport integration without live

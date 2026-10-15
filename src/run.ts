@@ -132,6 +132,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	const { resourceLoader, settingsManager } = await createResources(cwd);
 	const extensions = resourceLoader.getExtensions();
  const durable = envFlag(env.CUSE_DURABLE_IRC) ?? false;
+ if (!durable) throw new PublicError("nativeReplayRequiresDurable");
  const goalsEnabled = envFlag(env.CUSE_GOALS_ENABLED) ?? false;
  if(goalsEnabled && !durable)throw new PublicError("goalUnavailable");
  if (durable && (extensions.extensions.length || extensions.errors.length)) throw new PublicError("durableExtensions");
@@ -163,6 +164,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
    weechatCommand: env.CUSE_WEECHAT_BIN ?? "weechat-headless", peerChannels,
   }),
   durable,
+  nativeHistoryAfter: env.CUSE_WEECHAT_HISTORY_AFTER,
   goalsEnabled,
 		cwd,
 		workspaceRoot: command.workspaceRoot ?? env.PI_IRC_WORKSPACE_DIR ?? join(agentDir, "irc", "channels"),

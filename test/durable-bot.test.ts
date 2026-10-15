@@ -247,7 +247,8 @@ test("IRC schedule command replay uses msgid; human can create during scheduled 
   await assert.rejects(bot.schedule({action:"create",room:"#control",requestId:"recursive",timing:{kind:"delay",afterMs:60000},prompt:"recurse"}),/cannot create/);
   const event={nick:"tester",target:"#control",message:",schedule every 5m :: check status",tags:{msgid:"schedule-command"}};
   irc.emit("privmsg",event);irc.emit("privmsg",event);
-  await until(()=>irc.messages.length===2);
+  await until(()=>irc.messages.length===1);
+  await tick(); assert.equal(irc.messages.length,1,"replay does not repeat command replies");
   const schedules=await bot.schedule({action:"list",room:"#control",requestId:"list"}) as unknown[];
   assert.equal(schedules.length,2);
  } finally {release();await bot.close();rmSync(root,{recursive:true,force:true});}

@@ -1,5 +1,10 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ nativeMsgidRequired: "WeeChat intake paused: a message has no lossless, unambiguous server msgid. No fallback ID or automatic replay was used.",
+ nativeTimeRequired: "WeeChat intake paused: the approved history cutoff requires an unambiguous server-time tag. State was preserved.",
+ nativeReplayRequiresDurable: "WeeChat restart replay requires CUSE_DURABLE_IRC=true so accepted inputs and commands have durable receipts.",
+ nativeReplayMigration: "Legacy WeeChat receipts require a reviewed history cutoff before server-ID replay. State was preserved; choose CUSE_WEECHAT_HISTORY_AFTER only after reviewing the bounded history gap.",
+
  legacyDirectMessagesMigration: "Unfinished direct-message work requires operator inspection before channel-only WeeChat startup. State was preserved.",
  communicationTool: "WeeChat MCP tool failed; no automatic replay was attempted.",
  legacyPeersMigration: "Saved work from the removed peer mailbox requires operator inspection before startup. State was preserved; no peer work was replayed.",
