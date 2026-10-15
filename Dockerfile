@@ -49,6 +49,8 @@ COPY vendor/pi-goal.provenance.json /opt/cuse-vendor/pi-goal.provenance.json
 COPY entrypoint.sh /usr/local/bin/cuse-entrypoint
 COPY scripts/image-smoke.mts /app/cuse/image-smoke.mts
 COPY scripts/weechat-live-smoke.mts /app/cuse/weechat-live-smoke.mts
+COPY scripts/weechat-lifecycle-smoke.mts /app/cuse/weechat-lifecycle-smoke.mts
+COPY scripts/weechat-lifecycle-check.mjs /app/cuse/weechat-lifecycle-check.mjs
 RUN chmod 0755 /usr/local/bin/cuse-entrypoint && mkdir -p /data/agent /workspace
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/cuse-entrypoint"]
