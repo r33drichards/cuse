@@ -377,6 +377,115 @@ for (const kind of ["exit", "spawn", "signal"] as const) {
  });
 }
 
+test('kicked peer rejects writes while its home remains joined',async()=>{
+ const t=setup({peerChannels:{'#alpha':['#beta']}});
+ try{
+  await t.network.join('#alpha'); const a=t.fixtures.get('#alpha')!;
+  const peer=a.snapshots.get(weechatResource('#beta'))!;
+  peer.lines.push({id:1,tags:['irc_kick','nick_moderator'],message:'moderator has kicked '+a.identity.nick+' (reason)'});peer.last_assigned_id=1;
+  a.notify('#beta');await delay(10);
+  await assert.rejects(t.network.communication('#alpha').call('weechat_msg',{buffer:weechatBuffer('#beta'),arguments:'lost after kick'}),/not ready|membership|unavailable/);
+ }finally{await t.cleanup();}
+});
+
+for (const kind of ['part', 'disconnect', 'blank-nick'] as const) {
+ test(`peer ${kind} rejects commands without blocking home output or history reads`, async () => {
+  const t = setup({peerChannels: {'#alpha': ['#beta']}});
+  try {
+   await t.network.join('#alpha'); const a = t.fixtures.get('#alpha')!;
+   const peer = a.snapshots.get(weechatResource('#beta'))!;
+   if (kind === 'blank-nick') peer.buffer.localvar_nick = '';
+   else {
+    peer.lines.push({id: 1, tags: kind === 'part' ? ['irc_part', 'nick_' + a.identity.nick] : [], message: kind === 'part' ? 'left' : 'irc: disconnected from server'});
+    peer.last_assigned_id = 1;
+   }
+   const communication = t.network.communication('#alpha');
+   await assert.rejects(communication.call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'blocked'}), /membership/);
+   assert.equal(a.calls.length, 0);
+   await communication.call('weechat_buffers', {buffer: weechatBuffer('#beta')});
+   await t.network.say('#alpha', 'home still works');
+   assert.equal(a.calls.length, 2);
+   assert.equal(t.messages.length, 0); assert.equal(t.faults.length, 0);
+   peer.buffer.localvar_nick = a.identity.nick;
+   peer.lines.push({id: 2, tags: ['irc_join', 'nick_' + a.identity.nick], message: 'rejoined'}); peer.last_assigned_id = 2;
+   await communication.call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'after rejoin'});
+   assert.equal(a.calls.length, 3);
+   assert.deepEqual(a.subscriptions, [[weechatResource('#alpha')]]);
+  } finally { await t.cleanup(); }
+ });
+}
+
+test('peer membership survives retained JOIN eviction but rejects an unobserved history gap', async () => {
+ const t = setup({peerChannels: {'#alpha': ['#beta']}});
+ try {
+  await t.network.join('#alpha'); const a = t.fixtures.get('#alpha')!;
+  const peer = a.snapshots.get(weechatResource('#beta'))!;
+  const communication = t.network.communication('#alpha');
+  peer.lines.push({id: 1000, tags: ['irc_privmsg', 'nick_human'], message: 'peer data only'}); peer.last_assigned_id = 1000;
+  await communication.call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'first'});
+  peer.lines = [peer.lines[1], {id: 2000, tags: ['irc_privmsg', 'nick_human'], message: 'more data'}];
+  peer.oldest_available_id = 1000; peer.last_assigned_id = 2000;
+  await communication.call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'JOIN no longer retained'});
+  peer.lines = [{id: 4000, tags: ['irc_privmsg', 'nick_human'], message: 'gap may hide a kick'}];
+  peer.oldest_available_id = 4000; peer.last_assigned_id = 4000;
+  await assert.rejects(communication.call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'unsafe'}), /evicted/);
+  assert.equal(a.calls.length, 2); assert.equal(t.messages.length, 0);
+ } finally { await t.cleanup(); }
+});
+
+test('peer data epoch change rejects commands without dispatch', async () => {
+ const t = setup({peerChannels: {'#alpha': ['#beta']}});
+ try {
+  await t.network.join('#alpha'); const a = t.fixtures.get('#alpha')!;
+  a.snapshots.get(weechatResource('#beta'))!.data_epoch = 'replacement';
+  await assert.rejects(t.network.communication('#alpha').call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'unsafe'}), /epoch/);
+  assert.equal(a.calls.length, 0);
+ } finally { await t.cleanup(); }
+});
+
+test('peer KICK follows intermediate own nick changes and requires a new JOIN', async () => {
+ const t = setup({peerChannels: {'#alpha': ['#beta']}});
+ try {
+  await t.network.join('#alpha'); const a = t.fixtures.get('#alpha')!;
+  const peer = a.snapshots.get(weechatResource('#beta'))!;
+  peer.lines.push({id: 1, tags: ['irc_nick', 'irc_nick1_' + a.identity.nick, 'irc_nick2_middle'], message: 'now middle'},
+   {id: 2, tags: ['irc_kick', 'nick_moderator'], message: 'moderator has kicked middle (reason)'});
+  peer.last_assigned_id = 2; peer.buffer.localvar_nick = 'latest';
+  const send = () => t.network.communication('#alpha').call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'requires membership'});
+  await assert.rejects(send(), /membership/);
+  await assert.rejects(send(), /membership/);
+  assert.equal(a.calls.length, 0);
+  peer.lines.push({id: 3, tags: ['irc_join', 'nick_latest'], message: 'rejoined'}); peer.last_assigned_id = 3;
+  await send(); assert.equal(a.calls.length, 1); assert.equal(t.messages.length, 0);
+ } finally { await t.cleanup(); }
+});
+
+test('continuous own nick lineage keeps peer membership and ignores unrelated renames', async () => {
+ const t = setup({peerChannels: {'#alpha': ['#beta']}});
+ try {
+  await t.network.join('#alpha'); const a = t.fixtures.get('#alpha')!;
+  const peer = a.snapshots.get(weechatResource('#beta'))!;
+  peer.lines.push({id: 1, tags: ['irc_nick', 'irc_nick1_someone', 'irc_nick2_other'], message: 'unrelated'},
+   {id: 2, tags: ['irc_nick', 'irc_nick1_' + a.identity.nick.toUpperCase(), 'irc_nick2_middle'], message: 'own rename'},
+   {id: 3, tags: ['irc_nick', 'irc_nick1_middle', 'irc_nick2_latest'], message: 'own rename again'});
+  peer.last_assigned_id = 3; peer.buffer.localvar_nick = 'latest';
+  await t.network.communication('#alpha').call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'still joined'});
+  assert.equal(a.calls.length, 1); assert.equal(t.messages.length, 0);
+ } finally { await t.cleanup(); }
+});
+
+test('unreconciled peer nick metadata cannot imply continued membership', async () => {
+ const t = setup({peerChannels: {'#alpha': ['#beta']}});
+ try {
+  await t.network.join('#alpha'); const a = t.fixtures.get('#alpha')!;
+  const peer = a.snapshots.get(weechatResource('#beta'))!;
+  peer.buffer.localvar_nick = 'unexplained';
+  const send = () => t.network.communication('#alpha').call('weechat_msg', {buffer: weechatBuffer('#beta'), arguments: 'unsafe'});
+  await assert.rejects(send(), /membership/); await assert.rejects(send(), /membership/);
+  assert.equal(a.calls.length, 0);
+ } finally { await t.cleanup(); }
+});
+
 test("concurrent native stdout locks are isolated and private output is continuously drained", async () => {
  const root = mkdtempSync(join(tmpdir(), "wc-stdout-"));
  const executable = join(root, "locking-native-fixture");
