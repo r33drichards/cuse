@@ -38,6 +38,11 @@ export interface InboxMessage {
 	body: string;
 }
 
+export interface NativeAdmission {
+ admitted: boolean;
+ added: boolean;
+}
+
 export interface StoredInboxMessage extends InboxMessage {
 	state: InboxState;
 	createdAt: number;
@@ -158,7 +163,14 @@ export class DurableIrcStore {
 						state TEXT NOT NULL CHECK(state IN ('pending','sending','sent')),
 						delivery_uncertain INTEGER NOT NULL DEFAULT 0
 					);
-					CREATE TABLE IF NOT EXISTS schedule_receipts (
+					CREATE TABLE IF NOT EXISTS irc_peer_budgets (
+ channel TEXT PRIMARY KEY, turns INTEGER NOT NULL CHECK(turns BETWEEN 0 AND 4)
+ );
+ CREATE TABLE IF NOT EXISTS irc_admissions (
+ id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+ admitted INTEGER NOT NULL CHECK(admitted IN (0,1))
+ );
+ CREATE TABLE IF NOT EXISTS schedule_receipts (
  id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL
  );
  CREATE TABLE IF NOT EXISTS schedule_ids (id TEXT PRIMARY KEY);
@@ -215,6 +227,34 @@ export class DurableIrcStore {
 			);
 		return true;
 	}
+
+ /** Commit native input and its loop-budget effect together, before advancing the IRC cursor.
+  * A receipt also preserves rejected decisions and prevents old human replays from
+  * resetting a newer peer exchange. JSON counts are a one-time migration seed.
+  */
+ admitNative(message: InboxMessage, origin: "peer" | "human", legacyPeerTurns = 0, now = Date.now()): NativeAdmission {
+  assertChannelDestination(message.channel);
+  if (origin !== "peer" && origin !== "human") throw new Error("Invalid native input origin");
+  if (!Number.isSafeInteger(legacyPeerTurns) || legacyPeerTurns < 0 || legacyPeerTurns > 4) throw new Error("Invalid legacy peer budget");
+  const fingerprint = JSON.stringify([origin, message.channel, message.sender, message.body]);
+  return this.transaction(() => {
+   const receipt = this.db.prepare("SELECT fingerprint,admitted FROM irc_admissions WHERE id=?").get(message.id);
+   if (receipt) {
+    if (receipt.fingerprint !== fingerprint) throw new Error(`Native input ID collision: ${message.id}`);
+    return { admitted: receipt.admitted === 1, added: false };
+   }
+   this.db.prepare("INSERT OR IGNORE INTO irc_peer_budgets(channel,turns) VALUES(?,?)").run(message.channel, legacyPeerTurns);
+   const turns = Number(this.db.prepare("SELECT turns FROM irc_peer_budgets WHERE channel=?").get(message.channel)!.turns);
+   // Inputs accepted before this migration already changed the old JSON count.
+   // Deduplicate them without charging or resetting the migrated count again.
+   const existing = this.db.prepare("SELECT 1 FROM inbox WHERE id=?").get(message.id);
+   const admitted = existing !== undefined || origin === "human" || turns < 4;
+   const added = admitted ? this.enqueue(message, now) : false;
+   if (added) this.db.prepare("UPDATE irc_peer_budgets SET turns=? WHERE channel=?").run(origin === "peer" ? turns + 1 : 0, message.channel);
+   this.db.prepare("INSERT INTO irc_admissions(id,fingerprint,admitted) VALUES(?,?,?)").run(message.id, fingerprint, admitted ? 1 : 0);
+   return { admitted, added };
+  });
+ }
 
 	listInbox(state?: InboxState): StoredInboxMessage[] {
 		const rows = state

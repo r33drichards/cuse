@@ -134,3 +134,42 @@ test("new delivery databases have no peer mailbox column", () => {
   assert.equal(store.listInbox().length, 1);
  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("native admission reconciles pre-migration inbox entries without charging or resetting JSON seed", () => {
+ const dir=mkdtempSync(join(tmpdir(),"cuse-admission-migration-"));
+ const store=new DurableIrcStore(dir);
+ const db=new DatabaseSync(join(dir,"irc-delivery.sqlite"));
+ try {
+  const peer={id:"native-old-peer",channel:"#test",sender:"cuse-peer",body:"old peer prompt"};
+  const human={id:"native-old-human",channel:"#test",sender:"human",body:"old human prompt"};
+  store.enqueue(peer);store.enqueue(human);
+  assert.deepEqual(store.admitNative(peer,"peer",4),{admitted:true,added:false});
+  assert.deepEqual(store.admitNative(human,"human",4),{admitted:true,added:false});
+  assert.equal(db.prepare("SELECT turns FROM irc_peer_budgets WHERE channel='#test'").get()!.turns,4);
+  assert.deepEqual(store.admitNative({...peer,id:"native-new-peer"},"peer",0),{admitted:false,added:false});
+  assert.equal(store.listInbox().length,2);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM irc_admissions").get()!.n,3);
+ }finally{db.close();store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("native receipt collisions never change counters, accepted inputs or stable rejected decisions", () => {
+ const dir=mkdtempSync(join(tmpdir(),"cuse-admission-collision-"));
+ const store=new DurableIrcStore(dir);
+ const db=new DatabaseSync(join(dir,"irc-delivery.sqlite"));
+ try {
+  const message={id:"native-one",channel:"#test",sender:"peer",body:"original"};
+  assert.deepEqual(store.admitNative(message,"peer",3),{admitted:true,added:true});
+  for(const changed of [{...message,body:"changed"},{...message,sender:"human"},{...message,channel:"#other"}]) {
+   assert.throws(()=>store.admitNative(changed,"peer"),/collision/);
+  }
+  assert.throws(()=>store.admitNative(message,"human"),/collision/);
+  assert.equal(db.prepare("SELECT turns FROM irc_peer_budgets WHERE channel='#test'").get()!.turns,4);
+  assert.equal(db.prepare("SELECT 1 FROM irc_peer_budgets WHERE channel='#other'").get(),undefined);
+  const rejected={...message,id:"native-rejected"};
+  assert.deepEqual(store.admitNative(rejected,"peer"),{admitted:false,added:false});
+  store.admitNative({id:"native-human",channel:"#test",sender:"human",body:"continue"},"human");
+  assert.deepEqual(store.admitNative(rejected,"peer"),{admitted:false,added:false});
+  assert.equal(db.prepare("SELECT turns FROM irc_peer_budgets WHERE channel='#test'").get()!.turns,0);
+  assert.equal(store.listInbox().length,2);
+ }finally{db.close();store.close();rmSync(dir,{recursive:true,force:true});}
+});
