@@ -12,6 +12,14 @@ test('image includes locked bridge runtime and credential-free live transport ac
  assert.match(docker,/weechat-headless weechat-plugins/);assert.match(docker,/--require-hashes -r/);assert.match(docker,/COPY vendor\/weechat-mcp\/ /);assert.match(workflow,/--network none.*weechat-live-smoke.mts/);
  const deps=JSON.parse(fs.readFileSync(path.join(root,'vendor/pi/packages/coding-agent/package.json'),'utf8'));assert.equal(deps.dependencies['@modelcontextprotocol/client'],'2.3.1');
 });
+test('petname runtime is pinned and copied into the image with native collision coverage',()=>{
+ const deps=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
+ const lock=JSON.parse(fs.readFileSync(path.join(root,'package-lock.json'),'utf8'));
+ assert.equal(deps.dependencies['node-petname'],'1.0.1');assert.equal(lock.packages['node_modules/node-petname'].version,'1.0.1');
+ assert.match(fs.readFileSync(path.join(root,'Dockerfile'),'utf8'),/cp -R node_modules\/node-petname \/app\/node_modules\/node-petname/);
+ const live=fs.readFileSync(path.join(root,'scripts/weechat-live-smoke.mts'),'utf8');
+ assert.match(live,/433.*Nickname is already in use/);assert.match(live,/restart keeps the accepted fallback/);
+});
 test('production bot has no raw IRC client or proprietary peer tool implementation',()=>{
  const bot=fs.readFileSync(path.join(root,'src/bot.ts'),'utf8'),tools=fs.readFileSync(path.join(root,'src/tools.ts'),'utf8');
  assert.ok(!bot.includes('irc-framework'));assert.ok(!bot.includes('async ask('));assert.ok(!bot.includes('async send('));

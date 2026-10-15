@@ -3,10 +3,17 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client, type McpSubscription } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { RemoteResult, RemoteTool } from "./computer-use.ts";
+
+// node-petname's public generator uses Math.random. Select from its pinned word
+// lists with a channel hash instead, without changing global random state.
+const require = createRequire(import.meta.url);
+const petnameAdjectives: readonly string[] = require("node-petname/src/words/adjectives.json");
+const petnameAnimals: readonly string[] = require("node-petname/src/words/names.json");
 
 export const WEECHAT_PROTOCOL_VERSION = "2026-07-28";
 export interface CommunicationClient {
@@ -82,6 +89,8 @@ interface PeerMembership {
 interface IdentityState {
  channel: string;
  nick: string;
+ nickPath: string;
+ savedNick?: string;
  channels: string[];
  profile: string;
  lock: string;
@@ -106,11 +115,34 @@ function canonical(channel: string): string {
  return channel.toLowerCase();
 }
 function fold(nick: string): string { return nick.toLowerCase().replace(/[\[\]\\^]/g, char => ({"[":"{", "]":"}", "\\":"|", "^":"~"})[char]!); }
+function validNick(nick: string): boolean { return /^[A-Za-z\[\]\\`_^{|}][A-Za-z0-9\[\]\\`_^{|}-]{0,29}$/.test(nick); }
 export function weechatBuffer(channel: string): string { return "irc.docker." + canonical(channel); }
 export function weechatResource(channel: string): string { return "weechat://buffer/" + encodeURIComponent(weechatBuffer(channel)); }
-export function weechatNick(base: string, channel: string): string {
+export function weechatNick(base: string, channel: string, attempt = 0): string {
  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(base)) throw new Error("WeeChat nick prefix must start with a letter and contain only letters, digits, _ or -");
- return base.slice(0, 17) + "-" + createHash("sha256").update(canonical(channel)).digest("hex").slice(0, 12);
+ if (!Number.isSafeInteger(attempt) || attempt < 0) throw new Error("Invalid WeeChat petname attempt");
+ const hash = createHash("sha256").update(`cuse-petname-v1:${canonical(channel)}:${attempt}`).digest();
+ const words = petnameAdjectives[hash.readUInt32BE(0) % petnameAdjectives.length] + "-" + petnameAnimals[hash.readUInt32BE(4) % petnameAnimals.length];
+ // Keep both words intact even with a long configured IRC_NICK prefix.
+ return base.slice(0, 30 - words.length - 1) + "-" + words;
+}
+/** Native WeeChat tries these in order on ERR_NICKNAMEINUSE (433). */
+export function weechatNicks(base: string, channel: string, preferred = weechatNick(base, channel)): string[] {
+ if (!validNick(preferred)) throw new Error("Invalid persisted WeeChat nickname");
+ const candidates = [preferred, ...Array.from({length: 5}, (_, attempt) => weechatNick(base, channel, attempt))];
+ return candidates.filter((nick, index) => candidates.findIndex(other => fold(other) === fold(nick)) === index);
+}
+function identityDirectory(root: string, channel: string): string {
+ return join(root, createHash("sha256").update(canonical(channel)).digest("hex").slice(0, 24));
+}
+function readNick(path: string, base: string, channel: string): string | undefined {
+ let data: {version: number; base: string; channel: string; nick: string};
+ try { data = JSON.parse(readFileSync(path, "utf8")); }
+ catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+ if (!data || data.version !== 1 || data.channel !== channel || typeof data.base !== "string"
+  || typeof data.nick !== "string" || !validNick(data.nick)) throw new Error("Invalid durable WeeChat nickname; operator recovery required");
+ // An explicit IRC_NICK change requests a new prefix, not new session state.
+ return data.base === base ? data.nick : undefined;
 }
 function author(line: NativeLine): string { return line.tags.find(tag => tag.startsWith("nick_"))?.slice(5) ?? ""; }
 function isSelf(line: NativeLine, nick: string): boolean { return line.tags.includes("notify_self") || (!!author(line) && fold(author(line)) === fold(nick)); }
@@ -168,13 +200,13 @@ function readCursor(path: string, channel: string): Cursor | undefined {
   || !(data.lastId === -1 || lineId(data.lastId))) throw new Error("Invalid durable WeeChat cursor; operator recovery required");
  return data;
 }
-/** Flush both the replacement file and its directory before publishing the cursor. */
-function saveCursor(path: string, cursor: Cursor): void {
+/** Flush both the replacement file and its directory before publishing state. */
+function saveJson(path: string, value: unknown): void {
  const temp = path + "." + randomUUID() + ".tmp";
  let fd: number | undefined;
  try {
   fd = openSync(temp, "wx", 0o600);
-  writeFileSync(fd, JSON.stringify(cursor) + "\n"); fsyncSync(fd); closeSync(fd); fd = undefined;
+  writeFileSync(fd, JSON.stringify(value) + "\n"); fsyncSync(fd); closeSync(fd); fd = undefined;
   renameSync(temp, path);
   fd = openSync(dirname(path), "r"); fsyncSync(fd); closeSync(fd); fd = undefined;
  } finally { if (fd !== undefined) closeSync(fd); rmSync(temp, {force: true}); }
@@ -204,7 +236,7 @@ export function weechatLaunchArguments(options: WeeChatNetworkOptions, identity:
   "/set irc.server.docker.tls_verify on",
   "/set irc.server.docker.command \"\"",
   "/set irc.server.docker.password \"\"",
-  "/set irc.server.docker.nicks " + identity.nick,
+  "/set irc.server.docker.nicks " + weechatNicks(options.nick, identity.channel, identity.nick).join(","),
   "/set irc.server.docker.autojoin " + identity.channels.join(","),
   "/set irc.server.docker.autoreconnect on",
   "/set irc.server.docker.autorejoin off",
@@ -307,7 +339,12 @@ export class WeeChatNetwork implements WeeChatTransport {
   }
  }
  setHandlers(handlers: WeeChatHandlers): void { this.#handlers = handlers; }
- nickFor(channel: string): string { return this.#identities.get(canonical(channel))?.nick ?? weechatNick(this.#options.nick, channel); }
+ nickFor(channel: string): string {
+  const key = canonical(channel);
+  return this.#identities.get(key)?.nick
+   ?? readNick(join(identityDirectory(this.#options.profileRoot, key), "nick.json"), this.#options.nick, key)
+   ?? weechatNick(this.#options.nick, key);
+ }
  join(channel: string): Promise<void> {
   const key = canonical(channel);
   if (this.#closed) return Promise.reject(new Error("WeeChat transport is closed"));
@@ -318,7 +355,7 @@ export class WeeChatNetwork implements WeeChatTransport {
   let lock = "";
   let locked = false;
   try {
-   const directory = join(this.#options.profileRoot, createHash("sha256").update(key).digest("hex").slice(0, 24));
+   const directory = identityDirectory(this.#options.profileRoot, key);
    mkdirSync(directory, {recursive: true, mode: 0o700});
    if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error("Unsafe WeeChat identity directory");
    lock = join(directory, "active.lock");
@@ -331,7 +368,9 @@ export class WeeChatNetwork implements WeeChatTransport {
    // Only after exclusive identity ownership. A crashed owner's lock is never
    // silently removed, so this cannot steal a running process's endpoint.
    rmSync(join(profile, "mcp", "bridge.sock"), {force: true});
-   const state: IdentityState = {channel: key, nick: weechatNick(this.#options.nick, key), channels: this.#peers.get(key) ?? [key], profile, lock,
+   const nickPath = join(directory, "nick.json");
+   const savedNick = readNick(nickPath, this.#options.nick, key);
+   const state: IdentityState = {channel: key, nick: savedNick ?? weechatNick(this.#options.nick, key), nickPath, savedNick, channels: this.#peers.get(key) ?? [key], profile, lock,
     cursorPath: join(directory, "cursor.json"), start: Promise.resolve(), queue: Promise.resolve(), abort: new AbortController(), ready: false, closing: false, membershipId: -1, peers: new Map()};
    state.cursor = readCursor(state.cursorPath, key);
    this.#identities.set(key, state);
@@ -417,6 +456,13 @@ export class WeeChatNetwork implements WeeChatTransport {
     }
    }
    if (!snapshot.buffer.localvar_nick) joined = false;
+   if (joined && state.savedNick !== state.nick) {
+    // A collision-resolved native nick must survive restart before callbacks can
+    // advertise it. Bad native data or a failed disk write leaves intake closed.
+    weechatNicks(this.#options.nick, state.channel, state.nick);
+    saveJson(state.nickPath, {version: 1, channel: state.channel, base: this.#options.nick, nick: state.nick});
+    state.savedNick = state.nick;
+   }
    this.#membership(state, joined);
    if (forceTopic || state.title !== snapshot.buffer.title) { state.title = snapshot.buffer.title; this.#handlers!.topic(state.channel, state.title); }
    for (const line of snapshot.lines) {
@@ -438,11 +484,11 @@ export class WeeChatNetwork implements WeeChatTransport {
     // Inbox persistence is awaited above. A crash here may replay the same ID,
     // which the durable inbox must deduplicate; it cannot lose an input.
     const cursor: Cursor = {version: 1, channel: state.channel, epoch: snapshot.data_epoch, lastId: line.id};
-    saveCursor(state.cursorPath, cursor); state.cursor = cursor;
+    saveJson(state.cursorPath, cursor); state.cursor = cursor;
    }
    if (!state.cursor) {
     const cursor: Cursor = {version: 1, channel: state.channel, epoch: snapshot.data_epoch, lastId: -1};
-    saveCursor(state.cursorPath, cursor); state.cursor = cursor;
+    saveJson(state.cursorPath, cursor); state.cursor = cursor;
    }
   });
   const checked = work.catch(error => { this.#fault(state, error); throw error; });
