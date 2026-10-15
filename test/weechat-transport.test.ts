@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
- WeeChatNetwork, WeeChatProcessError, startNativeWeeChat, WEECHAT_PROTOCOL_VERSION, weechatBuffer, weechatResource, weechatNick, weechatLaunchArguments,
- type NativeMcpClient, type NativeSnapshot, type NativeWeeChatSession, type WeeChatIdentity, type WeeChatMessage,
+ WeeChatNetwork, WeeChatProcessError, startNativeWeeChat, WEECHAT_PROTOCOL_VERSION, weechatBuffer, weechatResource, weechatNick, weechatNicks, weechatLaunchArguments,
+ nativeMessageId, nativeTag, type NativeMcpClient, type NativeSnapshot, type NativeWeeChatSession, type WeeChatIdentity, type WeeChatMessage,
 } from "../src/weechat.ts";
+import {DurableIrcStore} from "../.runtime/pi/packages/coding-agent/src/cuse/durable-store.ts";
 
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return {promise, resolve}; }
 function snapshot(channel: string, nick: string, epoch = "native-buffer:process:1"): NativeSnapshot {
@@ -43,7 +44,7 @@ class Fixture {
  }
  session(): NativeWeeChatSession { return {client: this.client, stopped: this.stopped.promise, close: async () => { this.closed++; }}; }
  get home() { return this.snapshots.get(weechatResource(this.identity.channel))!; }
- append(id: number, nick: string, text: string, tags = ["irc_privmsg"]): void {
+ append(id: number, nick: string, text: string, tags = ["irc_privmsg", "irc_tag_msgid_fixture-" + id]): void {
   this.home.lines.push({id, tags: [...tags, "nick_" + nick], message: text}); this.home.last_assigned_id = id;
  }
  notify(channel = this.identity.channel) { this.notifications?.({method: "notifications/resources/updated", params: {uri: weechatResource(channel)}}); }
@@ -70,8 +71,142 @@ test("deterministic channel identities and startup scope use only one native Wee
  assert(args.includes("/set irc.server.docker.autojoin #alpha"));
  assert(args.includes("/set plugins.var.python.mcp.buffers irc.docker.#alpha"));
  assert(args.includes("/set irc.server.docker.autoreconnect on"));
+ assert(args.includes("/set irc.server.docker.nicks " + weechatNicks("cuse", "#alpha").join(",")));
+ assert(args.includes("/set irc.server.docker.nicks_alternate off"));
+ assert(args.includes("/set irc.server.docker.capabilities message-tags,server-time"));
  assert(!args.join(" ").includes("container_entrypoint.py"));
  assert.throws(() => weechatNick("bad nick", "#a")); assert.throws(() => weechatResource("#a /join #b"));
+});
+
+test("pinned petname words produce stable, complete IRC-safe names and bounded fallback lists", () => {
+ assert.equal(weechatNick("cuse", "#ALPHA"), "cuse-settling-mayfly");
+ assert.equal(weechatNick("cuse", "#beta"), "cuse-accurate-gobbler");
+ assert.equal(weechatNick("cuse", "#cuse"), "cuse-resolved-titmouse");
+ for (let index = 0; index < 1000; index++) {
+  const channel = "#room-" + index;
+  for (const prefix of ["cuse", "Custom_42", "a".repeat(100)]) {
+   const nicks = weechatNicks(prefix, channel);
+   assert(nicks.length >= 2 && nicks.length <= 5);
+   assert.deepEqual(nicks, weechatNicks(prefix, channel.toUpperCase()));
+   for (const nick of nicks) {
+    assert.match(nick, /^[A-Za-z][A-Za-z0-9_-]{0,29}$/);
+    assert.match(nick, /-[a-z]+-[a-z]+$/);
+    const words = "-" + nick.split("-").slice(-2).join("-");
+    assert(weechatNicks("cuse", channel).some(candidate => candidate.endsWith(words)));
+   }
+  }
+ }
+ for (const nick of ["bad nick", "bad,nick", "bad;quit", "bad\nquit", "a".repeat(31)]) assert.throws(() => weechatNicks("cuse", "#alpha", nick));
+ assert.equal(weechatNicks("cuse", "#alpha", "CUSE-SETTLING-MAYFLY").length, 5, "candidate deduplication follows IRC case folding");
+ assert.throws(() => weechatNick("cuse", "#alpha", -1));
+});
+
+test("channels with a petname collision have different native fallback choices", () => {
+ const seen = new Map<string, string>();
+ for (let index = 0; index < 5000; index++) {
+  const channel = "#collision-" + index, nick = weechatNick("cuse", channel), previous = seen.get(nick);
+  if (previous) {
+   assert.notEqual(weechatNicks("cuse", previous)[1], weechatNicks("cuse", channel)[1]);
+   return;
+  }
+  seen.set(nick, channel);
+ }
+ assert.fail("fixture must exercise a real two-word collision");
+});
+
+test("a confirmed collision fallback is durable before JOIN and stable after part and restart", async () => {
+ const fallback = weechatNicks("cuse", "#alpha")[1];
+ const t = setup({configure: fixture => {
+  fixture.home.buffer.localvar_nick = fallback;
+  fixture.home.lines[0].tags = ["irc_join", "nick_" + fallback];
+ }});
+ let restarted: WeeChatNetwork | undefined;
+ try {
+  await t.network.join("#alpha");
+  const first = t.fixtures.get("#alpha")!.identity;
+  const nickPath = join(dirname(first.profile), "nick.json");
+  assert.equal(t.network.nickFor("#ALPHA"), fallback);
+  assert.deepEqual(JSON.parse(readFileSync(nickPath, "utf8")), {version: 1, channel: "#alpha", base: "cuse", nick: fallback});
+  assert.equal(statSync(nickPath).mode & 0o777, 0o600);
+  assert.equal(existsSync(t.cursorPath("#alpha")), false, "nickname persistence does not recreate a native cursor");
+  await t.network.part("#alpha");
+  assert.equal(t.network.nickFor("#alpha"), fallback);
+  let launched: WeeChatIdentity | undefined;
+  restarted = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: t.root, upstreamDir: "/test/upstream",
+   createSession: async identity => { launched = identity; return new Fixture(identity).session(); }});
+  restarted.setHandlers({message: async () => {}, joined: () => assert.equal(JSON.parse(readFileSync(nickPath, "utf8")).nick, fallback), disconnected: () => {}, fault: () => {}, topic: () => {}});
+  assert.equal(restarted.nickFor("#alpha"), fallback);
+  await restarted.join("#alpha");
+  assert.equal(launched!.nick, fallback); assert.equal(launched!.profile, first.profile);
+  assert.equal(weechatNicks("cuse", "#alpha", launched!.nick)[0], fallback);
+  assert.equal(existsSync(t.cursorPath("#alpha")), false);
+ } finally { await restarted?.close(); await t.cleanup(); }
+});
+
+test("legacy profiles acquire petnames without moving profiles or clearing cursors", async () => {
+ const t = setup();
+ try {
+  const directory = dirname(t.cursorPath("#alpha")), profile = join(directory, "profile");
+  mkdirSync(profile, {recursive: true});
+  writeFileSync(join(profile, "legacy-marker"), "keep");
+  const cursor = {version: 1, channel: "#alpha", epoch: "native-buffer:process:1", lastId: 0};
+  writeFileSync(t.cursorPath("#alpha"), JSON.stringify(cursor));
+  await t.network.join("#alpha");
+  assert.equal(t.fixtures.get("#alpha")!.identity.profile, profile);
+  assert.equal(t.network.nickFor("#alpha"), weechatNick("cuse", "#alpha"));
+  assert.equal(readFileSync(join(profile, "legacy-marker"), "utf8"), "keep");
+  assert.deepEqual(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")), cursor);
+ } finally { await t.cleanup(); }
+});
+
+test("valid native nick changes retain RFC1459 punctuation and survive restart lookup", async () => {
+ const t = setup();
+ try {
+  await t.network.join("#alpha"); const fixture = t.fixtures.get("#alpha")!;
+  const nick = "[wise]\\`_^{otter|}";
+  fixture.home.buffer.localvar_nick = nick;
+  fixture.home.lines.push({id: 1, tags: ["irc_nick", "irc_nick1_" + fixture.identity.nick, "irc_nick2_" + nick], message: "native nick change"});
+  fixture.home.last_assigned_id = 1; fixture.notify();
+  await until(() => JSON.parse(readFileSync(join(dirname(fixture.identity.profile), "nick.json"), "utf8")).nick === nick);
+  assert.equal(t.faults.length, 0); assert.equal(t.network.nickFor("#alpha"), nick);
+  await t.network.part("#alpha"); assert.equal(t.network.nickFor("#alpha"), nick);
+  assert.equal(weechatNicks("cuse", "#alpha", nick)[0], nick);
+ } finally { await t.cleanup(); }
+});
+
+test("an explicit prefix change replaces only the remembered nickname", async () => {
+ const t = setup();
+ try {
+  const directory = dirname(t.cursorPath("#alpha")); mkdirSync(directory, {recursive: true});
+  writeFileSync(join(directory, "nick.json"), JSON.stringify({version: 1, channel: "#alpha", base: "old", nick: "old-wise-otter"}));
+  assert.equal(t.network.nickFor("#alpha"), weechatNick("cuse", "#alpha"));
+  await t.network.join("#alpha");
+  assert.equal(JSON.parse(readFileSync(join(directory, "nick.json"), "utf8")).base, "cuse");
+ } finally { await t.cleanup(); }
+});
+
+test("malformed remembered nicknames fail closed before launching a process", async () => {
+ for (const record of ["not json", {version: 2}, {version: 1, channel: "#other", base: "cuse", nick: "cuse-wise-otter"}, {version: 1, channel: "#alpha", base: "cuse", nick: "bad,nick"}]) {
+  const t = setup();
+  try {
+   const directory = dirname(t.cursorPath("#alpha")); mkdirSync(directory, {recursive: true});
+   const path = join(directory, "nick.json"), content = typeof record === "string" ? record : JSON.stringify(record);
+   writeFileSync(path, content);
+   await assert.rejects(t.network.join("#alpha"));
+   assert.equal(t.fixtures.size, 0); assert.equal(readFileSync(path, "utf8"), content);
+   assert.equal(existsSync(join(directory, "active.lock")), false);
+  } finally { await t.cleanup(); }
+ }
+});
+
+test("failed nickname persistence prevents ready callbacks and releases the identity", async () => {
+ const t = setup({configure: fixture => mkdirSync(join(dirname(fixture.identity.profile), "nick.json"))});
+ try {
+  await assert.rejects(t.network.join("#alpha"));
+  assert.deepEqual(t.joined, []); assert.equal(t.fixtures.get("#alpha")!.closed, 1);
+  assert.equal(existsSync(t.cursorPath("#alpha")), false);
+  assert.equal(existsSync(join(dirname(t.cursorPath("#alpha")), "active.lock")), false);
+ } finally { await t.cleanup(); }
 });
 
 test("separate sessions, unchanged native schemas, exact tool routing, and channel-local teardown", async () => {
@@ -120,13 +255,13 @@ test("inbox persistence precedes cursor advancement; notifications deduplicate a
   await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
   a.append(100_000, "alice", "prompt"); a.notify(); a.notify();
   await until(() => t.messages.length === 1);
-  assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 0);
-  persisted.resolve(); await until(() => JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId === 100_000);
+  assert.equal(existsSync(t.cursorPath("#alpha")), false);
+  persisted.resolve(); await t.network.queryTopic("#alpha");
   a.append(100_001, a.identity.nick.toUpperCase(), "self by nick");
   a.append(100_002, "oldnick", "self by tag", ["irc_privmsg", "notify_self"]);
   a.append(100_003, "bob", "joins are not prompts", ["irc_join"]); a.notify();
-  await until(() => JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId === 100_003);
-  assert.equal(t.messages.length, 1); assert.match(t.messages[0].id, /^weechat:[a-f0-9]{64}$/);
+  await t.network.queryTopic("#alpha");
+  assert.equal(t.messages.length, 1); assert.equal(t.messages[0].id, nativeMessageId({server: "localhost", port: 16667, tls: false}, "#alpha", "fixture-100000"));
  } finally { persisted.resolve(); await t.cleanup(); }
 });
 
@@ -135,7 +270,7 @@ test("failed inbox persistence blocks the identity without advancing its cursor"
  try {
   await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!; a.append(1, "alice", "persist me"); a.notify();
   await until(() => t.faults.length === 1);
-  assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 0);
+  assert.equal(existsSync(t.cursorPath("#alpha")), false);
   await assert.rejects(t.network.say("#alpha", "blocked"), /not ready/);
   assert.equal(a.calls.length, 0);
  } finally { await t.cleanup(); }
@@ -152,7 +287,7 @@ for (const kind of ["epoch", "omitted", "evicted", "clear", "regressed"] as cons
    if (kind === "clear") { a.home.lines = []; a.home.oldest_available_id = null; a.home.last_assigned_id = 4; }
    if (kind === "regressed") { a.home.lines = []; a.home.oldest_available_id = null; a.home.last_assigned_id = -1; }
    a.notify(); await until(() => t.faults.length === 1);
-   assert.equal(t.messages.length, 0); assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 0);
+   assert.equal(t.messages.length, 0); assert.equal(existsSync(t.cursorPath("#alpha")), false);
    await assert.rejects(t.network.join("#alpha"));
   } finally { await t.cleanup(); }
  });
@@ -162,23 +297,92 @@ test("cursor anchors at the omitted boundary are valid and sparse native IDs are
  const t = setup();
  try {
   await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
-  a.home.lines = [{id: 1_000_000_000_000, tags: ["irc_privmsg", "nick_alice"], message: "sparse"}];
+  a.home.lines = [{id: 1_000_000_000_000, tags: ["irc_privmsg", "nick_alice", "irc_tag_msgid_Sparse"], message: "sparse"}];
   a.home.omitted_through_id = 0; a.home.has_more = true; a.home.last_assigned_id = 1_000_000_000_000;
   a.notify(); await until(() => t.messages.length === 1); assert.equal(t.faults.length, 0);
  } finally { await t.cleanup(); }
 });
 
-test("a restarted identity preserves durable cursor and refuses a new native data epoch", async () => {
- const t = setup();
+test("restart replays all retained history with stable exact server IDs and no durable cursor", async () => {
+ let generation = 0;
+ const admitted: string[] = [];
+ let store: DurableIrcStore;
+ const t = setup({configure: a => {
+  a.home.data_epoch = "process-" + (++generation);
+  a.append(1, "alice", "known", ["irc_privmsg", "irc_tag_msgid_Z-opaque"]);
+  if (generation > 1) {
+   // Arrival order, not lexicographic msgid order. History can interleave live.
+   a.append(2, "alice", "live", ["irc_privmsg", "irc_tag_msgid_a-live"]);
+   a.append(3, "alice", "known", ["irc_privmsg", "irc_tag_msgid=Z-opaque"]);
+   a.append(4, "alice", "case distinct", ["irc_privmsg", "irc_tag_msgid_z-opaque"]);
+   a.append(5, "alice", "older unseen", ["irc_privmsg", "irc_tag_msgid_0-old"]);
+  }
+ }, message: async event => {
+  if (store.admitNative({id: event.id, channel: event.target, sender: event.nick, body: event.message}, "human").added) admitted.push(event.message);
+ }});
+ const dbRoot = join(t.root, "delivery");
+ store = new DurableIrcStore(dbRoot);
  try {
   await t.network.join("#alpha"); await t.network.part("#alpha");
-  const original = readFileSync(t.cursorPath("#alpha"), "utf8");
-  // Fixture creation uses the same epoch by default; change it before readiness.
-  const network = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: t.root, upstreamDir: "/test/upstream",
-   createSession: async identity => { const fixture = new Fixture(identity); fixture.home.data_epoch = "replacement-process"; return fixture.session(); }});
-  network.setHandlers({message: async () => {}, joined: () => {}, disconnected: () => {}, topic: () => {}, fault: () => {}});
-  try { await assert.rejects(network.join("#alpha"), /data epoch changed/); assert.equal(readFileSync(t.cursorPath("#alpha"), "utf8"), original); }
-  finally { await network.close(); }
+  assert.deepEqual(admitted, ["known"]); store.close(); store = new DurableIrcStore(dbRoot);
+  // Old files are inert, even corrupt ones. They are never a restart checkpoint.
+  writeFileSync(t.cursorPath("#alpha"), "invalid legacy cursor");
+  await t.network.join("#alpha");
+  assert.deepEqual(admitted, ["known", "live", "case distinct", "older unseen"]);
+  assert.equal(store.listInbox().length, 4);
+  assert.equal(readFileSync(t.cursorPath("#alpha"), "utf8"), "invalid legacy cursor");
+  assert.equal(t.network.hasLegacyHistory(["#ALPHA"]), true, "only legacy-file existence is exposed for upgrade review");
+  assert.equal(t.faults.length, 0);
+ } finally { store.close(); await t.cleanup(); }
+});
+
+test("initial bounded history is read from its first available line, not skipped to tail", async () => {
+ const t = setup({configure: a => {
+  a.home.lines[0].id = 10; a.home.oldest_available_id = 10;
+  a.home.omitted_through_id = 9; a.home.has_more = true;
+  a.append(11, "alice", "available history");
+ }});
+ try { await t.network.join("#alpha"); assert.deepEqual(t.messages.map(m => m.message), ["available history"]); }
+ finally { await t.cleanup(); }
+});
+
+for (const tag of [undefined, "irc_tag_msgid_", "irc_tag_msgid_ambiguous;id"]) {
+ test(`missing or lossy msgid pauses intake without fallback (${tag})`, async () => {
+  const t = setup();
+  try {
+   await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+   a.append(1, "alice", "unsafe", ["irc_privmsg", ...(tag ? [tag] : [])]); a.notify();
+   await until(() => t.faults.length === 1);
+   assert.equal(t.messages.length, 0); assert.match(String(t.faults[0]), /msgid/);
+   await assert.rejects(t.network.say("#alpha", "blocked"), /not ready/);
+  } finally { await t.cleanup(); }
+ });
+}
+
+test("both native tag encodings preserve exact IDs, scoped to network and canonical channel", () => {
+ const line = (tags: string[]) => ({id: 1, tags, message: "same text"});
+ assert.equal(nativeTag(line(["irc_tag_msgid_AbC~42_a=b"]), "msgid"), "AbC~42_a=b");
+ assert.equal(nativeTag(line(["irc_tag_msgid=AbC~42_a=b"]), "msgid"), "AbC~42_a=b");
+ assert.equal(nativeTag(line(["irc_tag_msgid_a", "irc_tag_msgid=b"]), "msgid"), undefined);
+ const network = {server: "IRC.EXAMPLE", port: 6697, tls: true};
+ const id = nativeMessageId(network, "#ALPHA", "AbC");
+ assert.equal(id, nativeMessageId({...network, server: "irc.example"}, "#alpha", "AbC"));
+ assert.notEqual(id, nativeMessageId(network, "#alpha", "abc"));
+ assert.notEqual(id, nativeMessageId(network, "#beta", "AbC"));
+ assert.notEqual(id, nativeMessageId({...network, server: "elsewhere.example"}, "#alpha", "AbC"));
+});
+
+test("reviewed migration cutoff skips only explicitly retired history and requires server-time", async () => {
+ const t = setup({configure: a => {
+  a.append(1, "alice", "retired", ["irc_privmsg", "irc_tag_time_2026-10-01T00:00:00.000Z"]);
+  a.append(2, "alice", "new", ["irc_privmsg", "irc_tag_msgid_New", "irc_tag_time=2026-10-01T00:00:00.001Z"]);
+ }});
+ t.network.setHistoryCutoff(Date.parse("2026-10-01T00:00:00.000Z"));
+ try {
+  await t.network.join("#alpha"); assert.deepEqual(t.messages.map(m => m.message), ["new"]);
+  const a = t.fixtures.get("#alpha")!; a.append(3, "alice", "no server time"); a.notify();
+  await until(() => t.faults.length === 1); assert.match(String(t.faults[0]), /server-time/);
+  assert.equal(t.messages.length, 1);
  } finally { await t.cleanup(); }
 });
 
@@ -268,7 +472,7 @@ test("same-process native reconnect preserves cursor and subscription while gati
   assert.equal(a.closed, 0); assert.equal(a.subscriptions.length, 1);
   assert.equal(t.network.nickFor("#alpha"), a.identity.nick);
   a.append(2, "alice", "retained input while membership is unavailable"); a.notify(); await delay(5);
-  assert.equal(t.messages.length, 0); assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 1);
+  assert.equal(t.messages.length, 0); assert.equal(existsSync(t.cursorPath("#alpha")), false);
   await assert.rejects(t.network.say("#alpha", "offline"), /not ready/);
   const joining = t.network.join("#alpha");
   a.home.buffer.localvar_nick = a.identity.nick; a.append(3, a.identity.nick, "rejoined", ["irc_join"]); a.notify();
@@ -291,7 +495,7 @@ profile = pathlib.Path(sys.argv[sys.argv.index('-d') + 1])
 commands = [sys.argv[i + 1] for i, arg in enumerate(sys.argv) if arg == '-r']
 def setting(name):
     return next(c.split(' ', 2)[2] for c in commands if c.startswith('/set ' + name + ' '))
-nick = setting('irc.server.docker.nicks')
+nick = setting('irc.server.docker.nicks').split(',')[0]
 channels = setting('irc.server.docker.autojoin').split(',')
 names = ['irc.docker.' + c for c in channels]
 uri = 'weechat://buffer/' + quote(names[0], safe='')
@@ -320,7 +524,7 @@ async def connection(reader, writer):
             elif op == 'buffer_data': result = snapshot()
             elif op == 'call':
                 result = {'accepted': True}
-                rows.append({'id': len(rows), 'tags': ['irc_privmsg', 'nick_alice'], 'message': 'fixture input'})
+                rows.append({'id': len(rows), 'tags': ['irc_privmsg', 'nick_alice', 'irc_tag_msgid_fixture-' + str(len(rows))], 'message': 'fixture input'})
             else: raise ValueError(op)
             writer.write((json.dumps({'id': req['id'], 'result': result}) + '\\n').encode())
             await writer.drain()

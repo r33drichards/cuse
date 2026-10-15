@@ -75,7 +75,7 @@ assume their values. Never include auth.json in the image. Provider OAuth login 
 in the private admin onboarding flow below, not through IRC or a guest desktop. No Railway credentials or deployment actions are required to
 validate packaging.
 
-Defaults: nick cuse, control channel #cuse, addressed-only responses,
+Defaults: nick prefix cuse, control channel #cuse, addressed-only responses,
 https://api.computeruse.site, viewer https://app.computeruse.site, small
 sessions, and maximum 10 cuse desktops within this instance namespace. The
 limit is not a global account quota or spending cap. Choose a stable unique
@@ -286,7 +286,7 @@ Normal trusted host resource/extension loading is NOT a security sandbox. Disabl
 
 ## Prior recovery corrections (06b214e; not release approval)
 
-Default BOT nick is cuse and control/startup channel is #cuse; actual registration/JOIN and executed entrypoint export tests exercise this, while explicit IRC_NICK/IRC_CONTROL_CHANNEL overrides remain supported. Other joined channels keep independent desktop/session identities. This changes no host coding-agent IRC integration or existing pi-irc service.
+Default BOT nick prefix is cuse and control/startup channel is #cuse. Each channel gets a stable readable nickname such as `cuse-settling-mayfly`, with native collision fallback and a persisted accepted name. Use the actual nick shown in the channel when addressing it. Explicit IRC_NICK/IRC_CONTROL_CHANNEL overrides remain supported. Other joined channels keep independent desktop/session identities. See [nickname migration and recovery](docs/weechat-transport.md#readable-channel-nicknames). This changes no host coding-agent IRC integration or existing pi-irc service.
 
 Entrypoint configuration JSON/filesystem failures now have a controlled outer catch and constant shell guidance/nonzero status. Raw stderr is withheld, including from the exec'd runtime; controlled stdout/IRC diagnostics remain, and trusted extensions are still not sandboxed. Executable preflight detects missing launcher; no promise of crash-proof loader/runtime handling. Mounted JSON precedence, OAuth byte preservation/mode600 and standard AuthStorage remain.
 
@@ -309,12 +309,14 @@ New exact-HEAD CI and independent source approval remain parent barriers.
 
 ### Mention toggle
 
-Send `,toggle mention` in a channel to switch between requiring `cuse:` and responding to every message. The bot confirms whether mentions are ON (required) or OFF. The setting is per channel and survives restarts; channels without an override use `IRC_RESPOND_TO_ALL`. The toggle works without a bot prefix in any channel. DMs always accept messages.
+Send `,toggle mention` in a channel to switch between requiring that channel's bot nickname (for example `cuse-settling-mayfly:`) and responding to every message. The bot confirms whether mentions are ON (required) or OFF. The setting is per channel and survives restarts; channels without an override use `IRC_RESPOND_TO_ALL`. The toggle works without a bot prefix in any channel. DMs always accept messages.
 
-### Opt-in durable IRC runtime
+### Durable IRC runtime
 
-Set `CUSE_DURABLE_IRC=true` to use pi's SQLite-backed AgentHarness and the
-persistent IRC inbox/outbox. Keep the existing persistent `/data/agent`
+Native WeeChat intake requires `CUSE_DURABLE_IRC=true`, using pi's SQLite-backed
+AgentHarness and the persistent IRC inbox/outbox. Review the [one-time legacy
+replay migration](docs/weechat-transport.md#one-time-legacy-migration-subject-to-review)
+before upgrading an existing installation. Keep the existing persistent `/data/agent`
 volume and run one replica. The process takes an exclusive SQLite ownership
 lock before opening durable conversations; a process crash releases that lock.
 This is single-host recovery, not multi-host failover or a substitute for backups.
@@ -351,8 +353,11 @@ IRC also has no end-to-end delivery acknowledgement here. An uncertain reply
 may be duplicated after a crash, and local socket acceptance does not prove
 receipt. Messages sent while the bot was offline cannot be recovered unless
 the IRC server replays them. Server message IDs deduplicate received replays;
-without those IDs, each received line is a distinct input. Administrative
-commands and live tool progress are outside the persistent prompt queue.
+without a lossless ID, intake pauses rather than inventing one. Administrative
+commands reserve separate durable receipts before their effects; uncertain
+commands are not automatically repeated. Live tool progress remains outside the
+persistent prompt queue. Native positions are process-local, so a fresh WeeChat
+epoch does not block routine restart.
 
 Run `npm run test:durable` with Node 24 to exercise inbox ownership/crash
 recovery, runtime checkpoints, and IRC transport integration without live
@@ -423,7 +428,7 @@ may already have happened. The existing durable tool reconciliation rules still
 apply, and uncertain IRC replies can duplicate. Pause or delete affects future
 occurrences, not work already placed in the inbox.
 
-Outside the control channel, prefix commands with `cuse` when mentions are required (for example `cuse ,schedule list`). An unfinished occurrence blocks additional occurrences of the same schedule; elapsed ticks are coalesced rather than building a backlog. Schedule listings include a short prompt preview.
+Outside the control channel, prefix commands with that channel's bot nickname when mentions are required (for example `cuse-settling-mayfly ,schedule list` in `#alpha`). An unfinished occurrence blocks additional occurrences of the same schedule; elapsed ticks are coalesced rather than building a backlog. Schedule listings include a short prompt preview.
 
 ### Desktop lifecycle from IRC
 

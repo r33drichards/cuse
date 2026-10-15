@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
 import type { WeeChatHandlers, WeeChatTransport } from "../../src/weechat.ts";
 
@@ -5,6 +6,7 @@ import type { WeeChatHandlers, WeeChatTransport } from "../../src/weechat.ts";
 export function fakeWeeChat(irc: EventEmitter & Record<string, any>): WeeChatTransport {
  let handlers: WeeChatHandlers;
  let sequence = 0;
+ const connection = randomUUID();
  let closed = false;
  const wanted = new Set<string>();
  const joined = new Set<string>();
@@ -40,7 +42,7 @@ export function fakeWeeChat(irc: EventEmitter & Record<string, any>): WeeChatTra
  };
  irc.on("privmsg", event => {
   if (closed) return;
-  const id = `test-weechat/${event.target}/${event.tags?.msgid ?? ++sequence}`;
+  const id = `test-weechat/${event.target}/${event.tags?.msgid ?? `${connection}/${++sequence}`}`;
   // Keep the synchronous acceptance boundary observable; async prompt completion
   // and failures are routed through the production transport handler contract.
   void handlers.message({ target: event.target, nick: event.nick, message: event.message, id }).catch(() => {});

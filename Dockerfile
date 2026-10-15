@@ -20,7 +20,8 @@ RUN echo "af7d11986179445ce6fe88b37d57de22f823c0ffd3a65cae31c555b7f5e99253  /opt
 # Install cuse-owned runtime dependencies from its committed lockfile.
 COPY package.json package-lock.json /opt/cuse-deps/
 RUN cd /opt/cuse-deps && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
- && cp -R node_modules/croner /app/node_modules/croner
+ && cp -R node_modules/croner /app/node_modules/croner \
+ && cp -R node_modules/node-petname /app/node_modules/node-petname
 # Build upstream before overlaying cuse, which is run directly with tsx.
 COPY src/ /app/packages/coding-agent/src/cuse/
 RUN npm --prefix packages/coding-agent run build
@@ -48,6 +49,8 @@ COPY vendor/pi-goal.provenance.json /opt/cuse-vendor/pi-goal.provenance.json
 COPY entrypoint.sh /usr/local/bin/cuse-entrypoint
 COPY scripts/image-smoke.mts /app/cuse/image-smoke.mts
 COPY scripts/weechat-live-smoke.mts /app/cuse/weechat-live-smoke.mts
+COPY scripts/weechat-lifecycle-smoke.mts /app/cuse/weechat-lifecycle-smoke.mts
+COPY scripts/weechat-lifecycle-check.mjs /app/cuse/weechat-lifecycle-check.mjs
 RUN chmod 0755 /usr/local/bin/cuse-entrypoint && mkdir -p /data/agent /workspace
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/cuse-entrypoint"]
