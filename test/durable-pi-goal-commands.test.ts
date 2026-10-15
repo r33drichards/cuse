@@ -1,3 +1,4 @@
+import { fakeWeeChat } from "./helpers/fake-weechat.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -32,13 +33,13 @@ async function fixture(t: test.TestContext, durable = true, enabled = true) {
   desktops: {} as IrcBotOptions["desktops"], modelRuntime: {} as IrcBotOptions["modelRuntime"],
   openSession: async () => { opens++; throw Error("paused desktop must not open"); },
   forkSession: () => { throw Error("unexpected fork"); },
-  log: () => {}, createClient: () => irc as unknown as ReturnType<NonNullable<IrcBotOptions["createClient"]>>,
+  log: () => {}, transport: fakeWeeChat(irc),
   sendSpacingMs: 0,
  });
  t.after(async () => { await bot.close(); rmSync(root, { recursive: true, force: true }); });
- await bot.start();
  bot.store.set("#control", { desktopId: "fixture", createdAt: 1, desktopPaused: true });
  bot.store.set("#other", { desktopId: "fixture-other", createdAt: 1, desktopPaused: true });
+ await bot.start();
  const say = (message: string, msgid: string, room = "#control") =>
   irc.emit("privmsg", { nick: "human", target: room, message, tags: { msgid } });
  const pending = () => {
@@ -111,14 +112,13 @@ test("Pi Goal continuation and inbox completion roll back together if downstream
  const root = mkdtempSync(join(tmpdir(), "cuse-pi-goal-atomic-"));
  const store = new DurableIrcStore(root);
  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
- store.enqueue({ id: "question", channel: "#worker", sender: "#requester", body: "inspect",
-  peer: { kind: "question", source: "#requester", rootId: "question", ancestry: ["#requester", "#worker"] } });
+ store.enqueue({ id: "question", channel: "#worker", sender: "human", body: "inspect" });
  store.claimNext("#worker");
  const goal = store.piGoals.create("#worker", "Finish the current inspection", 1000);
- store.enqueue({ id: "question/answer", channel: "#other", sender: "human", body: "collision" });
+ store.enqueueOutput({ id: "question/reply", channel: "#other", text: "collision" });
  assert.throws(() => store.complete("question", [{ id: "question/reply", channel: "#worker", text: "done" }]), /collision/);
  assert.deepEqual(store.piGoals.read("#worker"), goal);
  assert.equal(store.listInbox().find(message => message.id === "question")?.state, "running");
  assert.equal(store.listInbox().some(message => message.id.startsWith("pi-goal/")), false);
- assert.deepEqual(store.listOutbox(), []);
+ assert.deepEqual(store.listOutbox().map(({ id, channel, text }) => ({ id, channel, text })), [{ id: "question/reply", channel: "#other", text: "collision" }]);
 });

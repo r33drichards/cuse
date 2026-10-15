@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PI = Path(os.environ.get("PI_SOURCE", str(ROOT / ".runtime/pi"))).resolve()
 REQUIRED = (
     "bot.ts", "channel-session.ts", "commands.ts", "session-commands.ts",
-    "format.ts", "fault-domain.ts", "join.ts", "irc-framework.d.ts", "run.ts",
+    "format.ts", "fault-domain.ts", "weechat.ts", "run.ts",
     "computer-use.ts", "state.ts", "tools.ts", "main.ts", "model-selection.ts",
     "durable-session.ts", "durable-store.ts", "durable-delivery.ts", "durable-diagnostic.ts",
     "pi-goal.ts", "pi-goal-tools.ts", "pi-goal-prompts.ts",

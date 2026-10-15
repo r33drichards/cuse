@@ -15,6 +15,7 @@ import { DefaultResourceLoader } from "../core/resource-loader.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { type IrcBotOptions, IrcPiBot } from "./bot.ts";
 import { requireExplicitModel } from "./model-selection.ts";
+import { WeeChatNetwork } from "./weechat.ts";
 import { ComputerUseClient } from "./computer-use.ts";
 import { clearFaultingDomain, faultingDomain, installFaultDomains } from "./fault-domain.ts";
 
@@ -115,6 +116,9 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	const agentDir = getAgentDir();
 	const cwd = command.cwd ?? process.cwd();
 	const config = resolveIrcConfig(command, env, agentDir);
+ if (config.password) throw new Error("WeeChat channel identities do not support IRC_PASSWORD; configure authenticated IRC separately before migration.");
+ const peerChannels = JSON.parse(env.CUSE_WEECHAT_PEERS ?? "{}");
+ if (!peerChannels || Array.isArray(peerChannels) || typeof peerChannels !== "object") throw new Error("CUSE_WEECHAT_PEERS must be a JSON object mapping home channels to explicit peer channels");
 	const sessionDir = command.sessionDir ?? env.PI_IRC_SESSION_DIR ?? join(agentDir, "irc", "sessions");
 
 	// One loader per channel: extensions are instantiated per loader and several
@@ -151,6 +155,13 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	await desktops.request("/v1/me");
 	const botOptions: IrcBotOptions = {
 		...config,
+  transport: new WeeChatNetwork({
+   server: config.server, port: config.port, tls: config.tls, nick: config.nick,
+   profileRoot: join(config.statePath, "..", "weechat"),
+   upstreamDir: env.CUSE_WEECHAT_DIR ?? "/opt/cuse-vendor/weechat-mcp",
+   pythonCommand: env.CUSE_WEECHAT_PYTHON ?? "/opt/cuse-weechat/bin/python",
+   weechatCommand: env.CUSE_WEECHAT_BIN ?? "weechat-headless", peerChannels,
+  }),
   durable,
   goalsEnabled,
 		cwd,
@@ -182,7 +193,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	process.on("unhandledRejection", onRejection);
 	try {
 		log(
-			`IRC: connecting to ${config.server}:${config.port}${config.tls ? " (tls)" : ""} as ${config.nick}, control ${config.controlChannel}`,
+			`IRC: connecting to ${config.server}:${config.port}${config.tls ? " (tls)" : ""} with nick prefix ${config.nick}, control ${config.controlChannel}`,
 		);
 		if(goalsEnabled)log("Pi Goal: durable continuation enabled; optional soft token budget, pause on restart or fault.");
         await bot.start();

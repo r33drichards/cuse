@@ -1,3 +1,4 @@
+import { fakeWeeChat } from "./helpers/fake-weechat.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -71,7 +72,7 @@ async function fixture(t: test.TestContext, failures = 1, genuineFault = true) {
    };
   },
   forkSession: () => { throw Error("unexpected fork"); }, log: () => {},
-  createClient: () => irc as unknown as ReturnType<NonNullable<IrcBotOptions["createClient"]>>, sendSpacingMs: 0,
+  transport: fakeWeeChat(irc), sendSpacingMs: 0,
  });
  t.after(async () => { await bot.close(); rmSync(root, { recursive: true, force: true }); });
  await bot.start();

@@ -23,7 +23,8 @@ test('full ChannelSession uses catalog Codex, refreshes standard persistent OAut
   const deps=(modelRuntime:ModelRuntime)=>({cwd:dir,agentDir:agent,sessionDir:join(dir,'sessions'),modelRuntime,
    createResources:async(cwd:string)=>{const settingsManager=SettingsManager.inMemory({defaultProvider:'openai-codex',defaultModel:'gpt-5.4'});const resourceLoader=new DefaultResourceLoader({cwd,agentDir:agent,settingsManager,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true});await resourceLoader.reload();return {settingsManager,resourceLoader};},
    desktop:{tools:async()=>[{name:'run_js',description:'synthetic',inputSchema:{type:'object',properties:{}}}],call:async()=>{throw Error('no tools called');}} as any,
-   delegate:{joinedChannels:()=>['#one','#two'],send:async()=>{},fork:async()=>{throw Error('unsupported');}} as any,log:(line:string)=>hostLogs.push(line)});
+   communication:{tools:async()=>[],call:async()=>{throw Error("No native communication expected");}},
+   delegate:{},log:(line:string)=>hostLogs.push(line)});
   const one=await ChannelSession.open('#one',deps(runtime));opened.push(one);
   assert.equal(one.modelLabel(),'openai-codex/gpt-5.4');
   const relayed:string[]=[];const stop=one.watch({text:lines=>relayed.push(...lines),tool:line=>relayed.push(line)});

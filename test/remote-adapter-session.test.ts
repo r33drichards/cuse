@@ -1,3 +1,4 @@
+import { fakeWeeChat } from "./helpers/fake-weechat.ts";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
@@ -25,10 +26,11 @@ for(const mode of ['remote-error','transport-error','success','project-images'] 
   channel=await ChannelSession.open('#synthetic',{cwd:dir,agentDir:agent,sessionDir:join(dir,'sessions'),modelRuntime,
    createResources:async(cwd:string)=>{const settingsManager=mode==='project-images'?SettingsManager.create(cwd,agent,{projectTrusted:true}):SettingsManager.inMemory({defaultProvider:'openai-codex',defaultModel:'gpt-5.4'});if(mode==='project-images'){diskSettings=settingsManager;assert.equal(settingsManager.getBlockImages(),true,'trusted project beats global false');}const resourceLoader=new DefaultResourceLoader({cwd,agentDir:agent,settingsManager,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true});await resourceLoader.reload();return{settingsManager,resourceLoader};},
    desktop:{tools:async()=>[{name:'run_js',description:'synthetic tool',inputSchema:{type:'object',properties:{code:{type:'string'}},required:['code']}}],call:async()=>{calls++;if(mode==='transport-error')throw Error(CANARY);return mode==='remote-error'?{isError:true,content:[{type:'text',text:CANARY},{type:'image',data:CANARY,mimeType:'image/png'}],structuredContent:{secret:CANARY}}:{content:[{type:'text',text:'ordinary guest stdout'},{type:'image',data:PNG,mimeType:'image/png'}]};}} as any,
-   delegate:{send:async()=>{throw Error('unused');}},log:s=>logs.push(s)});
+   communication:{tools:async()=>[],call:async()=>{throw Error("No native communication expected");}},
+   delegate:{},log:s=>logs.push(s)});
   channel.session.subscribe(e=>events.push(e));
   class Irc extends EventEmitter{connect(){} say(_target:string,line:string){relayed.push(line);}quit(){}join(){}changeNick(){}}
-  const irc=new Irc();bot=new IrcPiBot({server:'synthetic.invalid',port:6667,tls:false,nick:'cuse',channels:[],controlChannel:'#synthetic',addressedOnly:true,cwd:dir,agentDir:agent,sessionDir:join(dir,'sessions'),workspaceRoot:join(dir,'work'),statePath:join(dir,'state.json'),modelRuntime,desktops:{ensure:async()=>({id:'synthetic-desktop',name:'synthetic',state:'running'})} as any,createResources:async()=>{throw Error('unused');},openSession:async()=>channel!,forkSession:()=>{throw Error('unused');},createClient:()=>irc as any,sendSpacingMs:0,log:s=>logs.push(s)});await bot.start();
+  const irc=new Irc();bot=new IrcPiBot({server:'synthetic.invalid',port:6667,tls:false,nick:'cuse',channels:[],controlChannel:'#synthetic',addressedOnly:true,cwd:dir,agentDir:agent,sessionDir:join(dir,'sessions'),workspaceRoot:join(dir,'work'),statePath:join(dir,'state.json'),modelRuntime,desktops:{ensure:async()=>({id:'synthetic-desktop',name:'synthetic',state:'running'})} as any,createResources:async()=>{throw Error('unused');},openSession:async()=>channel!,forkSession:()=>{throw Error('unused');},transport: fakeWeeChat(irc),sendSpacingMs:0,log:s=>logs.push(s)});await bot.start();
   // Substitute only synthetic model generation. Tool dispatch/adapter/SDK storage/relay are REAL.
   channel.session.agent.streamFunction=(_model:any,context:any)=>{
    const first=++turns%2===1;

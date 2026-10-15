@@ -1,3 +1,4 @@
+import { fakeWeeChat } from "./helpers/fake-weechat.ts";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -49,18 +50,18 @@ class FakeIrc extends EventEmitter {
  connect() {} join(channel:string){this.joins.push(channel);} say(target:string,text:string){this.messages.push({target,text});}
  quit() {} changeNick() {}
 }
-test('actual bot rejects bare/explicit/multiple/existing/concurrent forks before JOIN, source opening, mappings or fetch', async () => {
+test('fork commands cause no extra JOIN, source opening, mapping changes or fetch after startup', async () => {
  const dir=mkdtempSync('/tmp/cuse-bot-');const irc=new FakeIrc();let fetches=0,opens=0,copies=0,resources=0;
  const c=fakeClient(()=>{fetches++;throw Error('unexpected network');});
  const bot=new IrcPiBot({server:'synthetic.invalid',port:6667,tls:false,nick:'cuse',channels:[],controlChannel:'#control',addressedOnly:true,statePath:dir+'/state.json',workspaceRoot:dir+'/workspaces',cwd:dir,agentDir:dir+'/agent',sessionDir:dir+'/sessions',desktops:c,modelRuntime:{} as any,
- createResources:async()=>{resources++;throw Error('unexpected resources');},openSession:async()=>{opens++;throw Error('unexpected open');},forkSession:()=>{copies++;throw Error('unexpected copy');},log:()=>{},createClient:()=>irc as any,sendSpacingMs:0});
+ createResources:async()=>{resources++;throw Error('unexpected resources');},openSession:async()=>{opens++;throw Error('unexpected open');},forkSession:()=>{copies++;throw Error('unexpected copy');},log:()=>{},transport: fakeWeeChat(irc),sendSpacingMs:0});
  try {
-  bot.store.set('#existing',{desktopId:'remembered',createdAt:1});const before=readFileSync(dir+'/state.json','utf8');await bot.start();
+  bot.store.set('#existing',{desktopId:'remembered',createdAt:1});bot.store.set('#control',{desktopId:'control',createdAt:1});const before=readFileSync(dir+'/state.json','utf8');await bot.start();const startupJoins=[...irc.joins];
   for(const text of [',fork',',fork #target',',fork #a,#b',',fork #existing',',fork #target',',fork #target']) irc.emit('privmsg',{nick:'tester',target:'#control',message:text});
   for(let n=0;n<100 && irc.messages.length<7;n++) await new Promise(r=>setTimeout(r,2));
   assert.equal(irc.messages.length,7);assert.ok(irc.messages.every(m=>m.text.includes('Disk snapshot fork is unavailable')));
-  assert.deepEqual(irc.joins,[]);assert.equal(fetches,0);assert.equal(opens,0);assert.equal(copies,0);assert.equal(resources,0);
-  assert.equal(readFileSync(dir+'/state.json','utf8'),before);assert.equal(bot.store.entries().length,1);
+  assert.deepEqual(irc.joins,startupJoins);assert.equal(fetches,0);assert.equal(opens,0);assert.equal(copies,0);assert.equal(resources,0);
+  assert.equal(readFileSync(dir+'/state.json','utf8'),before);assert.equal(bot.store.entries().length,2);
   assert.equal(existsSync(dir+'/workspaces'),false);assert.equal(existsSync(dir+'/sessions'),false);
  } finally {await bot.close();rmSync(dir,{recursive:true,force:true});}
 });
@@ -97,7 +98,7 @@ test('mention toggle is channel-local, accepts bare commands, and survives resta
  const dir=mkdtempSync('/tmp/cuse-mention-');const prompts:string[]=[];
  const make=()=>{
   const irc=new FakeIrc();
-  const bot=new IrcPiBot({server:'synthetic.invalid',port:6667,tls:false,nick:'cuse',channels:[],controlChannel:'#control',addressedOnly:true,statePath:dir+'/state.json',workspaceRoot:dir+'/work',cwd:dir,agentDir:dir,sessionDir:dir+'/sessions',desktops:{ensure:async(room:string)=>({id:room,name:room,state:'running'})} as any,modelRuntime:{} as any,createResources:async()=>{throw Error('unused');},openSession:async(room:string)=>({sessionId:room,sessionFile:dir+'/'+room+'.jsonl',busy:false,watch:()=>()=>{},prompt:async(text:string)=>{prompts.push(text);return {text:'',steered:false};},abort:async()=>{}}) as any,forkSession:()=>{throw Error('unused');},log:()=>{},createClient:()=>irc as any,sendSpacingMs:0});
+  const bot=new IrcPiBot({server:'synthetic.invalid',port:6667,tls:false,nick:'cuse',channels:[],controlChannel:'#control',addressedOnly:true,statePath:dir+'/state.json',workspaceRoot:dir+'/work',cwd:dir,agentDir:dir,sessionDir:dir+'/sessions',desktops:{ensure:async(room:string)=>({id:room,name:room,state:'running'})} as any,modelRuntime:{} as any,createResources:async()=>{throw Error('unused');},openSession:async(room:string)=>({sessionId:room,sessionFile:dir+'/'+room+'.jsonl',busy:false,watch:()=>()=>{},prompt:async(text:string)=>{prompts.push(text);return {text:'',steered:false};},abort:async()=>{}}) as any,forkSession:()=>{throw Error('unused');},log:()=>{},transport: fakeWeeChat(irc),sendSpacingMs:0});
   const send=async(target:string,message:string)=>{irc.emit('privmsg',{nick:'tester',target,message});await new Promise(r=>setTimeout(r,30));};
   return {bot,irc,send};
  };
@@ -113,6 +114,6 @@ test('mention toggle is channel-local, accepts bare commands, and survives resta
   await app.send('#room',',toggle mention');assert.equal(app.bot.store.get('#room')?.mentionRequired,true);
   await app.send('#room','ignored again');assert.equal(prompts.length,2);
   await app.send('#room','cuse: addressed');assert.equal(prompts.length,3);
-  await app.send('cuse',',toggle mention');assert.ok(app.irc.messages.some(m=>m.text.includes('DMs always accept')));
+  const beforeDm=app.irc.messages.length;await app.send('cuse',',toggle mention');assert.equal(app.irc.messages.length,beforeDm,'channel-only transport must ignore DMs');assert.equal(prompts.length,3);
  } finally {await app.bot.close();rmSync(dir,{recursive:true,force:true});}
 });

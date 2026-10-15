@@ -44,7 +44,8 @@ async function fixture(t: TestContext) {
 	});
 	const deps: ChannelSessionDeps = {
 		cwd: dir, agentDir: dir, sessionDir: join(dir, "sessions"), modelRuntime: runtime,
-		delegate: { send: async () => { throw new Error("No peer communication expected"); }, piGoal: room => enabled ? access(room) : undefined },
+		communication: { tools: async () => [], call: async () => { throw Error("No native communication expected"); } },
+		delegate: { piGoal: room => enabled ? access(room) : undefined },
 		desktop: { call: async () => { throw new Error("No desktop execution expected"); } } as unknown as ChannelSessionDeps["desktop"],
 		log: line => diagnostics.push(line),
 		createResources: async () => {
@@ -72,7 +73,7 @@ async function fixture(t: TestContext) {
 		assert.ok(message, `Expected pending input for ${room}`);
 		const session = sessions.get(room)!;
 		const result = await session.promptDurable(message.id, message.body);
-		store.complete(message.id, [], result.text);
+		store.complete(message.id);
 		return { message, result };
 	};
 	return {
@@ -128,7 +129,7 @@ test("native durable pi-goal continues only after settlement and charges the com
 test("create/get/update goal tools retain upstream contract inside one durable run", async t => {
 	const f = await fixture(t);
 	const tools = await f.session.lane.getActiveTools(ctx);
-	for (const name of ["create_goal", "get_goal", "update_goal", "run_js", "desktop_control", "agent_list", "agent_ask", "schedule_prompt"]) assert.ok(tools.includes(name), name);
+	for (const name of ["create_goal", "get_goal", "update_goal", "run_js", "desktop_control", "schedule_prompt"]) assert.ok(tools.includes(name), name);
 	for (const name of ["read", "write", "edit", "bash", "goal_status", "goal_update"]) assert.ok(!tools.includes(name), name);
 	f.store.enqueue({ id: "human-create", channel: "#one", sender: "human", body: "Set a goal to verify this synthetic fixture" });
 	f.faux.setResponses([

@@ -34,7 +34,6 @@ export function describeToolCall(name: string, args: unknown): string {
 	}
 	if (name === "bash" && typeof record.command === "string")
 		return `[bash] ${firstLine(record.command).slice(0, 100)}`;
-	if (name === "irc_send" && typeof record.channel === "string") return `[irc_send] ${record.channel}`;
 	return `[${name}]`;
 }
 

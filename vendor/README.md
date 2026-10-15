@@ -34,3 +34,14 @@ The runtime writer skill is intentionally customized for mutable MCPJS
 The pristine skill remains in this snapshot. `runtimeCustomizations` in the
 provenance manifest records original/local hashes and the purpose of this edit.
 There is no dependency install or source download at runtime.
+
+## WeeChat MCP
+
+`weechat-mcp/` contains the runtime files from r33drichards/weechat-mcp at
+`49bfd98f15853c2cec2228ee2cc978512fbd10c1`, with the GPL-3.0-or-later license
+preserved. `weechat-mcp.provenance.json` records their exact SHA-256 digests.
+`weechat-mcp-requirements.txt` is exported from upstream uv.lock with hashes;
+the image installs those locked Python dependencies. No source is fetched at
+startup. The host integration is maintained separately in `src/weechat.ts`.
+The vendored Pi coding-agent package adds the exact official TypeScript MCP
+client dependency, with its workspace lockfile updated.

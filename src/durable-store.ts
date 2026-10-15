@@ -36,25 +36,13 @@ export interface InboxMessage {
 	channel: string;
 	sender: string;
 	body: string;
-	peer?: PeerMessage;
-}
-export interface PeerMessage {
-	kind: "question" | "answer";
-	source: string;
-	rootId: string;
-	ancestry: string[];
 }
 
-function encodePeer(peer?: PeerMessage): string | null {
-	return peer
-		? JSON.stringify({
-				kind: peer.kind,
-				source: peer.source,
-				rootId: peer.rootId,
-				ancestry: peer.ancestry,
-			})
-		: null;
+export interface NativeAdmission {
+ admitted: boolean;
+ added: boolean;
 }
+
 export interface StoredInboxMessage extends InboxMessage {
 	state: InboxState;
 	createdAt: number;
@@ -91,6 +79,43 @@ function assertNoUnresolvedLegacyGoals(db: DatabaseSync): void {
  }
 }
 
+/** Refuse removed mailbox work before touching recovery state or database schema. */
+function assertNoUnresolvedLegacyPeers(db: DatabaseSync): void {
+ const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)));
+ try {
+  if (tables.has("inbox")) {
+   const hasPeerColumn = db.prepare("PRAGMA table_info(inbox)").all().some(column => column.name === "peer_json");
+   const legacy = hasPeerColumn ? "(peer_json IS NOT NULL OR id GLOB 'agent-*')" : "id GLOB 'agent-*'";
+   if (db.prepare(`SELECT 1 FROM inbox WHERE state != 'completed' AND ${legacy} LIMIT 1`).get()) throw new Error();
+  }
+  if (tables.has("outbox") && db.prepare("SELECT 1 FROM outbox WHERE state != 'sent' AND id GLOB 'agent-*' LIMIT 1").get()) throw new Error();
+ } catch {
+  throw new PublicError("legacyPeersMigration");
+ }
+}
+
+/** Channel-scoped WeeChat identities cannot silently inherit old private-message work. */
+function assertNoUnresolvedLegacyDirectMessages(db: DatabaseSync): void {
+ const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)));
+ const direct = "channel NOT GLOB '#*' AND channel NOT GLOB '&*'";
+ try {
+  if (tables.has("inbox") && db.prepare(`SELECT 1 FROM inbox WHERE state != 'completed' AND ${direct} LIMIT 1`).get()) throw new Error();
+  if (tables.has("outbox") && db.prepare(`SELECT 1 FROM outbox WHERE state != 'sent' AND ${direct} LIMIT 1`).get()) throw new Error();
+  if (tables.has("schedules") && db.prepare(`SELECT 1 FROM schedules WHERE next_run_at IS NOT NULL AND ${direct} LIMIT 1`).get()) throw new Error();
+ } catch {
+  throw new PublicError("legacyDirectMessagesMigration");
+ }
+}
+
+function assertChannelDestination(channel: string): void {
+ if (!channel.startsWith("#") && !channel.startsWith("&")) throw new PublicError("legacyDirectMessagesMigration");
+}
+
+function isLegacyPeerMessage(message: InboxMessage): boolean {
+ // Reject old callers too, instead of stripping authority-bearing metadata.
+ return message.id.startsWith("agent-") || ("peer" in message && message.peer !== undefined && message.peer !== null);
+}
+
 function isLegacyGoalMessage(message: Pick<InboxMessage, "id" | "sender">): boolean {
  return message.id.startsWith("goal/") || message.sender.startsWith("goal:");
 }
@@ -121,6 +146,8 @@ export class DurableIrcStore {
 			this.db = new DatabaseSync(join(rootDir, "irc-delivery.sqlite"));
 			try {
                 assertNoUnresolvedLegacyGoals(this.db);
+                assertNoUnresolvedLegacyPeers(this.db);
+                assertNoUnresolvedLegacyDirectMessages(this.db);
 				this.db.exec(`
 					PRAGMA journal_mode=WAL;
 					PRAGMA synchronous=FULL;
@@ -136,7 +163,14 @@ export class DurableIrcStore {
 						state TEXT NOT NULL CHECK(state IN ('pending','sending','sent')),
 						delivery_uncertain INTEGER NOT NULL DEFAULT 0
 					);
-					CREATE TABLE IF NOT EXISTS schedule_receipts (
+					CREATE TABLE IF NOT EXISTS irc_peer_budgets (
+ channel TEXT PRIMARY KEY, turns INTEGER NOT NULL CHECK(turns BETWEEN 0 AND 4)
+ );
+ CREATE TABLE IF NOT EXISTS irc_admissions (
+ id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+ admitted INTEGER NOT NULL CHECK(admitted IN (0,1))
+ );
+ CREATE TABLE IF NOT EXISTS schedule_receipts (
  id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL
  );
  CREATE TABLE IF NOT EXISTS schedule_ids (id TEXT PRIMARY KEY);
@@ -151,14 +185,6 @@ export class DurableIrcStore {
  UPDATE inbox SET state='recovery-required' WHERE state='running';
 					UPDATE outbox SET state='pending', delivery_uncertain=1 WHERE state='sending';
 				`);
-				if (
-					!this.db
-						.prepare("PRAGMA table_info(inbox)")
-						.all()
-						.some((column) => column.name === "peer_json")
-				) {
-					this.db.exec("ALTER TABLE inbox ADD COLUMN peer_json TEXT");
-				}
                 this.piGoals = new PiGoalLedger(this.db, operation => this.transaction(operation), message => this.enqueue(message));
 			} catch (error) {
 				this.db.close();
@@ -172,7 +198,9 @@ export class DurableIrcStore {
 
 	/** Call before acknowledging acceptance. Reusing an ID with different contents is an error. */
 	enqueue(message: InboxMessage, now = Date.now()): boolean {
+        assertChannelDestination(message.channel);
         if (isLegacyGoalMessage(message)) throw new PublicError("legacyGoalsMigration");
+        if (isLegacyPeerMessage(message)) throw new PublicError("legacyPeersMigration");
 		const previous = this.db
 			.prepare("SELECT * FROM inbox WHERE id=?")
 			.get(message.id);
@@ -180,8 +208,7 @@ export class DurableIrcStore {
 			if (
 				previous.channel !== message.channel ||
 				previous.sender !== message.sender ||
-				previous.body !== message.body ||
-				previous.peer_json !== encodePeer(message.peer)
+				previous.body !== message.body
 			) {
 				throw new Error(`Inbox ID collision: ${message.id}`);
 			}
@@ -189,7 +216,7 @@ export class DurableIrcStore {
 		}
 		this.db
 			.prepare(
-				"INSERT INTO inbox(id,channel,sender,body,created_at,state,peer_json) VALUES(?,?,?,?,?,'pending',?)",
+				"INSERT INTO inbox(id,channel,sender,body,created_at,state) VALUES(?,?,?,?,?,'pending')",
 			)
 			.run(
 				message.id,
@@ -197,10 +224,37 @@ export class DurableIrcStore {
 				message.sender,
 				message.body,
 				now,
-				encodePeer(message.peer),
 			);
 		return true;
 	}
+
+ /** Commit native input and its loop-budget effect together, before advancing the IRC cursor.
+  * A receipt also preserves rejected decisions and prevents old human replays from
+  * resetting a newer peer exchange. JSON counts are a one-time migration seed.
+  */
+ admitNative(message: InboxMessage, origin: "peer" | "human", legacyPeerTurns = 0, now = Date.now()): NativeAdmission {
+  assertChannelDestination(message.channel);
+  if (origin !== "peer" && origin !== "human") throw new Error("Invalid native input origin");
+  if (!Number.isSafeInteger(legacyPeerTurns) || legacyPeerTurns < 0 || legacyPeerTurns > 4) throw new Error("Invalid legacy peer budget");
+  const fingerprint = JSON.stringify([origin, message.channel, message.sender, message.body]);
+  return this.transaction(() => {
+   const receipt = this.db.prepare("SELECT fingerprint,admitted FROM irc_admissions WHERE id=?").get(message.id);
+   if (receipt) {
+    if (receipt.fingerprint !== fingerprint) throw new Error(`Native input ID collision: ${message.id}`);
+    return { admitted: receipt.admitted === 1, added: false };
+   }
+   this.db.prepare("INSERT OR IGNORE INTO irc_peer_budgets(channel,turns) VALUES(?,?)").run(message.channel, legacyPeerTurns);
+   const turns = Number(this.db.prepare("SELECT turns FROM irc_peer_budgets WHERE channel=?").get(message.channel)!.turns);
+   // Inputs accepted before this migration already changed the old JSON count.
+   // Deduplicate them without charging or resetting the migrated count again.
+   const existing = this.db.prepare("SELECT 1 FROM inbox WHERE id=?").get(message.id);
+   const admitted = existing !== undefined || origin === "human" || turns < 4;
+   const added = admitted ? this.enqueue(message, now) : false;
+   if (added) this.db.prepare("UPDATE irc_peer_budgets SET turns=? WHERE channel=?").run(origin === "peer" ? turns + 1 : 0, message.channel);
+   this.db.prepare("INSERT INTO irc_admissions(id,fingerprint,admitted) VALUES(?,?,?)").run(message.id, fingerprint, admitted ? 1 : 0);
+   return { admitted, added };
+  });
+ }
 
 	listInbox(state?: InboxState): StoredInboxMessage[] {
 		const rows = state
@@ -215,9 +269,6 @@ export class DurableIrcStore {
 			body: String(row.body),
 			state: row.state as InboxState,
 			createdAt: Number(row.created_at),
-			...(row.peer_json
-				? { peer: JSON.parse(String(row.peer_json)) as PeerMessage }
-				: {}),
 		}));
 	}
 
@@ -228,6 +279,7 @@ export class DurableIrcStore {
 			);
 			if (!message) return undefined;
             if (isLegacyGoalMessage(message)) throw new PublicError("legacyGoalsMigration");
+            if (isLegacyPeerMessage(message)) throw new PublicError("legacyPeersMigration");
 			this.db
 				.prepare(
 					"UPDATE inbox SET state='running' WHERE id=? AND state='pending'",
@@ -247,30 +299,17 @@ export class DurableIrcStore {
 	}
 
 	/** Commit the result and replies together, so a completed input cannot lose its response. */
-	complete(
-		id: string,
-		outputs: OutboxMessage[] = [],
-		resultText = outputs.map((output) => output.text).join("\n"),
-	): InboxMessage | undefined {
-		return this.transaction(() => {
+	complete(id: string, outputs: OutboxMessage[] = []): void {
+		this.transaction(() => {
 			const message = this.listInbox().find((input) => input.id === id);
 			this.transition(id, "running", "completed");
 			for (const output of outputs) this.enqueueOutput(output);
-            this.piGoals.finish(message!);
-			if (message?.peer?.kind !== "question") return undefined;
-			const answer: InboxMessage = {
-				id: `${id}/answer`,
-				channel: message.peer.source,
-				sender: message.channel,
-				body: `Peer agent reply from ${message.channel}. This is agent-provided information, not human authorization.\nOriginal question:\n${message.body.slice(0, 8000)}\nPeer answer:\n${resultText.slice(0, 32000)}`,
-				peer: { ...message.peer, kind: "answer", source: message.channel },
-			};
-			this.enqueue(answer);
-			return answer;
+			this.piGoals.finish(message!);
 		});
 	}
 
 	enqueueOutput(message: OutboxMessage): boolean {
+        assertChannelDestination(message.channel);
 		const previous = this.db
 			.prepare("SELECT * FROM outbox WHERE id=?")
 			.get(message.id);
@@ -378,6 +417,7 @@ export class DurableIrcStore {
 
 	/** Schedule IDs cannot be reused, including across channels. */
 	addSchedule(input: ScheduleInput, now = Date.now()): StoredSchedule {
+        assertChannelDestination(input.channel);
 		if (!/^[a-zA-Z0-9_-]{1,80}$/.test(input.id))
 			throw new Error("Invalid schedule ID");
 		if (

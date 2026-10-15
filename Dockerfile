@@ -26,7 +26,7 @@ COPY src/ /app/packages/coding-agent/src/cuse/
 RUN npm --prefix packages/coding-agent run build
 
 FROM node:24-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv weechat-headless weechat-plugins weechat-python \
  && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production \
     PI_CODING_AGENT_DIR=/data/agent \
@@ -37,11 +37,17 @@ ENV NODE_ENV=production \
     COMPUTERUSE_SESSION_SIZE=small \
     CUSE_MAX_DESKTOPS=10
 COPY --from=build /app /app
+COPY vendor/weechat-mcp/ /opt/cuse-vendor/weechat-mcp/
+COPY vendor/weechat-mcp.provenance.json /opt/cuse-vendor/weechat-mcp.provenance.json
+COPY vendor/weechat-mcp-requirements.txt /opt/cuse-vendor/weechat-mcp-requirements.txt
+RUN python3 -m venv /opt/cuse-weechat \
+ && /opt/cuse-weechat/bin/pip install --no-cache-dir --require-hashes -r /opt/cuse-vendor/weechat-mcp-requirements.txt
 # Ship audited source and its license, without auto-loading the extension.
 COPY vendor/pi-goal/ /opt/cuse-vendor/pi-goal/
 COPY vendor/pi-goal.provenance.json /opt/cuse-vendor/pi-goal.provenance.json
 COPY entrypoint.sh /usr/local/bin/cuse-entrypoint
 COPY scripts/image-smoke.mts /app/cuse/image-smoke.mts
+COPY scripts/weechat-live-smoke.mts /app/cuse/weechat-live-smoke.mts
 RUN chmod 0755 /usr/local/bin/cuse-entrypoint && mkdir -p /data/agent /workspace
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/cuse-entrypoint"]

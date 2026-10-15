@@ -41,7 +41,7 @@ test("durable agent discovers and loads channel-bound skills without host read, 
  const runtime = Object.create(models); runtime.getAvailable = async () => [faux.getModel()];
  const a = desktop("desktop-A"), b = desktop("desktop-B");
  let session: DurableChannelSession | undefined;
- const deps: any = { cwd: dir, agentDir: dir, sessionDir: join(dir, "sessions"), desktop: a.mcp, modelRuntime: runtime, delegate: { send: async () => {} }, log() {}, createResources: async () => {
+ const deps: any = { cwd: dir, agentDir: dir, sessionDir: join(dir, "sessions"), desktop: a.mcp, modelRuntime: runtime, communication: {tools: async () => [], call: async () => ({content: []})}, delegate: {}, log() {}, createResources: async () => {
   const settingsManager = SettingsManager.inMemory({ defaultProvider: faux.getModel().provider, defaultModel: faux.getModel().id });
   const resourceLoader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
   await resourceLoader.reload(); return { settingsManager, resourceLoader };

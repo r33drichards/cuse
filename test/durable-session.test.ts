@@ -35,7 +35,8 @@ test("committed operation survives reopen without another provider request", asy
 		agentDir: dir,
 		sessionDir: join(dir, "sessions"),
 		modelRuntime: runtime,
-		delegate: { send: async () => {} },
+		delegate: {},
+		communication: { tools: async () => [], call: async () => { throw Error("No native communication expected"); } },
 		log: () => {},
 		desktop: {
 			tools: async () => [

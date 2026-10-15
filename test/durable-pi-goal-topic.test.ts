@@ -1,3 +1,4 @@
+import { fakeWeeChat } from "./helpers/fake-weechat.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -35,7 +36,7 @@ test("bot wires topic lifecycle, budget state, toggle, clear, and transport deni
   modelRuntime: {} as IrcBotOptions["modelRuntime"],
   openSession: async () => { opens++; throw Error("paused desktop must not open"); },
   forkSession: () => { throw Error("unexpected fork"); },
-  log: () => {}, createClient: () => irc as unknown as ReturnType<NonNullable<IrcBotOptions["createClient"]>>,
+  log: () => {}, transport: fakeWeeChat(irc),
   sendSpacingMs: 0,
  });
  t.after(async () => { await bot.close(); rmSync(root, { recursive: true, force: true }); });

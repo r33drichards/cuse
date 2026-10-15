@@ -13,7 +13,7 @@
  *   ,help
  *
  * A mention whose body starts with `,` is a command (`cuse ,model astra`); a
- * bare `,command` is honored in the control channel and DMs.
+ * bare `,command` is honored in the control channel.
  */
 
 import { parseScheduleCommand, SCHEDULE_USAGE, type ScheduleRequest } from "./schedule-commands.ts";
@@ -51,7 +51,7 @@ const CONTROL_COMMANDS = [
 export const HELP_LINES = [
 	...SESSION_COMMANDS.map((command) => `,${command.usage} — ${command.description}`),
 	...CONTROL_COMMANDS.map((command) => `,${command.usage} — ${command.description}`),
-	"Mention cuse to talk (cuse: …) or DM cuse. Use ,toggle mention in a channel to switch mention requirements. Use cuse ,join #name in the control channel or a DM. Each room has its own desktop and conversation; Fork copies conversation + an independent desktop disk snapshot; the child cold-starts, not a live process clone. No merge or spawn. Snapshot fork is currently unavailable until the backend API is validated. Desktop delete/recreate permanently erase the old disk and require typed desktop ID confirmation.",
+	"Mention this channel’s distinct cuse identity to talk. Use ,toggle mention in a channel to switch mention requirements. Use ,join #name in the control channel. Each room has its own desktop and conversation; Fork copies conversation + an independent desktop disk snapshot; the child cold-starts, not a live process clone. No merge or spawn. Snapshot fork is currently unavailable until the backend API is validated. Desktop delete/recreate permanently erase the old disk and require typed desktop ID confirmation.",
 ];
 
 const CHANNEL = /^[#&][^\s,\x07]{1,63}$/;

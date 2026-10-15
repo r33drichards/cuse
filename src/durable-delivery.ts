@@ -89,21 +89,6 @@ export class DurableDelivery {
 		}
 	}
 
-	startDirectMessages(): Promise<void> {
-		if (this.closing) return Promise.resolve();
-		const channels = new Set(
-			this.store
-				.listInbox()
-				.filter((message) => message.state !== "completed")
-				.map((message) => message.channel)
-				.filter(
-					(channel) => !channel.startsWith("#") && !channel.startsWith("&"),
-				),
-		);
-		return Promise.all(
-			[...channels].map((channel) => this.startChannel(channel)),
-		).then(() => {});
-	}
 
 	/** Called on IRC reconnect. A failed send stops this drain until the next explicit retry. */
 	drainOutputs(): Promise<void> {
@@ -192,18 +177,16 @@ export class DurableDelivery {
 					throw new Error(
 						"Durable inbox requires terminal prompt completion, not steering acceptance",
 					);
-				const answer = this.store.complete(
+				this.store.complete(
 					message.id,
 					toIrcLines(result.text).map((text, index) => ({
 						id: `${message.id}/reply/${index}`,
 						channel,
 						text,
 					})),
-					result.text,
 				);
 				activeId = undefined;
 				this.activeMessages.delete(channel);
-				if (answer) this.kick(answer.channel);
 				await this.drainOutputs();
 			}
 		} catch (error) {
