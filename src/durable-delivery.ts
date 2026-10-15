@@ -12,7 +12,7 @@ export interface DurablePromptSession {
 }
 export interface DurableDeliveryHandlers {
 	open(channel: string): Promise<DurablePromptSession>;
-	deliver(channel: string, text: string): Promise<void>;
+	deliver(channel: string, text: string, replyTarget?: string): Promise<void>;
 	canDeliver?(channel: string): boolean;
  canOpen?(channel: string): boolean;
 	report(channel: string, error: unknown): void;
@@ -28,6 +28,7 @@ export class DurableDelivery {
  private readonly openRetries = new Map<string, ReturnType<typeof setTimeout>>();
  private readonly openAttempts = new Map<string, number>();
 	private readonly activeMessages = new Map<string, InboxMessage>();
+	private outputRetryRequested = false;
 	private outputWorker?: Promise<void>;
 	private closing = false;
 	private closePromise?: Promise<void>;
@@ -91,13 +92,17 @@ export class DurableDelivery {
 
 
 	/** Called on IRC reconnect. A failed send stops this drain until the next explicit retry. */
-	drainOutputs(): Promise<void> {
+	drainOutputs(retryAfterCurrent = false): Promise<void> {
 		if (this.closing) return Promise.resolve();
-		if (this.outputWorker) return this.outputWorker;
+		if (this.outputWorker) {
+            if (retryAfterCurrent) this.outputRetryRequested = true;
+            return this.outputWorker;
+        }
 		const work = this.runOutputs().catch((error) => this.report("", error));
 		this.outputWorker = work;
 		void work.finally(() => {
 			if (this.outputWorker === work) this.outputWorker = undefined;
+            if (this.outputRetryRequested) { this.outputRetryRequested = false; void this.drainOutputs(); }
 		});
 		return work;
 	}
@@ -182,6 +187,7 @@ export class DurableDelivery {
 					toIrcLines(result.text).map((text, index) => ({
 						id: `${message.id}/reply/${index}`,
 						channel,
+                        ...(message.replyTarget ? {replyTarget: message.replyTarget} : {}),
 						text,
 					})),
 				);
@@ -227,7 +233,7 @@ export class DurableDelivery {
 			const message = this.store.claimOutput(next.channel);
 			if (!message) return;
 			try {
-				await this.handlers.deliver(message.channel, message.text);
+				await this.handlers.deliver(message.channel, message.text, message.replyTarget);
 				this.store.acknowledgeOutput(message.id);
 			} catch (error) {
 				this.store.retryOutput(message.id);

@@ -549,3 +549,24 @@ test("active agent can stop and start its own desktop without closing itself",as
  }),true,{ensure:async()=>({id:"own",state:"running"}),get:async()=>({id:"own",state:"starting",message:"Pod is Running but not Ready"}),viewer:()=>"https://example.test/own",lifecycle:async(id:string,action:string)=>{calls.push(`${id}/${action}`);return{id,state:action};}} as any);
  try{await a.bot.start();a.irc.emit("registered",{nick:"cuse"});await until(()=>!!a.bot.store.get("#control"));a.irc.emit("privmsg",{nick:"owner",target:"#control",message:"recover"});await until(()=>a.irc.messages.some(m=>m.text==="SELF_RECOVERED"));assert.deepEqual(calls,["own/stop","own/start"]);}finally{await a.bot.close();rmSync(root,{recursive:true,force:true});}
 });
+
+
+test("shared mention uses existing home session, persists source reply and never executes control", async () => {
+ const root = mkdtempSync(join(tmpdir(), "cuse-shared-bot-"));
+ const opened: string[] = [], prompts: string[] = [];
+ const {bot, irc} = app(root, async channel => {
+  opened.push(channel); return session(root, channel, async (_id, body) => { prompts.push(body); return {text: "SHARED_REPLY", steered: false}; });
+ });
+ try {
+  await bot.start();
+  const event = {nick: "human", target: "#control", source: "#wchat", message: "@cuse: ,model do-not-change", tags: {msgid: "shared-1"}};
+  irc.emit("privmsg", event);
+  await until(() => irc.messages.some(m => m.text === "SHARED_REPLY"));
+  assert.deepEqual(opened, ["#control"]);
+  assert(prompts[0].includes("#wchat")); assert(prompts[0].includes(",model do-not-change"));
+  assert.equal(irc.messages.find(m => m.text === "SHARED_REPLY")?.target, "#wchat");
+  const rows = readInbox(root); assert.equal(rows[0].channel, "#control"); assert.equal(rows[0].reply_target, "#wchat");
+  irc.emit("privmsg", event); await tick(); await tick(); assert.equal(prompts.length, 1);
+  irc.emit("privmsg", {...event, message: "ordinary chatter", tags: {msgid: "shared-2"}}); await tick(); assert.equal(prompts.length, 1);
+ } finally { await bot.close(); rmSync(root, {recursive: true, force: true}); }
+});

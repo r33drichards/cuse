@@ -49,15 +49,15 @@ class Fixture {
  }
  notify(channel = this.identity.channel) { this.notifications?.({method: "notifications/resources/updated", params: {uri: weechatResource(channel)}}); }
 }
-function setup(extra: {fullControl?: boolean; peerChannels?: Record<string, string[]>; message?: (event: WeeChatMessage) => Promise<void>; configure?: (fixture: Fixture) => void; timeout?: number} = {}) {
+function setup(extra: {fullControl?: boolean; mentionChannels?: string[]; peerChannels?: Record<string, string[]>; message?: (event: WeeChatMessage) => Promise<void>; configure?: (fixture: Fixture) => void; timeout?: number} = {}) {
  const root = mkdtempSync(join(tmpdir(), "cuse-weechat-test-"));
  const fixtures = new Map<string, Fixture>();
- const messages: WeeChatMessage[] = [], joined: string[] = [], disconnected: string[] = [], faults: unknown[] = [], topics: string[] = [];
- const network = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: root, upstreamDir: "/test/upstream", peerChannels: extra.peerChannels, fullControl: extra.fullControl ?? false, joinTimeoutMs: extra.timeout ?? 150,
+ const messages: WeeChatMessage[] = [], joined: string[] = [], disconnected: string[] = [], faults: unknown[] = [], topics: string[] = [], deliveryReady: string[] = [];
+ const network = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: root, upstreamDir: "/test/upstream", peerChannels: extra.peerChannels, mentionChannels: extra.mentionChannels, fullControl: extra.fullControl ?? false, joinTimeoutMs: extra.timeout ?? 150,
   createSession: async identity => { const fixture = new Fixture(identity); extra.configure?.(fixture); fixtures.set(identity.channel, fixture); return fixture.session(); }});
- network.setHandlers({message: async event => { messages.push(event); await extra.message?.(event); }, joined: channel => joined.push(channel), disconnected: channel => disconnected.push(channel), fault: (_channel, error) => faults.push(error), topic: (_channel, title) => topics.push(title)});
+ network.setHandlers({deliveryReady: channel => deliveryReady.push(channel), message: async event => { messages.push(event); await extra.message?.(event); }, joined: channel => joined.push(channel), disconnected: channel => disconnected.push(channel), fault: (_channel, error) => faults.push(error), topic: (_channel, title) => topics.push(title)});
  const cursorPath = (channel: string) => join(root, createHash("sha256").update(channel).digest("hex").slice(0, 24), "cursor.json");
- return {network, fixtures, root, messages, joined, disconnected, faults, topics, cursorPath,
+ return {network, fixtures, root, messages, joined, disconnected, faults, topics, deliveryReady, cursorPath,
   cleanup: async () => { await network.close(); rmSync(root, {recursive: true, force: true}); }};
 }
 async function until(predicate: () => boolean) { const deadline = Date.now() + 1000; while (!predicate()) { if (Date.now() > deadline) throw new Error("fixture timed out"); await delay(1); } }
@@ -838,3 +838,82 @@ raise SystemExit(7)
   }
  });
 }
+
+
+test("shared mentions retain home ownership and independent native positions", async () => {
+ const env = setup({fullControl: true, mentionChannels: ["#wchat"]});
+ try {
+  await env.network.join("#alpha"); await env.network.join("#beta");
+  for (const [home, fixture] of env.fixtures) {
+   assert.deepEqual(fixture.subscriptions[0], [weechatResource(home), weechatResource("#wchat")]);
+   const shared = fixture.snapshots.get(weechatResource("#wchat"))!;
+   shared.lines.push({id: 1, tags: ["irc_privmsg", "nick_human", "irc_tag_msgid_shared"], message: `@${env.network.nickFor("#alpha")} @${env.network.nickFor("#beta")} report`});
+   shared.lines.push({id: 2, tags: ["irc_privmsg", "nick_human"], message: "ordinary chatter without an ID"});
+   shared.lines.push({id: 3, tags: ["irc_privmsg", "nick_" + fixture.identity.nick, "irc_tag_msgid_self"], message: `@${fixture.identity.nick} self echo`});
+   shared.lines.push({id: 4, tags: ["irc_privmsg", "nick_human", "irc_tag_msgid_suffix"], message: `@${fixture.identity.nick}-other not addressed`});
+   shared.lines.push({id: 5, tags: ["irc_privmsg", "nick_human", "irc_tag_msgid_caret"], message: `@${fixture.identity.nick}^other not addressed`});
+   shared.last_assigned_id = 5; fixture.notify("#wchat");
+  }
+  await until(() => env.messages.length === 2);
+  assert.deepEqual(env.messages.map(x => x.target).sort(), ["#alpha", "#beta"]);
+  assert(env.messages.every(x => x.source === "#wchat"));
+  assert.notEqual(env.messages[0].id, env.messages[1].id);
+  for (const fixture of env.fixtures.values()) fixture.notify("#wchat");
+  await delay(20); assert.equal(env.messages.length, 2); assert.equal(env.faults.length, 0);
+ } finally { await env.cleanup(); }
+});
+
+test("restricted mode rejects shared intake configuration", () => {
+ assert.throws(() => setup({fullControl: false, mentionChannels: ["#wchat"]}), /require full control/);
+});
+
+
+test("shared mention missing server ID fails closed without admitting work", async () => {
+ const env = setup({fullControl: true, mentionChannels: ["#wchat"]});
+ try {
+  await env.network.join("#alpha"); const fixture = env.fixtures.get("#alpha")!;
+  const shared = fixture.snapshots.get(weechatResource("#wchat"))!;
+  shared.lines.push({id: 1, tags: ["irc_privmsg", "nick_human"], message: `@${fixture.identity.nick}: hello`}); shared.last_assigned_id = 1;
+  fixture.notify("#wchat"); await until(() => env.faults.length === 1);
+  assert.equal(env.messages.length, 0);
+ } finally { await env.cleanup(); }
+});
+
+test("concurrent shared reply must not invalidate an older intake read", async () => {
+ const env = setup({fullControl:true, mentionChannels:["#wchat"], configure:f=>{
+  f.client.callTool = (async p=>({content:[{type:"text", text:JSON.stringify(p.name === "weechat_command_manifest" ? generatedCommands() : {dispatched:true})}]})) as NativeMcpClient["callTool"];
+ }});
+ try {
+  await env.network.join("#alpha"); const f=env.fixtures.get("#alpha")!;
+  const shared=f.snapshots.get(weechatResource("#wchat"))!;
+  const release=deferred(), held=deferred(); let count=0;
+  f.client.readResource = (async ({uri})=>{
+   const text=JSON.stringify(f.snapshots.get(uri));
+   if(uri===weechatResource("#wchat") && ++count===1){held.resolve(); await release.promise;}
+   return {contents:[{uri,text}]};
+  }) as NativeMcpClient["readResource"];
+  f.notify("#wchat"); await held.promise;
+  shared.lines.push({id:1,tags:[],message:"native status"}); shared.last_assigned_id=1;
+  await env.network.say("#alpha", "a pending shared response", "#wchat");
+  release.resolve(); await delay(30);
+  assert.equal(env.faults.length,0);
+ } finally {await env.cleanup();}
+});
+
+
+test("shared rejoin signals delivery readiness without opening another home", async () => {
+ const env = setup({fullControl: true, mentionChannels: ["#wchat"]});
+ try {
+  await env.network.join("#alpha"); const f = env.fixtures.get("#alpha")!;
+  env.deliveryReady.length = 0;
+  const shared = f.snapshots.get(weechatResource("#wchat"))!;
+  shared.lines.push({id: 1, tags: ["irc_part", "nick_" + f.identity.nick], message: "left"});
+  shared.last_assigned_id = 1; f.notify("#wchat"); await delay(20);
+  shared.lines.push({id: 2, tags: ["irc_join", "nick_" + f.identity.nick], message: "joined"});
+  shared.last_assigned_id = 2; f.notify("#wchat");
+  await until(() => env.deliveryReady.length === 1);
+  assert.deepEqual(env.deliveryReady, ["#alpha"]);
+  assert.deepEqual(env.joined, ["#alpha"]);
+  assert.equal(env.faults.length, 0);
+ } finally { await env.cleanup(); }
+});

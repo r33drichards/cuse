@@ -31,7 +31,7 @@ export function fakeWeeChat(irc: EventEmitter & Record<string, any>): WeeChatTra
    didJoin(channel);
   },
   async part(channel) { await irc.part?.(channel); wanted.delete(channel); didLeave(channel); },
-  async say(channel, text) { await irc.say?.(channel, text); },
+  async say(channel, text, target) { await irc.say?.(target ?? channel, text); },
   async queryTopic(channel) { await irc.raw?.("TOPIC", channel); },
   async setTopic(channel, topic) {
    failures.delete(channel);
@@ -45,7 +45,7 @@ export function fakeWeeChat(irc: EventEmitter & Record<string, any>): WeeChatTra
   const id = `test-weechat/${event.target}/${event.tags?.msgid ?? `${connection}/${++sequence}`}`;
   // Keep the synchronous acceptance boundary observable; async prompt completion
   // and failures are routed through the production transport handler contract.
-  void handlers.message({ target: event.target, nick: event.nick, message: event.message, id }).catch(() => {});
+  void handlers.message({ target: event.target, ...(event.source ? {source: event.source} : {}), nick: event.nick, message: event.message, id }).catch(() => {});
  });
  irc.on("join", event => { if (!closed) didJoin(event.channel); });
  irc.on("part", event => { if (!closed) didLeave(event.channel); });

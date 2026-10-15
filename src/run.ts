@@ -162,7 +162,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
    profileRoot: join(config.statePath, "..", "weechat"),
    upstreamDir: env.CUSE_WEECHAT_DIR ?? "/opt/cuse-vendor/weechat-mcp",
    pythonCommand: env.CUSE_WEECHAT_PYTHON ?? "/opt/cuse-weechat/bin/python",
-   weechatCommand: env.CUSE_WEECHAT_BIN ?? "weechat-headless", peerChannels, fullControl,
+   weechatCommand: env.CUSE_WEECHAT_BIN ?? "weechat-headless", peerChannels, fullControl, mentionChannels: (env.CUSE_WEECHAT_MENTION_CHANNELS ?? "").split(",").map(value => value.trim()).filter(Boolean),
   }),
   durable,
   nativeHistoryAfter: env.CUSE_WEECHAT_HISTORY_AFTER,

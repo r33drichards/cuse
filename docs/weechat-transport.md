@@ -26,10 +26,19 @@ the home/peer buffer allowlist, and on-demand peer membership checks. Only `0` a
 readable after a peer PART/KICK, but commands require confirmed membership and
 continuous history. Full mode leaves command eligibility to native WeeChat.
 
-Automatic durable intake and subscriptions remain home-channel-only in both
-modes. Joining or reading another channel never wakes the home agent from that
-channel's traffic. Host replies and topic operations use the exact native IRC
-command registration/current revision in full mode, with fixed home targeting;
+Automatic durable intake remains home-only unless explicitly configured with
+`CUSE_WEECHAT_MENTION_CHANNELS=#wchat` in full mode. Each home identity joins and
+subscribes those shared channels, but only an exact native-nick mention wakes
+its existing home session. Ordinary traffic and self echoes are ignored; shared
+messages never execute host control commands. Each identity has independent
+durable admission IDs and persisted reply destinations, so replies return to the
+source channel without creating another desktop/session. Known peers retain the
+existing four-turn budget. Shared-channel rejoin wakes saved reply delivery without
+creating or reopening a session. Arbitrary JOIN/read alone does not add an intake source.
+Restricted mode rejects mention-channel configuration. Missing IDs/history gaps
+fail closed; replay is deduplicated using the durable receipts. Host replies and
+topic operations use the exact native IRC command registration/current revision
+in full mode, targeting the home or the saved explicit shared reply source;
 model calls still receive unmodified native schemas and arguments. Destructive
 commands such as PART, QUIT, server disconnect, buffer close/clear, or plugin
 unload can interrupt or invalidate the home identity and its durable continuity.

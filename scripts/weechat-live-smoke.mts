@@ -187,7 +187,7 @@ try {
  const savedPolicy = process.env.WEECHAT_MCP_FULL_CONTROL;
  delete process.env.WEECHAT_MCP_FULL_CONTROL;
  let fullSession: NativeWeeChatSession | undefined;
- const fullOptions: WeeChatNetworkOptions = {...nativeOptions, fullControl: undefined, peerChannels: {}};
+ const fullOptions: WeeChatNetworkOptions = {...nativeOptions, fullControl: undefined, peerChannels: {}, mentionChannels: ["#shared"]};
  const full = new WeeChatNetwork({...fullOptions, createSession: async identity => {
   fullSession = await startNativeWeeChat(fullOptions, identity); return fullSession;
  }});
@@ -246,7 +246,14 @@ try {
   publish(retain('fixture-human', '#full', 'home remains active'));
   await until(() => fullMessages.length === 1, 'full-mode home durable intake');
   assert.equal(fullMessages[0].target, '#full'); assert.equal(fullFaults.length, 0);
-  console.log('Full-mode native integration OK: unset default, generated JOIN, dynamic contexts/buffers/resources, read/send, fixed host replies/topics, home-only intake');
+  publish(retain('fixture-human', '#shared', 'ordinary shared chatter'));
+  publish(retain('fixture-human', '#shared', `@${full.nickFor('#full')}: shared native mention`));
+  await until(() => fullMessages.length === 2, 'shared mention reaches home identity');
+  assert.equal(fullMessages[1].target, '#full'); assert.equal(fullMessages[1].source, '#shared');
+  await full.say('#full', 'shared native reply', '#shared');
+  await until(() => wire.some(message => message.target === '#shared' && message.text === 'shared native reply'), 'source-routed native reply');
+  await sleep(100); assert.equal(fullMessages.length, 2, 'ordinary shared chatter and own echo ignored');
+  console.log('Full-mode native integration OK: unset default, generated JOIN, dynamic contexts/buffers/resources, read/send, fixed host replies/topics, explicit shared mention intake and routed replies');
  } finally {
   await full.close();
   if (savedPolicy === undefined) delete process.env.WEECHAT_MCP_FULL_CONTROL; else process.env.WEECHAT_MCP_FULL_CONTROL = savedPolicy;

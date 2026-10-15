@@ -323,3 +323,62 @@ test("pause during own turn prevents next queued message from starting", async t
  gate.resolve();await controller.startChannel(message.channel);
  assert.equal(calls,1);assert.equal(store.listInbox().find(x=>x.id==="two")?.state,"pending");
 });
+
+
+test("shared reply destination persists independently of home session and deduplicates", async t => {
+ const deliveries: unknown[] = [], homes: string[] = [];
+ const {controller, store} = setup(t, {
+  open: async home => { homes.push(home); return {promptDurable: async () => ({text: "shared response", steered: false}), abort: async () => {}}; },
+  deliver: async (home, text, target) => { deliveries.push([home, text, target]); },
+ });
+ const shared = {...message, replyTarget: "#wchat"};
+ controller.enqueue(shared);
+ assert.equal(store.listInbox()[0].replyTarget, "#wchat");
+ assert.equal(controller.enqueue(shared), false);
+ assert.throws(() => store.enqueue({...shared, replyTarget: "#other"}), /collision/);
+ await controller.startChannel(message.channel);
+ assert.deepEqual(homes, ["#test"]);
+ assert.deepEqual(deliveries, [["#test", "shared response", "#wchat"]]);
+ assert.equal(store.listOutbox()[0].replyTarget, "#wchat");
+});
+
+
+test("shared reply routing survives store reopen without changing owner or receipt", () => {
+ const dir = mkdtempSync(join(tmpdir(), "cuse-shared-reopen-"));
+ let store = new DurableIrcStore(dir);
+ try {
+  store.enqueue({...message, replyTarget: "#wchat"});
+  store.close(); store = new DurableIrcStore(dir);
+  const pending = store.claimNext("#test")!;
+  assert.equal(pending.replyTarget, "#wchat");
+  store.complete(pending.id, [{id: "one/reply/0", channel: pending.channel, replyTarget: pending.replyTarget, text: "persisted"}]);
+  store.close(); store = new DurableIrcStore(dir);
+  assert.equal(store.listInbox()[0].channel, "#test");
+  assert.equal(store.listInbox()[0].state, "completed");
+  assert.equal(store.listOutbox()[0].replyTarget, "#wchat");
+  assert.equal(store.listOutbox()[0].channel, "#test");
+ } finally {store.close(); rmSync(dir, {recursive: true, force: true});}
+});
+
+test("shared rejoin during a failed drain retries the saved output once without rerunning work", async t => {
+ const entered = deferred<void>(), release = deferred<void>(), delivered = deferred<void>();
+ let attempts = 0;
+ const {store, controller} = setup(t, {
+  deliver: async (_home, _text, target) => {
+   assert.equal(target, "#wchat");
+   attempts++;
+   if (attempts === 1) { entered.resolve(); await release.promise; throw Error("shared channel unavailable"); }
+   delivered.resolve();
+  },
+ });
+ store.enqueueOutput({id: "shared-rejoin", channel: "#test", text: "saved", replyTarget: "#wchat"});
+ const first = controller.drainOutputs();
+ await entered.promise;
+ void controller.drainOutputs(true);
+ release.resolve();
+ await first;
+ await delivered.promise;
+ await controller.drainOutputs();
+ assert.equal(attempts, 2);
+ assert.equal(store.listOutbox()[0].state, "sent");
+});
