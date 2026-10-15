@@ -81,7 +81,7 @@ for (const phase of ["completed", "cancelled"]) {
    store.complete("human");
    assert.deepEqual(tables.map(name => f.db.prepare(`SELECT * FROM ${name}`).all()), before);
    const after = f.db.prepare("SELECT * FROM inbox WHERE id=?").get(archived!.id);
-   assert.deepEqual({ ...after }, { ...archived, peer_json: null });
+   assert.deepEqual({ ...after }, { ...archived });
    assert.equal(store.listInbox().length, 2);
   } finally { store.close(); }
  });

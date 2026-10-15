@@ -235,81 +235,18 @@ test("unjoined and failing channels do not block ready channel replies", async (
 	);
 });
 
-test("peer question answer wakes source once, preserves ancestry and does not ping-pong", async (t) => {
-	const calls: string[] = [];
-	let controller!: DurableDelivery;
-	const setupResult = setup(t, {
-		open: async (channel) => ({
-			promptDurable: async (id, body) => {
-				calls.push(id);
-				const current = controller.currentMessage(channel);
-				assert.equal(current?.id, id);
-				assert.deepEqual(current?.peer?.ancestry, ["#source", "#test"]);
-				if (id === "one/answer") assert.match(body, /peer result/);
-				return {
-					text: id === "one" ? "peer result" : "source acknowledgement",
-					steered: false,
-				};
-			},
-			abort: async () => {},
-		}),
-	});
-	controller = setupResult.controller;
-	controller.enqueue({
-		...message,
-		peer: {
-			kind: "question",
-			source: "#source",
-			rootId: "root",
-			ancestry: ["#source", "#test"],
-		},
-	});
-	await controller.startChannel("#test");
-	await controller.startChannel("#source");
-	assert.deepEqual(calls, ["one", "one/answer"]);
-	assert.equal(setupResult.store.listInbox().length, 2);
-	assert.equal(controller.currentMessage("#test"), undefined);
-	assert.equal(controller.currentMessage("#source"), undefined);
-});
-
-test("peer answer waits behind active source turn then runs without another external kick", async (t) => {
-	const sourceStarted = deferred<void>();
-	const releaseSource = deferred<{ text: string; steered: boolean }>();
-	const answered = deferred<void>();
-	const calls: string[] = [];
-	const { controller } = setup(t, {
-		open: async () => ({
-			promptDurable: async (id) => {
-				calls.push(id);
-				if (id === "source-work") {
-					sourceStarted.resolve();
-					return releaseSource.promise;
-				}
-				if (id === "one/answer") answered.resolve();
-				return { text: "reply", steered: false };
-			},
-			abort: async () => {
-				releaseSource.resolve({ text: "abort", steered: false });
-			},
-		}),
-	});
-	controller.enqueue({ ...message, id: "source-work", channel: "#source" });
-	await sourceStarted.promise;
-	controller.enqueue({
-		...message,
-		peer: {
-			kind: "question",
-			source: "#source",
-			rootId: "root",
-			ancestry: ["#source", "#test"],
-		},
-	});
-	await controller.startChannel("#test");
-	assert.deepEqual(calls, ["source-work", "one"]);
-	releaseSource.resolve({ text: "source finished", steered: false });
-	await answered.promise;
-	await controller.startChannel("#source");
-	assert.deepEqual(calls, ["source-work", "one", "one/answer"]);
+test("ordinary replies stay in their channel and never synthesize answer mailbox turns", async (t) => {
+ const calls: string[] = [];
+ const { controller, store } = setup(t, {
+  open: async () => ({ promptDurable: async id => { calls.push(id); return { text: "native communication is separate", steered: false }; }, abort: async () => {} }),
+ });
+ controller.enqueue(message);
+ await controller.startChannel(message.channel);
+ assert.deepEqual(calls, [message.id]);
+ assert.equal(store.listInbox().length, 1);
+ assert.equal(store.listInbox()[0]!.state, "completed");
+ assert.deepEqual(store.listOutbox().map(output => output.channel), [message.channel]);
+ assert.equal(controller.currentMessage(message.channel), undefined);
 });
 
 test("transient discovery retries with capped backoff, preserves FIFO and reports once", async (t) => {

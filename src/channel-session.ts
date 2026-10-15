@@ -5,7 +5,7 @@ import { publicError } from "./public-error.ts";
  *
  * A channel owns a classic `AgentSession` running in the bot's own process,
  * with host tools disabled and this channel's Computer Use desktop and the
- * delegation tools bound to the channel. Installed pi extensions load
+ * native WeeChat tools bound to the channel. Installed pi extensions load
  * normally, which is the point of running on this runtime.
  */
 
@@ -24,7 +24,7 @@ import type { SettingsManager } from "../core/settings-manager.ts";
 import { requireExplicitModel } from "./model-selection.ts";
 import { runInDomain } from "./fault-domain.ts";
 import { describeToolCall, describeToolResult, toIrcLines } from "./format.ts";
-import { type ChannelDelegate, createDelegationTools, createDesktopTools } from "./tools.ts";
+import { type ChannelDelegate, type CommunicationMcp, assertUniqueToolNames, createCommunicationTools, createControlTools, createDesktopTools } from "./tools.ts";
 
 export interface RelayEvents {
 	/** Completed assistant text, already split into IRC lines. */
@@ -46,6 +46,8 @@ export interface ChannelSessionDeps {
 	modelRuntime: ModelRuntime;
 	delegate: ChannelDelegate;
 	desktop: DesktopMcp;
+	/** Isolated native WeeChat MCP client for this channel identity. */
+	communication: CommunicationMcp;
 	log: (line: string) => void;
 }
 
@@ -137,7 +139,9 @@ export class ChannelSession {
 		}
 
 		const customTools: ToolDefinition[] = await createDesktopTools(deps.desktop);
-		customTools.push(...createDelegationTools(deps.delegate, channel, sessionId), ...createClassicSkillTools(deps.desktop));
+		customTools.push(...await createCommunicationTools(deps.communication));
+		customTools.push(...createControlTools(deps.delegate, channel, sessionId), ...createClassicSkillTools(deps.desktop));
+		assertUniqueToolNames(customTools);
 
 		const { resourceLoader, settingsManager } = await deps.createResources(deps.cwd);
 		const channelSettings = desktopSettings(settingsManager);

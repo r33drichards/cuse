@@ -71,7 +71,7 @@ lose or duplicate that continuation after a crash. User/peer/scheduled inputs
 already waiting run before the next autonomous continuation.
 
 The existing durable runner, per-channel session identities, schedules,
-`agent_ask`, host `desktop_control`, and remote dispatch receipts are retained.
+Host `desktop_control` and remote dispatch receipts are retained. Peer messages now use native WeeChat MCP; unfinished legacy mailbox work blocks migration.
 The port does not enable host filesystem/shell tools or change provider selection.
 
 ### Explicit differences from upstream

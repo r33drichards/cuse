@@ -1,5 +1,8 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ legacyDirectMessagesMigration: "Unfinished direct-message work requires operator inspection before channel-only WeeChat startup. State was preserved.",
+ communicationTool: "WeeChat MCP tool failed; no automatic replay was attempted.",
+ legacyPeersMigration: "Saved work from the removed peer mailbox requires operator inspection before startup. State was preserved; no peer work was replayed.",
  sessionBusy: "A turn is running; wait before manual compaction.",
  goalUnavailable: "Pi Goal requires CUSE_GOALS_ENABLED=true and CUSE_DURABLE_IRC=true.",
  legacyGoalsMigration: "Saved work from the removed goal engine requires operator inspection before this runtime can start. State was preserved; no old goal work was replayed.",
@@ -10,10 +13,6 @@ const GUIDANCE = {
  scheduleChannel: "Schedules belong to the current joined channel.",
  scheduleOrigin: "Scheduled turns and peer requests cannot create additional schedules. Ask directly in the channel.",
  scheduleInvalid: "Invalid schedule or unknown ID. Use ,schedule list; intervals must be at least 1m, cron uses five fields and an IANA timezone, one-shots must be in the future. Maximum 100 schedules per channel.",
- agentMessagingUnavailable: "Agent questions require CUSE_DURABLE_IRC=true so requests and replies survive restarts.",
- agentTarget: "Choose another joined channel from agent_list. No channel was joined automatically.",
- agentLoop: "This exchange already visited that agent or reached its four-agent limit. Return the information you have to the requester.",
- agentQuestion: "Agent questions must contain 1–8000 characters.",
  durableExtensions: "Durable IRC cannot load classic extensions yet. Keep classic mode until those extensions are migrated.",
  durableReload: "Durable resources reload requires a bot restart; classic extension loading is unavailable in this mode.",
  durableRequired: "This conversation uses durable storage. Enable CUSE_DURABLE_IRC to resume; the legacy history was not reopened.",
@@ -27,7 +26,6 @@ const GUIDANCE = {
  modelMissing: "Configured model is absent from the installed catalog. Ask the private administrator to correct configuration. No fallback was selected.",
  codexAuth: "Authentication unavailable. Ask the private administrator to reauthenticate the ChatGPT account using pi login/setup. No fallback was selected.",
  providerAuth: "Authentication unavailable. Ask the private administrator to configure authentication for this provider. No fallback was selected.",
- joinedOnly: "irc_send requires an already joined IRC channel",
  recovery: "Remembered session identity could not be recovered. Ask the private administrator to reconcile it; no replacement was selected.",
  preparing: "Conversation fork is still being prepared; try again shortly",
  targetExists: "Target already exists or is being provisioned; choose a new channel",

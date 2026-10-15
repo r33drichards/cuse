@@ -1,3 +1,4 @@
+import { fakeWeeChat } from "./helpers/fake-weechat.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -89,8 +90,7 @@ function app(root: string, open: IrcBotOptions["openSession"], durable = true, d
 			throw Error("unexpected fork");
 		},
 		log: () => {},
-		createClient: () =>
-			irc as unknown as ReturnType<NonNullable<IrcBotOptions["createClient"]>>,
+		transport: fakeWeeChat(irc),
 		sendSpacingMs: 0,
 	});
 	return { bot, irc };
@@ -153,7 +153,7 @@ test("durable bot commits incoming message before slow session open, and sends r
 	}
 });
 
-test("restart resumes persisted channel and DM input with their original IDs", async () => {
+test("restart resumes persisted channel input with its original ID", async () => {
 	const root = mkdtempSync(join(tmpdir(), "cuse-durable-restart-"));
 	const ids: string[] = [];
 	const seed = new DurableIrcStore(join(root, "delivery"));
@@ -162,12 +162,6 @@ test("restart resumes persisted channel and DM input with their original IDs", a
 		channel: "#control",
 		sender: "tester",
 		body: "channel message",
-	});
-	seed.enqueue({
-		id: "dm-original",
-		channel: "tester",
-		sender: "tester",
-		body: "private message",
 	});
 	seed.claimNext("#control");
 	seed.close();
@@ -180,9 +174,9 @@ test("restart resumes persisted channel and DM input with their original IDs", a
 	try {
 		await bot.start();
 		irc.emit("registered", { nick: "cuse" });
-		await until(() => ids.length === 2);
-		await until(() => irc.messages.length === 2);
-		assert.deepEqual([...ids].sort(), ["channel-original", "dm-original"]);
+		await until(() => ids.length === 1);
+		await until(() => irc.messages.length === 1);
+		assert.deepEqual([...ids].sort(), ["channel-original"]);
 		assert.ok(readInbox(root).every((row) => row.state === "completed"));
 	} finally {
 		await bot.close();
@@ -326,7 +320,7 @@ test("desktop stop holds saved prompts until start, and sleep permits wake on ne
  const a = app(root, async channel => session(root, channel, async (_id, body) => {prompts.push(body); return {text: "OK", steered: false};}), true, desktop);
  const send = (message: string) => a.irc.emit("privmsg", {nick: "owner", target: "#control", message});
  try {
-  await a.bot.start(); a.bot.store.set("#control", {desktopId: "d", createdAt: 1});
+  a.bot.store.set("#control", {desktopId: "d", createdAt: 1}); await a.bot.start();
   send(",desktop stop"); await until(() => !!release);
   send("queued while stopping"); send(",desktop start"); await tick();
   assert.equal(prompts.length, 0); assert.deepEqual(calls, ["stop"]);
@@ -365,7 +359,7 @@ test("desktop stop intent survives failed response and restart without opening s
  const open = async (channel: string) => {opens++; return session(root, channel, async () => ({text: "OK", steered: false}));};
  let a = app(root, open, true, desktops);
  try {
-  await a.bot.start(); a.bot.store.set("#control", {desktopId: "d", createdAt: 1});
+  a.bot.store.set("#control", {desktopId: "d", createdAt: 1}); await a.bot.start();
   a.irc.emit("privmsg", {nick: "owner", target: "#control", message: ",desktop stop"});
   await until(() => a.irc.messages.length > 0);
   a.irc.emit("privmsg", {nick: "owner", target: "#control", message: "saved during pause", tags: {msgid: "pause-msg"}});
@@ -390,7 +384,7 @@ test("confirmed desktop deletion keeps a tombstone and never provisions on later
  let a = app(root, open, true, desktops);
  const send = (message: string) => a.irc.emit("privmsg", {nick: "owner", target: "#control", message});
  try {
-  await a.bot.start(); a.bot.store.set("#control", {desktopId: "old", createdAt: 1});
+  a.bot.store.set("#control", {desktopId: "old", createdAt: 1}); await a.bot.start();
   send(",desktop delete"); await until(() => a.irc.messages.some(m => m.text.includes("Confirm with:")));
   send(",desktop delete WRONG"); await tick(); assert.deepEqual(calls, []);
   send(",desktop delete old"); await until(() => a.bot.store.get("#control")?.desktopDeleted === true && !a.bot.store.get("#control")?.desktopOperation);
@@ -426,7 +420,7 @@ test("recreate reconciles ambiguous creation and cleanup across restarts before 
  a = app(root, open, true, desktops);
  const send = (message: string) => a.irc.emit("privmsg", {nick: "owner", target: "#control", message});
  try {
-  await a.bot.start(); a.bot.store.set("#control", {desktopId: "old", createdAt: 1});
+  a.bot.store.set("#control", {desktopId: "old", createdAt: 1}); await a.bot.start();
   send(",desktop recreate old"); await until(() => provisionKeys.length === 1); await tick();
   assert.equal(a.bot.store.get("#control")?.desktopId, "old"); assert.deepEqual(deletes, []);
   await a.bot.close(); a = app(root, open, true, desktops); await a.bot.start();
@@ -457,7 +451,7 @@ test("recreate closes cached durable bindings and reopens the same conversation 
  } as IrcBotOptions["desktops"]);
  const send = (message: string) => a.irc.emit("privmsg", {nick: "owner", target: "#control", message});
  try {
-  await a.bot.start(); a.bot.store.set("#control", {desktopId: "old", createdAt: 1});
+  a.bot.store.set("#control", {desktopId: "old", createdAt: 1}); await a.bot.start();
   send("first"); await until(() => readInbox(root).length === 1 && readInbox(root)[0]?.state === "completed"); await tick();
   const original = a.bot.store.get("#control")!;
   send(",desktop recreate old"); await until(() => a.bot.store.get("#control")?.desktopId === "fresh" && !a.bot.store.get("#control")?.desktopOperation);
@@ -487,7 +481,7 @@ test("actual client never sends a second create after timeout while list visibil
  a = app(root, open, true, client);
  const send = () => a.irc.emit("privmsg", {nick: "owner", target: "#control", message: ",desktop recreate old"});
  try {
-  await a.bot.start(); a.bot.store.set("#control", {desktopId: "old", createdAt: 1});
+  a.bot.store.set("#control", {desktopId: "old", createdAt: 1}); await a.bot.start();
   send(); await until(() => posts === 1); await tick();
   await a.bot.close(); a = app(root, open, true, client); await a.bot.start();
   send(); await until(() => a.irc.messages.some(m => m.text.includes("no second create")));
@@ -507,7 +501,7 @@ test("capacity failure before dispatch restores original desktop and does not le
  }});
  const a = app(root, async () => {throw Error("no prompt");}, true, client);
  try {
-  await a.bot.start(); a.bot.store.set("#control", {desktopId: "old", createdAt: 1});
+  a.bot.store.set("#control", {desktopId: "old", createdAt: 1}); await a.bot.start();
   a.irc.emit("privmsg", {nick: "owner", target: "#control", message: ",desktop recreate old"});
   await until(() => a.irc.messages.some(m => m.text.includes("Desktop limit")));
   assert.equal(posts, 0); assert.equal(a.bot.store.get("#control")?.desktopOperation, undefined);
@@ -532,7 +526,7 @@ test("actual client definitive create rejections restore queue state and permit 
   a = app(root, async () => {throw Error("no prompt expected");}, true, client);
   const send = () => a.irc.emit("privmsg", {nick: "owner", target: "#control", message: ",desktop recreate old"});
   try {
-   await a.bot.start(); a.bot.store.set("#control", {desktopId: "old", createdAt: 1, desktopPaused: status === 403});
+   a.bot.store.set("#control", {desktopId: "old", createdAt: 1, desktopPaused: status === 403}); await a.bot.start();
    send(); await until(() => a.irc.messages.some(m => m.text.includes("creation was rejected")));
    assert.equal(a.bot.store.get("#control")?.desktopOperation, undefined);
    assert.equal(a.bot.store.get("#control")?.desktopPaused, status === 403);

@@ -121,105 +121,16 @@ test("SIGKILL releases ownership without losing committed incoming work", async 
 	}
 });
 
-test("peer metadata survives restart and question completion atomically creates one answer", () => {
-	const dir = mkdtempSync(join(tmpdir(), "cuse-peer-"));
-	let store = new DurableIrcStore(dir);
-	const question = {
-		...input,
-		peer: {
-			kind: "question" as const,
-			source: "#source",
-			rootId: "root",
-			ancestry: ["#source", "#test"],
-		},
-	};
-	try {
-		store.enqueue(question);
-		assert.throws(
-			() =>
-				store.enqueue({
-					...question,
-					peer: { ...question.peer, rootId: "changed" },
-				}),
-			/collision/,
-		);
-		store.claimNext();
-		store.close();
-		store = new DurableIrcStore(dir);
-		assert.deepEqual(store.listInbox()[0].peer, question.peer);
-		store.retry(input.id);
-		store.claimNext();
-		const answer = store.complete(input.id, [output], "complete answer");
-		assert.ok(answer);
-		assert.equal(answer.id, "in/answer");
-		assert.equal(answer?.channel, "#source");
-		assert.equal(answer?.peer?.kind, "answer");
-		assert.equal(answer?.peer?.rootId, "root");
-		assert.match(answer.body, /not human authorization/);
-		assert.match(answer.body, /hello/);
-		assert.match(answer.body, /complete answer/);
-		store.close();
-		store = new DurableIrcStore(dir);
-		assert.equal(store.enqueue(question), false);
-		assert.equal(store.listInbox().length, 2);
-		assert.equal(store.listOutbox().length, 1);
-		assert.throws(() => store.complete(input.id, [output]), /not running/);
-		store.claimNext("#source");
-		store.complete("in/answer");
-		assert.equal(store.listInbox().length, 2);
-	} finally {
-		store.close();
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("peer answer ID collision rolls back question completion and outgoing replies", () => {
-	const dir = mkdtempSync(join(tmpdir(), "cuse-peer-"));
-	const store = new DurableIrcStore(dir);
-	try {
-		store.enqueue({
-			...input,
-			peer: {
-				kind: "question",
-				source: "#source",
-				rootId: "r",
-				ancestry: ["#source"],
-			},
-		});
-		store.claimNext();
-		store.enqueue({ ...input, id: "in/answer", body: "collision" });
-		assert.throws(() => store.complete(input.id, [output]), /collision/);
-		assert.equal(store.listInbox()[0].state, "running");
-		assert.equal(store.listOutbox().length, 0);
-	} finally {
-		store.close();
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("adds peer metadata column to existing delivery database without losing messages", () => {
-	const dir = mkdtempSync(join(tmpdir(), "cuse-migration-"));
-	const old = new DatabaseSync(join(dir, "irc-delivery.sqlite"));
-	old.exec(`CREATE TABLE inbox (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
- channel TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL);
- INSERT INTO inbox (id,channel,sender,body,created_at,state) VALUES ('old','#old','user','old message',1,'pending');`);
-	old.close();
-	const store = new DurableIrcStore(dir);
-	try {
-		assert.equal(store.listInbox()[0].body, "old message");
-		assert.equal(store.listInbox()[0].peer, undefined);
-		store.enqueue({
-			...input,
-			peer: {
-				kind: "question",
-				source: "#old",
-				rootId: "root",
-				ancestry: ["#old"],
-			},
-		});
-		assert.equal(store.listInbox()[1].peer?.kind, "question");
-	} finally {
-		store.close();
-		rmSync(dir, { recursive: true, force: true });
-	}
+test("new delivery databases have no peer mailbox column", () => {
+ const dir = mkdtempSync(join(tmpdir(), "cuse-store-schema-"));
+ const store = new DurableIrcStore(dir);
+ try {
+  const db = new DatabaseSync(join(dir, "irc-delivery.sqlite"), { readOnly: true });
+  try { assert.equal(db.prepare("PRAGMA table_info(inbox)").all().some(column => column.name === "peer_json"), false); }
+  finally { db.close(); }
+  store.enqueue(input);
+  store.claimNext();
+  assert.equal(store.complete(input.id, [output]), undefined);
+  assert.equal(store.listInbox().length, 1);
+ } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

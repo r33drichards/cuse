@@ -4,6 +4,8 @@ import { dirname } from "node:path";
 export interface ChannelRecord {
  desktopId: string;
  mentionRequired?: boolean;
+ /** Bounded peer-triggered turns since the last human prompt. */
+ peerTurns?: number;
  desktopPaused?: boolean;
  desktopDeleted?: boolean;
  desktopOperation?: {kind: "delete" | "recreate"; sourceId: string; key: string; priorPaused?: boolean; createDispatched?: boolean; targetId?: string};
@@ -44,6 +46,7 @@ export class ChannelSessionStore {
       || (record.desktopOperation.createDispatched !== undefined && typeof record.desktopOperation.createDispatched !== "boolean")
       || (record.desktopOperation.targetId !== undefined && (typeof record.desktopOperation.targetId !== "string" || !record.desktopOperation.targetId))))
     || (record.desktopPaused !== undefined && typeof record.desktopPaused !== "boolean")
+    || (record.peerTurns !== undefined && (!Number.isSafeInteger(record.peerTurns) || record.peerTurns < 0 || record.peerTurns > 4))
     || (record.mentionRequired !== undefined && typeof record.mentionRequired !== "boolean")
     || (record.forkNoticePending !== undefined && typeof record.forkNoticePending !== "boolean")) throw new Error("Invalid cuse channel record: " + room);
    this.#channels.set(room.toLowerCase(), record);

@@ -1,0 +1,51 @@
+{
+  "repository": "https://github.com/r33drichards/weechat-mcp",
+  "commit": "49bfd98f15853c2cec2228ee2cc978512fbd10c1",
+  "license": "GPL-3.0-or-later",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "README.md",
+      "sha256": "26e3d18e8f225ea77d3c87497243b52ab1e4219349dddb9e1fa33797998cf9f4"
+    },
+    {
+      "path": "bridge.py",
+      "sha256": "ef17152a12bd2aa933e33b0433a50360d1f60ff87125eb521ec85ce40819e443"
+    },
+    {
+      "path": "weechat_mcp.py",
+      "sha256": "72ef0c0cc04368f51c52f9329dbd6cc4478317b93596599342d86e506e132c21"
+    },
+    {
+      "path": "command_manifest.py",
+      "sha256": "b5bd5095e16a933b79c735043cf82a1bbeee96da8aaf6a7c0d7aa46608fb37b4"
+    },
+    {
+      "path": "native_buffer.py",
+      "sha256": "3edccff8d796fb2398615e2edb18f46ac06b1c1e735a57909f0bc8b7b7aeb29e"
+    },
+    {
+      "path": "mcp_events.py",
+      "sha256": "02510eb09c7e03665d2e738859557ebcfc99e0f47682858e6070cdd9216061c4"
+    },
+    {
+      "path": "event_protocol.py",
+      "sha256": "a700a2c47dc6c3b7e3f1a7b9f95626d7364c1ddb231f05a2987cc0a5a5b61e4d"
+    },
+    {
+      "path": "event_webhooks.py",
+      "sha256": "8ec5888d54a1dd9e3ddf3419f5a55f5956e7a57cebef5db23d9b0284947dfe32"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "41da91d23ed73d166a580bdf86be425befb23b1355f15d427bacdbc31d681f9a"
+    },
+    {
+      "path": "uv.lock",
+      "sha256": "3f881c1f34f6929f346f182c07c6c03b384297fb4ba55fc8b101cd98b4f29c80"
+    }
+  ]
+}

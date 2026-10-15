@@ -28,3 +28,6 @@ jobs:
         run: |
           docker run --rm --entrypoint node cuse:validation --version
           docker run --rm --entrypoint /app/node_modules/.bin/tsx cuse:validation --tsconfig /app/tsconfig.json /app/cuse/image-smoke.mts
+
+      - name: Test native per-channel WeeChat identities on isolated loopback IRC
+        run: docker run --rm --network none --entrypoint /app/node_modules/.bin/tsx cuse:validation --tsconfig /app/tsconfig.json /app/cuse/weechat-live-smoke.mts

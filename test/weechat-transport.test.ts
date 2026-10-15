@@ -1,0 +1,356 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+ WeeChatNetwork, WEECHAT_PROTOCOL_VERSION, weechatBuffer, weechatResource, weechatNick, weechatLaunchArguments,
+ type NativeMcpClient, type NativeSnapshot, type NativeWeeChatSession, type WeeChatIdentity, type WeeChatMessage,
+} from "../src/weechat.ts";
+
+function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return {promise, resolve}; }
+function snapshot(channel: string, nick: string, epoch = "native-buffer:process:1"): NativeSnapshot {
+ return {source: "weechat_hdata", data_epoch: epoch,
+  buffer: {full_name: weechatBuffer(channel), localvar_nick: nick, title: "topic", localvar_type: "channel", localvar_channel: channel, localvar_server: "docker"},
+  lines: [{id: 0, tags: ["irc_join", "nick_" + nick], message: "joined"}],
+  oldest_available_id: 0, omitted_through_id: null, last_assigned_id: 0, has_more: false};
+}
+class Fixture {
+ identity: WeeChatIdentity;
+ snapshots = new Map<string, NativeSnapshot>();
+ notifications?: (notification: {method: string; params: {uri: string}}) => unknown;
+ calls: Array<{name: string; arguments?: Record<string, unknown>}> = [];
+ reads = 0;
+ subscriptions: string[][] = [];
+ closed = 0;
+ stopped = deferred<unknown>();
+ subscriptionClosed = deferred<"local" | "remote" | "graceful">();
+ tool = {name: "weechat_msg", description: "Native tool", inputSchema: {type: "object" as const, properties: {buffer: {type: "string"}, arguments: {type: "string"}}, required: ["buffer"], additionalProperties: false}};
+ client: NativeMcpClient;
+ constructor(identity: WeeChatIdentity) {
+  this.identity = identity;
+  for (const channel of identity.channels) this.snapshots.set(weechatResource(channel), snapshot(channel, identity.nick));
+  this.client = {
+   listResources: async () => ({resources: [...this.snapshots.keys()].map(uri => ({uri, name: uri}))}),
+   listTools: async () => ({tools: [this.tool]}),
+   callTool: async (params: {name: string; arguments?: Record<string, unknown>}) => { this.calls.push(params); return {content: [{type: "text", text: "accepted"}]}; },
+   readResource: async ({uri}: {uri: string}) => { this.reads++; return {contents: [{uri, text: JSON.stringify(this.snapshots.get(uri))}]}; },
+   listen: async (filter: {resourceSubscriptions?: string[]}) => { this.subscriptions.push(filter.resourceSubscriptions ?? []); return {honoredFilter: filter, close: async () => this.subscriptionClosed.resolve("local"), closed: this.subscriptionClosed.promise}; },
+   setNotificationHandler: (_name: string, handler: (notification: {method: string; params: {uri: string}}) => unknown) => { this.notifications = handler; },
+  } as unknown as NativeMcpClient;
+ }
+ session(): NativeWeeChatSession { return {client: this.client, stopped: this.stopped.promise, close: async () => { this.closed++; }}; }
+ get home() { return this.snapshots.get(weechatResource(this.identity.channel))!; }
+ append(id: number, nick: string, text: string, tags = ["irc_privmsg"]): void {
+  this.home.lines.push({id, tags: [...tags, "nick_" + nick], message: text}); this.home.last_assigned_id = id;
+ }
+ notify(channel = this.identity.channel) { this.notifications?.({method: "notifications/resources/updated", params: {uri: weechatResource(channel)}}); }
+}
+function setup(extra: {peerChannels?: Record<string, string[]>; message?: (event: WeeChatMessage) => Promise<void>; configure?: (fixture: Fixture) => void; timeout?: number} = {}) {
+ const root = mkdtempSync(join(tmpdir(), "cuse-weechat-test-"));
+ const fixtures = new Map<string, Fixture>();
+ const messages: WeeChatMessage[] = [], joined: string[] = [], disconnected: string[] = [], faults: unknown[] = [], topics: string[] = [];
+ const network = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: root, upstreamDir: "/test/upstream", peerChannels: extra.peerChannels, joinTimeoutMs: extra.timeout ?? 150,
+  createSession: async identity => { const fixture = new Fixture(identity); extra.configure?.(fixture); fixtures.set(identity.channel, fixture); return fixture.session(); }});
+ network.setHandlers({message: async event => { messages.push(event); await extra.message?.(event); }, joined: channel => joined.push(channel), disconnected: channel => disconnected.push(channel), fault: (_channel, error) => faults.push(error), topic: (_channel, title) => topics.push(title)});
+ const cursorPath = (channel: string) => join(root, createHash("sha256").update(channel).digest("hex").slice(0, 24), "cursor.json");
+ return {network, fixtures, root, messages, joined, disconnected, faults, topics, cursorPath,
+  cleanup: async () => { await network.close(); rmSync(root, {recursive: true, force: true}); }};
+}
+async function until(predicate: () => boolean) { const deadline = Date.now() + 1000; while (!predicate()) { if (Date.now() > deadline) throw new Error("fixture timed out"); await delay(1); } }
+
+test("deterministic channel identities and startup scope use only one native WeeChat", () => {
+ const a = weechatNick("cuse", "#ALPHA"), b = weechatNick("cuse", "#beta");
+ assert.equal(a, weechatNick("cuse", "#alpha")); assert.notEqual(a, b);
+ assert(weechatNick("a".repeat(100), "#alpha").length <= 30);
+ assert.equal(WEECHAT_PROTOCOL_VERSION, "2026-07-28");
+ const args = weechatLaunchArguments({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: "/tmp/test", upstreamDir: "/app/weechat"}, {channel: "#alpha", channels: ["#alpha"], nick: a, profile: "/tmp/identity", signal: new AbortController().signal});
+ assert(args.includes("/set irc.server.docker.autojoin #alpha"));
+ assert(args.includes("/set plugins.var.python.mcp.buffers irc.docker.#alpha"));
+ assert(args.includes("/set irc.server.docker.autoreconnect on"));
+ assert(!args.join(" ").includes("container_entrypoint.py"));
+ assert.throws(() => weechatNick("bad nick", "#a")); assert.throws(() => weechatResource("#a /join #b"));
+});
+
+test("separate sessions, unchanged native schemas, exact tool routing, and channel-local teardown", async () => {
+ const t = setup();
+ try {
+  await Promise.all([t.network.join("#alpha"), t.network.join("#ALPHA"), t.network.join("#beta")]);
+  assert.equal(t.fixtures.size, 2); assert.deepEqual(t.joined.sort(), ["#alpha", "#beta"]);
+  const a = t.fixtures.get("#alpha")!, b = t.fixtures.get("#beta")!;
+  assert.notEqual(a.identity.nick, b.identity.nick); assert.notEqual(a.identity.profile, b.identity.profile);
+  assert.deepEqual(a.identity.channels, ["#alpha"]);
+  assert.strictEqual((await t.network.communication("#alpha").tools())[0], a.tool);
+  await t.network.say("#alpha", "-literal text");
+  await t.network.setTopic("#beta", "goal");
+  assert.deepEqual(a.calls, [{name: "weechat_msg", arguments: {buffer: "irc.docker.#alpha", arguments: "-literal text"}}]);
+  assert.deepEqual(b.calls, [{name: "weechat_topic", arguments: {buffer: "irc.docker.#beta", arguments: "goal"}}]);
+  await assert.rejects(t.network.communication("#alpha").call("weechat_msg", {buffer: "irc.docker.#beta", arguments: "oops"}), /allowlist/);
+  await t.network.part("#alpha"); assert.equal(a.closed, 1); assert.equal(b.closed, 0);
+  await t.network.say("#beta", "still alive");
+  assert.equal(existsSync(a.identity.profile), true); assert.deepEqual(t.disconnected, ["#alpha"]);
+ } finally { await t.cleanup(); }
+});
+
+test("only a configured peer allowlist joins additional buffers; peers never trigger the home model", async () => {
+ const t = setup({peerChannels: {"#alpha": ["#beta"]}});
+ try {
+  await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+  assert.deepEqual(a.identity.channels, ["#alpha", "#beta"]);
+  assert.deepEqual(a.subscriptions, [[weechatResource("#alpha")]]);
+  const peer = a.snapshots.get(weechatResource("#beta"))!;
+  peer.lines.push({id: 1, tags: ["irc_privmsg", "nick_peer"], message: "should not wake"}); peer.last_assigned_id = 1;
+  const reads = a.reads; a.notify("#beta"); await delay(5); assert.equal(a.reads, reads); assert.equal(t.messages.length, 0);
+  await t.network.communication("#alpha").call("weechat_msg", {buffer: "irc.docker.#beta", arguments: "explicit peer send"});
+  assert.equal(a.calls.length, 1);
+ } finally { await t.cleanup(); }
+});
+
+test("resource existence alone is not JOIN readiness", async () => {
+ const t = setup({configure: fixture => { fixture.home.lines = []; fixture.home.last_assigned_id = -1; fixture.home.oldest_available_id = null; }, timeout: 5});
+ try { await assert.rejects(t.network.join("#alpha"), /confirm every configured channel JOIN/); assert.equal(t.joined.length, 0); assert.equal(t.fixtures.get("#alpha")!.closed, 1); }
+ finally { await t.cleanup(); }
+});
+
+test("inbox persistence precedes cursor advancement; notifications deduplicate and self echoes are ignored", async () => {
+ const persisted = deferred(); const t = setup({message: () => persisted.promise});
+ try {
+  await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+  a.append(100_000, "alice", "prompt"); a.notify(); a.notify();
+  await until(() => t.messages.length === 1);
+  assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 0);
+  persisted.resolve(); await until(() => JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId === 100_000);
+  a.append(100_001, a.identity.nick.toUpperCase(), "self by nick");
+  a.append(100_002, "oldnick", "self by tag", ["irc_privmsg", "notify_self"]);
+  a.append(100_003, "bob", "joins are not prompts", ["irc_join"]); a.notify();
+  await until(() => JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId === 100_003);
+  assert.equal(t.messages.length, 1); assert.match(t.messages[0].id, /^weechat:[a-f0-9]{64}$/);
+ } finally { persisted.resolve(); await t.cleanup(); }
+});
+
+test("failed inbox persistence blocks the identity without advancing its cursor", async () => {
+ const t = setup({message: async () => { throw new Error("disk unavailable"); }});
+ try {
+  await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!; a.append(1, "alice", "persist me"); a.notify();
+  await until(() => t.faults.length === 1);
+  assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 0);
+  await assert.rejects(t.network.say("#alpha", "blocked"), /not ready/);
+  assert.equal(a.calls.length, 0);
+ } finally { await t.cleanup(); }
+});
+
+for (const kind of ["epoch", "omitted", "evicted", "clear", "regressed"] as const) {
+ test(`${kind} discontinuity fails closed without silently skipping input`, async () => {
+  const t = setup();
+  try {
+   await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+   if (kind === "epoch") a.home.data_epoch = "different-process";
+   if (kind === "omitted") { a.home.lines = [{id: 4, tags: ["irc_privmsg", "nick_alice"], message: "later"}]; a.home.omitted_through_id = 3; a.home.has_more = true; a.home.last_assigned_id = 4; }
+   if (kind === "evicted") { a.home.lines = [{id: 4, tags: ["irc_privmsg", "nick_alice"], message: "later"}]; a.home.oldest_available_id = 4; a.home.last_assigned_id = 4; }
+   if (kind === "clear") { a.home.lines = []; a.home.oldest_available_id = null; a.home.last_assigned_id = 4; }
+   if (kind === "regressed") { a.home.lines = []; a.home.oldest_available_id = null; a.home.last_assigned_id = -1; }
+   a.notify(); await until(() => t.faults.length === 1);
+   assert.equal(t.messages.length, 0); assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 0);
+   await assert.rejects(t.network.join("#alpha"));
+  } finally { await t.cleanup(); }
+ });
+}
+
+test("cursor anchors at the omitted boundary are valid and sparse native IDs are supported", async () => {
+ const t = setup();
+ try {
+  await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+  a.home.lines = [{id: 1_000_000_000_000, tags: ["irc_privmsg", "nick_alice"], message: "sparse"}];
+  a.home.omitted_through_id = 0; a.home.has_more = true; a.home.last_assigned_id = 1_000_000_000_000;
+  a.notify(); await until(() => t.messages.length === 1); assert.equal(t.faults.length, 0);
+ } finally { await t.cleanup(); }
+});
+
+test("a restarted identity preserves durable cursor and refuses a new native data epoch", async () => {
+ const t = setup();
+ try {
+  await t.network.join("#alpha"); await t.network.part("#alpha");
+  const original = readFileSync(t.cursorPath("#alpha"), "utf8");
+  // Fixture creation uses the same epoch by default; change it before readiness.
+  const network = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: t.root, upstreamDir: "/test/upstream",
+   createSession: async identity => { const fixture = new Fixture(identity); fixture.home.data_epoch = "replacement-process"; return fixture.session(); }});
+  network.setHandlers({message: async () => {}, joined: () => {}, disconnected: () => {}, topic: () => {}, fault: () => {}});
+  try { await assert.rejects(network.join("#alpha"), /data epoch changed/); assert.equal(readFileSync(t.cursorPath("#alpha"), "utf8"), original); }
+  finally { await network.close(); }
+ } finally { await t.cleanup(); }
+});
+
+test("subscription termination and process failure close only their own identity", async () => {
+ const t = setup();
+ try {
+  await Promise.all([t.network.join("#alpha"), t.network.join("#beta")]);
+  t.fixtures.get("#alpha")!.subscriptionClosed.resolve("remote");
+  await until(() => t.faults.length === 1);
+  await t.network.say("#beta", "unaffected");
+  assert.equal(t.fixtures.get("#beta")!.closed, 0);
+  t.fixtures.get("#beta")!.stopped.resolve(new Error("process exit"));
+  await until(() => t.faults.length === 2);
+ } finally { await t.cleanup(); }
+});
+
+test("host output splits Unicode safely into native 350-byte lines while native model calls stay untouched", async () => {
+ const t = setup();
+ try {
+  await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+  const text = "🙂".repeat(200) + "界".repeat(100);
+  await t.network.say("#alpha", text + "\r\nnew\tline\x00");
+  const sent = a.calls.map(call => String(call.arguments!.arguments));
+  assert(sent.every(line => Buffer.byteLength(line) <= 350));
+  assert.equal(sent.slice(0, -1).join(""), text); assert.equal(sent.at(-1), "new line ");
+  const original = {buffer: weechatBuffer("#alpha"), arguments: text};
+  await t.network.communication("#alpha").call("weechat_msg", original);
+  assert.strictEqual(a.calls.at(-1)!.arguments, original);
+ } finally { await t.cleanup(); }
+});
+
+test("topic queries notify even when the native title is unchanged", async () => {
+ const t = setup();
+ try {
+  await t.network.join("#alpha"); const count = t.topics.length;
+  await t.network.queryTopic("#alpha"); assert.equal(t.topics.length, count + 1); assert.equal(t.topics.at(-1), "topic");
+ } finally { await t.cleanup(); }
+});
+
+for (const kind of ["part", "kick", "disconnect", "blank-nick"] as const) {
+ test(`native ${kind} loses membership without trusting a stale channel buffer`, async () => {
+  const t = setup();
+  try {
+   await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+   if (kind === "part") a.append(1, a.identity.nick, "left", ["irc_part"]);
+   if (kind === "kick") a.append(1, "moderator", "moderator has kicked " + a.identity.nick + " (reason)", ["irc_kick"]);
+   if (kind === "disconnect") { a.home.lines.push({id: 1, tags: [], message: "irc: disconnected from server"}); a.home.last_assigned_id = 1; }
+   if (kind === "blank-nick") a.home.buffer.localvar_nick = "";
+   a.notify(); await until(() => t.disconnected.length === 1);
+   assert.equal(t.faults.length, 0); assert.equal(a.closed, 0);
+   assert.deepEqual(t.disconnected, ["#alpha"]);
+   await assert.rejects(t.network.say("#alpha", "cannot send"), /not ready/);
+  } finally { await t.cleanup(); }
+ });
+}
+
+test("initial callback may part its own identity without a lifecycle deadlock", async () => {
+ let network: WeeChatNetwork;
+ const t = setup({configure: a => a.append(1, "alice", "part now"), message: async () => network.part("#alpha")}); network = t.network;
+ try {
+  await Promise.race([t.network.join("#alpha").catch(() => {}), delay(1000).then(() => { throw new Error("reentrant part deadlocked"); })]);
+  assert.equal(t.fixtures.get("#alpha")!.closed, 1); assert.equal(t.joined.length, 1);
+ } finally { await t.cleanup(); }
+});
+
+test("an exclusive identity lock rejects a second process without removing the first lock", async () => {
+ const t = setup();
+ try {
+  await t.network.join("#alpha");
+  const second = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: t.root, upstreamDir: "/test/upstream", createSession: async () => { throw new Error("must not spawn"); }});
+  second.setHandlers({message: async () => {}, joined: () => {}, disconnected: () => {}, topic: () => {}, fault: () => {}});
+  await assert.rejects(second.join("#alpha"), {code: "EEXIST"});
+  await assert.rejects(second.join("#alpha"), {code: "EEXIST"});
+  assert.equal(t.fixtures.get("#alpha")!.closed, 0);
+  await second.close();
+ } finally { await t.cleanup(); }
+});
+
+test("same-process native reconnect preserves cursor and subscription while gating offline dispatch", async () => {
+ const t = setup();
+ try {
+  await t.network.join("#alpha"); const a = t.fixtures.get("#alpha")!;
+  const epoch = a.home.data_epoch;
+  a.home.lines.push({id: 1, tags: [], message: "irc: disconnected from server"}); a.home.last_assigned_id = 1;
+  a.home.buffer.localvar_nick = ""; a.notify();
+  await until(() => t.disconnected.length === 1);
+  assert.equal(a.closed, 0); assert.equal(a.subscriptions.length, 1);
+  assert.equal(t.network.nickFor("#alpha"), a.identity.nick);
+  a.append(2, "alice", "retained input while membership is unavailable"); a.notify(); await delay(5);
+  assert.equal(t.messages.length, 0); assert.equal(JSON.parse(readFileSync(t.cursorPath("#alpha"), "utf8")).lastId, 1);
+  await assert.rejects(t.network.say("#alpha", "offline"), /not ready/);
+  const joining = t.network.join("#alpha");
+  a.home.buffer.localvar_nick = a.identity.nick; a.append(3, a.identity.nick, "rejoined", ["irc_join"]); a.notify();
+  await joining; await until(() => t.messages.length === 1);
+  assert.equal(t.joined.length, 2); assert.equal(a.home.data_epoch, epoch); assert.equal(t.faults.length, 0); assert.equal(a.subscriptions.length, 1);
+  await t.network.say("#alpha", "online again"); assert.equal(a.calls.length, 1);
+ } finally { await t.cleanup(); }
+});
+
+const bridgePython = process.env.CUSE_WEECHAT_TEST_PYTHON;
+test("official SDK pinned discovery and subscription work through the real bridge with one offline native fixture", {skip: !bridgePython}, async () => {
+ const root = mkdtempSync(join(tmpdir(), "wc-sdk-"));
+ const executable = join(root, "native-fixture");
+ // A Unix-socket fixture, not an IRC server/client: no TCP connection or IRC
+ // credentials are used. The MCP framing/subscription runs in the real bridge.
+ writeFileSync(executable, `#!/usr/bin/env python3
+import asyncio, json, os, pathlib, sys
+from urllib.parse import quote
+profile = pathlib.Path(sys.argv[sys.argv.index('-d') + 1])
+commands = [sys.argv[i + 1] for i, arg in enumerate(sys.argv) if arg == '-r']
+def setting(name):
+    return next(c.split(' ', 2)[2] for c in commands if c.startswith('/set ' + name + ' '))
+nick = setting('irc.server.docker.nicks')
+channels = setting('irc.server.docker.autojoin').split(',')
+names = ['irc.docker.' + c for c in channels]
+uri = 'weechat://buffer/' + quote(names[0], safe='')
+rows = [{'id': 0, 'tags': ['irc_join', 'nick_' + nick], 'message': 'joined'}]
+clients = set()
+(profile / 'mcp').mkdir(exist_ok=True)
+with (profile / 'native-starts').open('a') as f: f.write(str(os.getpid()) + '\\n')
+def snapshot():
+    return {'source': 'weechat_hdata', 'data_epoch': 'fixture-process:' + str(os.getpid()),
+      'buffer': {'full_name': names[0], 'localvar_nick': nick, 'title': 'native topic',
+        'localvar_type': 'channel', 'localvar_channel': channels[0], 'localvar_server': 'docker'},
+      'lines': rows, 'oldest_available_id': 0, 'omitted_through_id': None,
+      'last_assigned_id': rows[-1]['id'], 'has_more': False}
+tool = {'name': 'weechat_msg', 'description': 'Native fixture tool', 'inputSchema':
+    {'type': 'object', 'properties': {'buffer': {'type': 'string'}, 'arguments': {'type': 'string'}},
+     'required': ['buffer'], 'additionalProperties': False}}
+async def connection(reader, writer):
+    clients.add(writer)
+    with (profile / 'bridge-connections').open('a') as f: f.write('connected\\n')
+    try:
+        while line := await reader.readline():
+            req = json.loads(line)
+            op = req['operation']
+            if op == 'tools': result = [tool]
+            elif op == 'buffers': result = names
+            elif op == 'buffer_data': result = snapshot()
+            elif op == 'call':
+                result = {'accepted': True}
+                rows.append({'id': len(rows), 'tags': ['irc_privmsg', 'nick_alice'], 'message': 'fixture input'})
+            else: raise ValueError(op)
+            writer.write((json.dumps({'id': req['id'], 'result': result}) + '\\n').encode())
+            await writer.drain()
+            if op == 'call':
+                for client in list(clients):
+                    client.write((json.dumps({'event': 'updated', 'uri': uri}) + '\\n').encode())
+                    await client.drain()
+    finally:
+        clients.discard(writer)
+        writer.close()
+async def main():
+    server = await asyncio.start_unix_server(connection, str(profile / 'mcp' / 'bridge.sock'))
+    async with server: await server.serve_forever()
+asyncio.run(main())
+`);
+ chmodSync(executable, 0o700);
+ const incoming: WeeChatMessage[] = [], faults: unknown[] = [];
+ const network = new WeeChatNetwork({server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: root,
+  upstreamDir: resolve("vendor/weechat-mcp"), pythonCommand: bridgePython, weechatCommand: executable, joinTimeoutMs: 15_000});
+ network.setHandlers({message: async event => { incoming.push(event); }, joined: () => {}, disconnected: () => {}, topic: () => {}, fault: (_channel, error) => faults.push(error)});
+ try {
+  await network.join("#sdk");
+  const profile = join(root, createHash("sha256").update("#sdk").digest("hex").slice(0, 24), "profile");
+  const starts = readFileSync(join(profile, "native-starts"), "utf8").trim().split("\n");
+  assert.equal(starts.length, 1);
+  assert.equal(readFileSync(join(profile, "bridge-connections"), "utf8").trim().split("\n").length, 2, "SDK discovers in a bridge sibling, never a second native process");
+  assert.equal((await network.communication("#sdk").tools())[0].name, "weechat_msg");
+  await network.say("#sdk", "wake fixture"); await until(() => incoming.length === 1);
+  assert.equal(incoming[0].message, "fixture input"); assert.equal(faults.length, 0);
+  await network.close();
+  assert.throws(() => process.kill(Number(starts[0]), 0), {code: "ESRCH"});
+ } finally { await network.close(); rmSync(root, {recursive: true, force: true}); }
+});

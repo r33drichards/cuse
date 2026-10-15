@@ -1,287 +1,154 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import {
-	IrcPiBot,
-	type BotSession,
-	type IrcBotOptions,
-} from "../.runtime/pi/packages/coding-agent/src/cuse/bot.ts";
+import { DurableIrcStore } from "../src/durable-store.ts";
 
-class FakeIrc extends EventEmitter {
-	messages: { target: string; text: string }[] = [];
-	connect() {}
-	quit() {}
-	changeNick() {}
-	join(channel: string) {
-		queueMicrotask(() => this.emit("join", { nick: "cuse", channel }));
-	}
-	say(target: string, text: string) {
-		this.messages.push({ target, text });
-	}
+const blocked = (error: unknown): boolean =>
+ typeof error === "object" && error !== null && "publicCode" in error && error.publicCode === "legacyPeersMigration";
+const peer = { kind: "question", source: "#source", rootId: "root", ancestry: ["#source", "#worker"] };
+
+function fixture(t: test.TestContext, withPeerColumn = true) {
+ const root = mkdtempSync(join(tmpdir(), "cuse-legacy-mailbox-"));
+ const file = join(root, "irc-delivery.sqlite");
+ const db = new DatabaseSync(file);
+ db.exec(`
+  CREATE TABLE inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+   channel TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL, state TEXT NOT NULL${withPeerColumn ? ", peer_json TEXT" : ""});
+  CREATE TABLE outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+   channel TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, delivery_uncertain INTEGER NOT NULL DEFAULT 0);
+  INSERT INTO outbox(id,channel,text,state) VALUES('ordinary-output','#worker','ordinary response','sending');
+ `);
+ t.after(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
+ return { root, file, db };
 }
-const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-async function until(predicate: () => boolean) {
-	for (let i = 0; i < 100; i++) {
-		if (predicate()) return;
-		await tick();
-	}
-	assert.ok(predicate(), "condition did not become true");
+function insertPeer(db: DatabaseSync, state: string, id = "agent-old", metadata: string | null = JSON.stringify(peer)): void {
+ db.prepare("INSERT INTO inbox(id,channel,sender,body,created_at,state,peer_json) VALUES(?,'#worker','#source','old mailbox request',1,?,?)").run(id, state, metadata);
 }
-function session(
-	root: string,
-	channel: string,
-	prompt: NonNullable<BotSession["promptDurable"]>,
-): BotSession {
-	return {
-		sessionId: channel,
-		sessionFile: join(root, encodeURIComponent(channel) + ".jsonl"),
-		busy: false,
-		watch: () => () => {},
-		prompt: async (body) => prompt("classic", body),
-		promptDurable: prompt,
-		abort: async () => {},
-		close: async () => {},
-		availableThinkingLevels: () => ["off"],
-		thinkingLevel: () => "off",
-		modelLabel: () => "test/model",
-		setModel: async () => {},
-		setThinkingLevel: () => {},
-		cycleThinkingLevel: () => "off",
-		compact: async () => {},
-		reload: async () => {},
-	};
-}
-function app(root: string, open: IrcBotOptions["openSession"], durable = true) {
-	const irc = new FakeIrc();
-	const bot = new IrcPiBot({
-		server: "synthetic.invalid",
-		port: 6667,
-		tls: false,
-		nick: "cuse",
-		channels: ["#cuse2", "#third", "#fourth", "#fifth"],
-		controlChannel: "#cuse",
-		addressedOnly: false,
-		durable,
-		statePath: join(root, "state.json"),
-		workspaceRoot: join(root, "work"),
-		cwd: root,
-		agentDir: root,
-		sessionDir: join(root, "sessions"),
-		desktops: {
-			ensure: async (room: string) => ({
-				id: room,
-				name: room,
-				state: "running",
-			}),
-		} as IrcBotOptions["desktops"],
-		modelRuntime: {} as IrcBotOptions["modelRuntime"],
-		createResources: async () => {
-			throw Error("unexpected resources");
-		},
-		openSession: open,
-		forkSession: () => {
-			throw Error("unexpected fork");
-		},
-		log: () => {},
-		createClient: () =>
-			irc as unknown as ReturnType<NonNullable<IrcBotOptions["createClient"]>>,
-		sendSpacingMs: 0,
-	});
-	return { bot, irc };
-}
-function readInbox(root: string) {
-	const db = new DatabaseSync(join(root, "delivery", "irc-delivery.sqlite"), {
-		readOnly: true,
-	});
-	try {
-		return db.prepare("SELECT * FROM inbox ORDER BY sequence").all();
-	} finally {
-		db.close();
-	}
+function unchangedRejection(root: string, file: string): void {
+ const before = readFileSync(file);
+ for (let attempt = 0; attempt < 2; attempt++) {
+  assert.throws(() => new DurableIrcStore(root), blocked);
+  assert.deepEqual(readFileSync(file), before, "startup rejection must leave the delivery database untouched and release ownership");
+ }
 }
 
-test("agent asks route to a busy peer without nick prefixes and return one answer to source", async () => {
-	const root = mkdtempSync(join(tmpdir(), "cuse-agent-routing-"));
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	const calls: { channel: string; id: string; body: string }[] = [];
-	const { bot, irc } = app(root, async (channel) =>
-		session(root, channel, async (id, body) => {
-			calls.push({ channel, id, body });
-			if (body.includes("busy-work")) await gate;
-			return {
-				text: body.startsWith("[Peer agent question") ? "PEER_ANSWER" : "ACK",
-				steered: false,
-			};
-		}),
-	);
-	try {
-		await bot.start();
-		irc.emit("registered", { nick: "cuse" });
-		await until(() => bot.joinedChannels.size === 5);
-		assert.deepEqual(
-			bot
-				.listAgents("#cuse2")
-				.map((a) => a.channel)
-				.sort(),
-			["#cuse", "#fifth", "#fourth", "#third"],
-		);
-		irc.emit("privmsg", {
-			nick: "tester",
-			target: "#cuse",
-			message: "busy-work",
-		});
-		await until(() => calls.length === 1);
-		const req = {
-			room: "#cuse2",
-			channel: "cuse",
-			question: "What did you find?",
-			requestId: "stable-call-1",
-		};
-		const first = await bot.ask(req);
-		assert.equal(first.channel, "#cuse");
-		assert.equal(first.status, "queued");
-		assert.deepEqual(await bot.ask(req), first);
-		await tick();
-		assert.equal(calls.length, 1, "busy target must queue peer question");
-		release();
-		await until(() => calls.length === 3);
-		await until(() => readInbox(root).every((r) => r.state === "completed"));
-		assert.equal(calls[1].channel, "#cuse");
-		assert.match(calls[1].body, /What did you find\?/);
-		assert.match(calls[1].body, /not a new human authorization/);
-		assert.equal(calls[2].channel, "#cuse2");
-		assert.match(calls[2].body, /PEER_ANSWER/);
-		await bot.ask(req);
-		await tick();
-		await tick();
-		assert.equal(
-			calls.length,
-			3,
-			"dedup must survive completed target request",
-		);
-		assert.equal(
-			readInbox(root).length,
-			3,
-			"answer must not automatically produce another peer answer",
-		);
-		const joins = bot.joinedChannels.size;
-		await assert.rejects(
-			bot.ask({ ...req, channel: "unknown", requestId: "unknown" }),
-		);
-		await assert.rejects(
-			bot.ask({ ...req, channel: "cuse2", requestId: "self" }),
-		);
-		assert.equal(bot.joinedChannels.size, joins);
-		assert.equal(readInbox(root).length, 3);
-		irc.emit("part", { nick: "cuse", channel: "#cuse" });
-		assert.equal(bot.joinedChannels.has("#cuse"), false);
-		assert.deepEqual(
-			await bot.ask(req),
-			first,
-			"accepted request must replay before target rejoins",
-		);
-		assert.deepEqual(
-			await bot.ask({ ...req, channel: "#cuse" }),
-			first,
-			"canonical target is equivalent to original bare name",
-		);
-		await assert.rejects(
-			bot.ask({ ...req, requestId: "new-after-part" }),
-			"new request to absent target must reject",
-		);
-		await assert.rejects(
-			bot.ask({ ...req, question: "different question" }),
-			"stable ID cannot change question",
-		);
-		await assert.rejects(
-			bot.ask({ ...req, channel: "#third" }),
-			"stable ID cannot change target",
-		);
-		await tick();
-		assert.equal(calls.length, 3);
-		assert.equal(readInbox(root).length, 3);
-	} finally {
-		release();
-		await bot.close();
-		rmSync(root, { recursive: true, force: true });
-	}
+for (const state of ["pending", "running", "recovery-required"]) {
+ test(`unresolved ${state} legacy mailbox request blocks startup before recovery writes`, t => {
+  const f = fixture(t);
+  insertPeer(f.db, state);
+  unchangedRejection(f.root, f.file);
+ });
+}
+test("pending legacy answers and corrupt or detached metadata cannot become ordinary prompts", async t => {
+ for (const [id, metadata] of [
+  ["agent-old/answer", JSON.stringify({ ...peer, kind: "answer" })],
+  ["arbitrary-old-id", JSON.stringify(peer)],
+  ["arbitrary-old-id", "invalid JSON"],
+  ["agent-old", null],
+ ] as const) {
+  await t.test(String(id) + String(metadata), st => {
+   const f = fixture(st);
+   insertPeer(f.db, "pending", id, metadata);
+   unchangedRejection(f.root, f.file);
+  });
+ }
+});
+test("legacy mailbox identifiers remain blocked when the peer column is absent", t => {
+ const f = fixture(t, false);
+ f.db.exec("INSERT INTO inbox(id,channel,sender,body,created_at,state) VALUES('agent-old/answer','#worker','#source','old answer',1,'pending')");
+ unchangedRejection(f.root, f.file);
+});
+for (const state of ["pending", "sending"]) {
+ test(`unresolved ${state} legacy mailbox reply output blocks startup`, t => {
+  const f = fixture(t);
+  insertPeer(f.db, "completed");
+  f.db.prepare("INSERT INTO outbox(id,channel,text,state) VALUES('agent-old/reply/0','#worker','old answer',?)").run(state);
+  unchangedRejection(f.root, f.file);
+ });
+}
+test("terminal mailbox history is preserved while new ordinary prompts have no answer routing", t => {
+ const f = fixture(t);
+ insertPeer(f.db, "completed");
+ insertPeer(f.db, "completed", "agent-old/answer", JSON.stringify({ ...peer, kind: "answer" }));
+ f.db.exec("INSERT INTO outbox(id,channel,text,state) VALUES('agent-old/reply/0','#worker','old answer','sent')");
+ const archived = f.db.prepare("SELECT * FROM inbox").all();
+ const store = new DurableIrcStore(f.root);
+ try {
+  assert.equal(store.claimNext(), undefined);
+  assert.equal("peer" in store.listInbox()[0]!, false);
+  store.enqueue({ id: "human-new", channel: "#worker", sender: "human", body: "new request" });
+  assert.equal(store.claimNext()?.id, "human-new");
+  store.complete("human-new", [{ id: "human-new/reply/0", channel: "#worker", text: "new answer" }]);
+  assert.equal(store.listInbox().length, 3);
+  assert.deepEqual(f.db.prepare("SELECT * FROM inbox WHERE id GLOB 'agent-*'").all(), archived);
+  assert.equal(f.db.prepare("SELECT state FROM outbox WHERE id='ordinary-output'").get()!.state, "pending");
+ } finally { store.close(); }
+});
+test("new callers cannot reintroduce the removed peer metadata or reserved mailbox IDs", t => {
+ const f = fixture(t, false);
+ const store = new DurableIrcStore(f.root);
+ try {
+  const message = { id: "ordinary", channel: "#worker", sender: "human", body: "hello" };
+  assert.throws(() => store.enqueue({ ...message, peer } as any), blocked);
+  assert.throws(() => store.enqueue({ ...message, id: "agent-new" }), blocked);
+  assert.deepEqual(store.listInbox(), []);
+  assert.equal(store.enqueue(message), true);
+ } finally { store.close(); }
 });
 
-test("agent question ancestry rejects revisits and a fifth channel", async () => {
-	const root = mkdtempSync(join(tmpdir(), "cuse-agent-cycle-"));
-	let cycleRejected = false,
-		depthRejected = false;
-	const questions: string[] = [];
-	const { bot, irc } = app(root, async (channel) =>
-		session(root, channel, async (_id, body) => {
-			if (body.startsWith("[Peer agent question")) {
-				questions.push(channel);
-				if (channel === "#cuse2") {
-					await assert.rejects(
-						bot.ask({
-							room: channel,
-							channel: "#cuse",
-							question: "cycle",
-							requestId: "cycle",
-						}),
-					);
-					cycleRejected = true;
-					await bot.ask({
-						room: channel,
-						channel: "#third",
-						question: "continue",
-						requestId: "hop2",
-					});
-				} else if (channel === "#third")
-					await bot.ask({
-						room: channel,
-						channel: "#fourth",
-						question: "continue",
-						requestId: "hop3",
-					});
-				else if (channel === "#fourth") {
-					await assert.rejects(
-						bot.ask({
-							room: channel,
-							channel: "#fifth",
-							question: "too deep",
-							requestId: "hop4",
-						}),
-					);
-					depthRejected = true;
-				}
-			}
-			return { text: "done", steered: false };
-		}),
-	);
-	try {
-		await bot.start();
-		irc.emit("registered", { nick: "cuse" });
-		await until(() => bot.joinedChannels.size === 5);
-		await bot.ask({
-			room: "#cuse",
-			channel: "cuse2",
-			question: "begin",
-			requestId: "hop1",
-		});
-		await until(() => depthRejected);
-		await until(() => readInbox(root).every((r) => r.state === "completed"));
-		assert.equal(cycleRejected, true);
-		assert.deepEqual(questions, ["#cuse2", "#third", "#fourth"]);
-		assert.equal(
-			readInbox(root).length,
-			6,
-			"three questions and three answers only",
-		);
-	} finally {
-		await bot.close();
-		rmSync(root, { recursive: true, force: true });
-	}
+const directBlocked = (error: unknown): boolean =>
+ typeof error === "object" && error !== null && "publicCode" in error && error.publicCode === "legacyDirectMessagesMigration";
+for (const state of ["pending", "running", "recovery-required"]) {
+ test(`legacy ${state} direct-message backlog blocks startup without changing state`, t => {
+  const f = fixture(t, false);
+  f.db.prepare("INSERT INTO inbox(id,channel,sender,body,created_at,state) VALUES('old-dm','human','human','private request',1,?)").run(state);
+  const before = readFileSync(f.file);
+  for (let attempt = 0; attempt < 2; attempt++) {
+   assert.throws(() => new DurableIrcStore(f.root), directBlocked);
+   assert.deepEqual(readFileSync(f.file), before);
+  }
+ });
+}
+for (const state of ["pending", "sending"]) {
+ test(`legacy ${state} direct-message output blocks startup without dropping the reply`, t => {
+  const f = fixture(t, false);
+  f.db.prepare("INSERT INTO outbox(id,channel,text,state) VALUES('old-dm/reply/0','human','private answer',?)").run(state);
+  const before = readFileSync(f.file);
+  assert.throws(() => new DurableIrcStore(f.root), directBlocked);
+  assert.deepEqual(readFileSync(f.file), before);
+ });
+}
+test("completed private-message history is preserved while new direct-message queue writes are rejected", t => {
+ const f = fixture(t, false);
+ f.db.exec("INSERT INTO inbox(id,channel,sender,body,created_at,state) VALUES('old-dm','human','human','private request',1,'completed'); INSERT INTO outbox(id,channel,text,state) VALUES('old-dm/reply/0','human','private answer','sent')");
+ const archived = f.db.prepare("SELECT * FROM inbox").all();
+ const store = new DurableIrcStore(f.root);
+ try {
+  assert.equal(store.claimNext(), undefined);
+  assert.throws(() => store.enqueue({ id: "new-dm", channel: "human", sender: "human", body: "private request" }), directBlocked);
+  assert.throws(() => store.enqueueOutput({ id: "new-dm/reply/0", channel: "human", text: "private answer" }), directBlocked);
+  assert.deepEqual(f.db.prepare("SELECT * FROM inbox").all(), archived);
+ } finally { store.close(); }
+});
+
+for (const paused of [false, true]) {
+ test(`unfinished legacy private-message schedule blocks startup even when paused=${paused}`, t => {
+  const f = fixture(t, false);
+  f.db.exec("CREATE TABLE schedules(id TEXT PRIMARY KEY,channel TEXT NOT NULL,next_run_at INTEGER,paused INTEGER NOT NULL)");
+  f.db.prepare("INSERT INTO schedules VALUES('old-dm-job','human',1000,?)").run(paused ? 1 : 0);
+  const before = readFileSync(f.file);
+  assert.throws(() => new DurableIrcStore(f.root), directBlocked);
+  assert.deepEqual(readFileSync(f.file), before);
+ });
+}
+test("new schedules cannot target private-message identities", t => {
+ const f = fixture(t, false);
+ const store = new DurableIrcStore(f.root);
+ try {
+  assert.throws(() => store.addSchedule({ id: "invalid-dm", channel: "human", sender: "human", prompt: "private task", timing: { kind: "once", at: Date.now() + 60_000 } }), directBlocked);
+  assert.deepEqual(store.listSchedules(), []);
+ } finally { store.close(); }
 });
