@@ -30,6 +30,33 @@ history must be reconciled by an operator; deleting a cursor is not automatic
 recovery. Preserve the old profile/cursor and inspect server history and durable
 inbox before deciding where intake can safely resume.
 
+## Readable channel nicknames
+
+Nicknames now use the configured `IRC_NICK` prefix plus an adjective and animal,
+such as `cuse-settling-mayfly` for `#alpha`, instead of a hexadecimal suffix.
+The word lists come from pinned [`node-petname` 1.0.1](https://github.com/lcherone/node-petname).
+A versioned channel hash selects words deterministically; startup does not use
+the library's random generator. Channel case does not change the result. Long
+prefixes are shortened to keep both words intact and the nick within 30 ASCII
+characters. The IRC network must support this nickname length.
+
+WeeChat receives five deterministic readable candidates and tries the next one
+when the server rejects an occupied nickname. Its unbounded automatic alternate
+nick generation stays disabled. If all candidates are occupied, JOIN readiness
+times out without starting channel work. No existing IRC user is displaced.
+The confirmed nick is atomically saved in `nick.json` beside the existing
+per-channel `profile/` and `cursor.json`, before announcing JOIN readiness. It
+is tried first after restart, even if the original candidate is now free.
+Changing `IRC_NICK` explicitly selects names with the new prefix. Invalid saved
+nickname data or persistence failures stop the identity for operator review.
+
+Existing hash-named bots switch to readable names on their next approved
+restart. Profile paths, durable session IDs, desktop mappings and cursors do not
+move or reset. The existing native-epoch recovery gate still applies. Use the
+nickname shown in the channel or `,channels` when addressing that channel's bot;
+old hexadecimal mentions no longer address it. Back up `nick.json` with the rest
+of the volume to preserve collision-resolved names across restores.
+
 ## Deployment gate
 
 1. Back up the existing volume and stop its single writer.

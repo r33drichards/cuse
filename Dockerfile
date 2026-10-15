@@ -20,7 +20,8 @@ RUN echo "af7d11986179445ce6fe88b37d57de22f823c0ffd3a65cae31c555b7f5e99253  /opt
 # Install cuse-owned runtime dependencies from its committed lockfile.
 COPY package.json package-lock.json /opt/cuse-deps/
 RUN cd /opt/cuse-deps && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
- && cp -R node_modules/croner /app/node_modules/croner
+ && cp -R node_modules/croner /app/node_modules/croner \
+ && cp -R node_modules/node-petname /app/node_modules/node-petname
 # Build upstream before overlaying cuse, which is run directly with tsx.
 COPY src/ /app/packages/coding-agent/src/cuse/
 RUN npm --prefix packages/coding-agent run build
