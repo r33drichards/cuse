@@ -15,6 +15,12 @@ at-least-once at the uncertain-send boundary, not exactly-once.
 Each identity joins only its home and explicitly configured peer channels. Adding
 peer access exposes that channel's history to that identity and enables posting;
 review that access before deployment. The default has no cross-channel access.
+Peer-target commands recheck native membership immediately before dispatch, without
+subscribing peer traffic or waking the home model. History reads remain available
+for diagnosis after a peer PART/KICK. An unobserved peer history gap or epoch
+change blocks commands rather than assuming membership from a retained buffer.
+An observed own JOIN in the same continuous history restores peer commands.
+
 No credentials are generated and no HTTP port is opened. Existing IRC server
 password configuration fails startup until an authenticated bootstrap is explicitly
 implemented and reviewed. TLS verification stays enabled when IRC_TLS is true.

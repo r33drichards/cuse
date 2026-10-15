@@ -73,6 +73,12 @@ export interface NativeSnapshot {
  has_more: boolean;
 }
 interface Cursor { version: 1; channel: string; epoch: string; lastId: number }
+interface PeerMembership {
+ cursor: Cursor;
+ nick: string;
+ ready: boolean;
+ queue: Promise<void>;
+}
 interface IdentityState {
  channel: string;
  nick: string;
@@ -90,6 +96,7 @@ interface IdentityState {
  closing: boolean;
  inMessage?: boolean;
  membershipId: number;
+ peers: Map<string, PeerMembership>;
  failure?: unknown;
  disposing?: Promise<void>;
  title?: string;
@@ -320,7 +327,7 @@ export class WeeChatNetwork implements WeeChatTransport {
    // silently removed, so this cannot steal a running process's endpoint.
    rmSync(join(profile, "mcp", "bridge.sock"), {force: true});
    const state: IdentityState = {channel: key, nick: weechatNick(this.#options.nick, key), channels: this.#peers.get(key) ?? [key], profile, lock,
-    cursorPath: join(directory, "cursor.json"), start: Promise.resolve(), queue: Promise.resolve(), abort: new AbortController(), ready: false, closing: false, membershipId: -1};
+    cursorPath: join(directory, "cursor.json"), start: Promise.resolve(), queue: Promise.resolve(), abort: new AbortController(), ready: false, closing: false, membershipId: -1, peers: new Map()};
    state.cursor = readCursor(state.cursorPath, key);
    this.#identities.set(key, state);
    state.start = this.#start(state).catch(async error => { this.#fault(state, error); await this.#dispose(state); throw error; });
@@ -347,7 +354,15 @@ export class WeeChatNetwork implements WeeChatTransport {
    const resources = await client.listResources({}, {cacheMode: "bypass", signal: state.abort.signal, timeout: this.#options.joinTimeoutMs ?? 20_000});
    if (state.channels.every(channel => resources.resources.some(resource => resource.uri === weechatResource(channel)))) {
     const snapshots = await Promise.all(state.channels.map(channel => this.#read(state, channel)));
-    if (snapshots.every(snapshot => !!snapshot.buffer.localvar_nick && ownJoin(snapshot))) break;
+    if (snapshots.every(snapshot => !!snapshot.buffer.localvar_nick && ownJoin(snapshot))) {
+     for (const [index, channel] of state.channels.entries()) {
+      if (channel === state.channel) continue;
+      const snapshot = snapshots[index];
+      state.peers.set(channel, {cursor: {version: 1, channel, epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id},
+       nick: snapshot.buffer.localvar_nick, ready: true, queue: Promise.resolve()});
+     }
+     break;
+    }
    }
    if (Date.now() >= deadline) throw new Error("WeeChat did not confirm every configured channel JOIN");
    await delay(50, undefined, {signal: state.abort.signal});
@@ -443,6 +458,27 @@ export class WeeChatNetwork implements WeeChatTransport {
   if (!state || !state.ready || state.closing || state.failure) throw new Error("WeeChat channel identity is not ready");
   return state;
  }
+ /** Inspect peer membership on demand, without subscribing peer traffic or delivering it to the model. */
+ async #checkPeerMembership(state: IdentityState, channel: string): Promise<void> {
+  const peer = state.peers.get(channel);
+  if (!peer) throw new Error("WeeChat peer membership is not confirmed");
+  const checked = peer.queue.then(async () => {
+   const snapshot = await this.#read(state, channel);
+   assertContinuity(snapshot, peer.cursor);
+   const oldNick = peer.nick;
+   if (snapshot.buffer.localvar_nick) peer.nick = snapshot.buffer.localvar_nick;
+   for (const line of snapshot.lines) {
+    if (line.id <= peer.cursor.lastId) continue;
+    if (line.tags.includes("irc_join") && (isSelf(line, peer.nick) || isSelf(line, oldNick))) peer.ready = true;
+    else if (membershipLost(line, peer.nick) || membershipLost(line, oldNick)) peer.ready = false;
+   }
+   if (!snapshot.buffer.localvar_nick) peer.ready = false;
+   peer.cursor = {version: 1, channel, epoch: snapshot.data_epoch, lastId: snapshot.last_assigned_id};
+   if (!peer.ready) throw new Error("WeeChat peer membership is not confirmed");
+  });
+  peer.queue = checked.catch(() => {});
+  await checked;
+ }
  communication(channel: string): CommunicationClient {
   const home = canonical(channel);
   return {
@@ -452,6 +488,11 @@ export class WeeChatNetwork implements WeeChatTransport {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("WeeChat tool arguments must be an object");
     const args = value as Record<string, unknown>;
     if (args.buffer !== undefined && !state.channels.map(weechatBuffer).includes(String(args.buffer))) throw new Error("WeeChat buffer is outside this identity's peer allowlist");
+    const target = state.channels.find(channel => weechatBuffer(channel) === args.buffer);
+    // History remains readable after PART/KICK. Commands require fresh target
+    // membership; a retained buffer and a healthy home channel are insufficient.
+    if (target && target !== home && name !== "weechat_buffers") await this.#checkPeerMembership(state, target);
+    this.#get(home); // The home identity may have disconnected during the read.
     return state.session!.client.callTool({name, arguments: args}, {signal});
    },
   };
