@@ -30,4 +30,7 @@ jobs:
           docker run --rm --entrypoint /app/node_modules/.bin/tsx cuse:validation --tsconfig /app/tsconfig.json /app/cuse/image-smoke.mts
 
       - name: Test native per-channel WeeChat identities on isolated loopback IRC
-        run: docker run --rm --network none --entrypoint /app/node_modules/.bin/tsx cuse:validation --tsconfig /app/tsconfig.json /app/cuse/weechat-live-smoke.mts
+        run: |
+          docker run --rm --network none --entrypoint weechat-headless cuse:validation --version
+          docker run --rm --network none --entrypoint sh cuse:validation -c 'profile=$(mktemp -d); timeout 15 env -i PATH="$PATH" HOME="$profile" LC_ALL=C LANG=C WEECHAT_MCP_FULL_CONTROL=0 MCP_TRANSPORT=stdio weechat-headless -d "$profile" -p -a --stdout -r "/plugin load irc" -r "/plugin load python" -r "/python load /opt/cuse-vendor/weechat-mcp/weechat_mcp.py" -r "/quit"'
+          docker run --rm --network none --entrypoint /app/node_modules/.bin/tsx cuse:validation --tsconfig /app/tsconfig.json /app/cuse/weechat-live-smoke.mts

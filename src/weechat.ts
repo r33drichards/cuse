@@ -218,16 +218,40 @@ async function stopProcess(child: ChildProcess): Promise<void> {
  const timer = setTimeout(() => child.kill("SIGKILL"), 5000); timer.unref();
  try { await exited; } finally { clearTimeout(timer); }
 }
+/** Controlled process diagnostics: never include child output, arguments or paths. */
+export class WeeChatProcessError extends Error {
+ readonly phase: "spawn" | "exit";
+ readonly exitCode: number | null;
+ readonly signal: string | null;
+ readonly spawnCode: string | null;
+ constructor(details: {phase: "spawn" | "exit"; exitCode?: number | null; signal?: string | null; spawnCode?: string}) {
+  const allowedCodes = new Set(["ENOENT", "EACCES", "ENOEXEC", "EAGAIN", "ENOMEM", "EMFILE", "ENFILE", "EPERM"]);
+  const exitCode = Number.isInteger(details.exitCode) ? details.exitCode! : null;
+  const signal = details.signal && /^SIG[A-Z0-9]+$/.test(details.signal) ? details.signal : null;
+  const spawnCode = details.phase === "spawn" ? (allowedCodes.has(details.spawnCode ?? "") ? details.spawnCode! : "UNKNOWN") : null;
+  super(details.phase === "spawn"
+   ? `Local WeeChat could not start (spawn_code=${spawnCode})`
+   : `Local WeeChat exited (exit_code=${exitCode ?? "none"}, signal=${signal ?? "none"})`);
+  this.name = "WeeChatProcessError";
+  this.phase = details.phase; this.exitCode = exitCode; this.signal = signal; this.spawnCode = spawnCode;
+ }
+}
 export async function startNativeWeeChat(options: WeeChatNetworkOptions, identity: WeeChatIdentity): Promise<NativeWeeChatSession> {
  const env = safeEnvironment(identity.profile);
  // Crucially the SDK only spawns bridge.py. Its disposable discovery sibling
  // shares this socket; it never opens a second WeeChat profile/IRC connection.
  const child = spawn(options.weechatCommand ?? "weechat-headless", weechatLaunchArguments(options, identity), {env, stdio: ["ignore", "ignore", "ignore"]});
- let stopped = false;
+ let failure: WeeChatProcessError | undefined;
  let reportStopped!: (error: unknown) => void;
  const stoppedPromise = new Promise<unknown>(resolve => { reportStopped = resolve; });
- child.once("error", () => { stopped = true; reportStopped(new Error("Local WeeChat could not start")); });
- child.once("exit", () => { stopped = true; reportStopped(new Error("Local WeeChat stopped")); });
+ child.once("error", error => {
+  failure = new WeeChatProcessError({phase: "spawn", spawnCode: (error as NodeJS.ErrnoException).code});
+  reportStopped(failure);
+ });
+ child.once("exit", (exitCode, signal) => {
+  failure = new WeeChatProcessError({phase: "exit", exitCode, signal});
+  reportStopped(failure);
+ });
  const client = new Client({name: "cuse-weechat", version: "1.0.0"}, {versionNegotiation: {mode: {pin: WEECHAT_PROTOCOL_VERSION}, probe: {timeoutMs: 10_000}}});
  client.onclose = () => reportStopped(new Error("WeeChat MCP bridge disconnected"));
  client.onerror = () => reportStopped(new Error("WeeChat MCP protocol failed"));
@@ -240,7 +264,7 @@ export async function startNativeWeeChat(options: WeeChatNetworkOptions, identit
   const deadline = Date.now() + (options.joinTimeoutMs ?? 20_000);
   while (!existsSync(socket)) {
    identity.signal.throwIfAborted();
-   if (stopped) throw new Error("Local WeeChat exited before creating its socket");
+   if (failure) throw failure;
    if (Date.now() >= deadline) throw new Error("Timed out waiting for the WeeChat plugin socket");
    await delay(25, undefined, {signal: identity.signal});
   }

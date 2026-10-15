@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
- WeeChatNetwork, WEECHAT_PROTOCOL_VERSION, weechatBuffer, weechatResource, weechatNick, weechatLaunchArguments,
+ WeeChatNetwork, WeeChatProcessError, startNativeWeeChat, WEECHAT_PROTOCOL_VERSION, weechatBuffer, weechatResource, weechatNick, weechatLaunchArguments,
  type NativeMcpClient, type NativeSnapshot, type NativeWeeChatSession, type WeeChatIdentity, type WeeChatMessage,
 } from "../src/weechat.ts";
 
@@ -354,3 +354,25 @@ asyncio.run(main())
   assert.throws(() => process.kill(Number(starts[0]), 0), {code: "ESRCH"});
  } finally { await network.close(); rmSync(root, {recursive: true, force: true}); }
 });
+
+for (const kind of ["exit", "spawn", "signal"] as const) {
+ test(`native startup ${kind} diagnostic exposes only owned process fields`, async () => {
+  const root = mkdtempSync(join(tmpdir(), "wc-startup-"));
+  const executable = join(root, "private-native-command");
+  if (kind === "exit") writeFileSync(executable, "#!/bin/sh\nprintf '%s\\n' 'PRIVATE_CHILD_OUTPUT' >&2\nexit 19\n", {mode: 0o700});
+  if (kind === "signal") writeFileSync(executable, "#!/bin/sh\nkill -TERM $$\n", {mode: 0o700});
+  try {
+   await assert.rejects(startNativeWeeChat({server: "private.invalid", port: 16667, tls: false, nick: "cuse", profileRoot: root,
+    upstreamDir: "/private/upstream", weechatCommand: executable, joinTimeoutMs: 1000},
+   {channel: "#private", nick: "private_nick", channels: ["#private"], profile: root, signal: new AbortController().signal}), error => {
+    assert(error instanceof WeeChatProcessError);
+    assert.equal(error.phase, kind === "spawn" ? "spawn" : "exit");
+    assert.equal(error.spawnCode, kind === "spawn" ? "ENOENT" : null);
+    assert.equal(error.exitCode, kind === "exit" ? 19 : null);
+    assert.equal(error.signal, kind === "signal" ? "SIGTERM" : null);
+    assert(!String(error).includes("private")); assert(!String(error).includes("PRIVATE_CHILD_OUTPUT"));
+    return true;
+   });
+  } finally { rmSync(root, {recursive: true, force: true}); }
+ });
+}
