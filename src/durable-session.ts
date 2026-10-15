@@ -478,6 +478,9 @@ export class DurableChannelSession {
 						throw new Error(
 							"Previous durable operation is waiting and must be resumed",
 						);
+					if (recovered.value.outcome.status === "failed" || recovered.value.outcome.status === "aborted") {
+						this.reportDiagnostic(settledDiagnostic(recovered.value.outcome));
+					}
 				}
 				if (!state.current || state.current.id !== operationId) {
 					const accepted = await this.lane.accept(

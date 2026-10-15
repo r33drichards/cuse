@@ -94,3 +94,23 @@ test('tool failures log their boundary without exposing payloads or failing the 
  assert.deepEqual(f.logs, ['IRC: durable diagnostic in #test: desktop-tool-failed']);
  assert.ok(![...f.logs, ...f.visible].join('\n').includes('SECRET_CANARY'));
 });
+
+test('prompt recovery diagnoses a failed predecessor before running its successor without replay', async t => {
+ const f = await fixture(t);
+ f.faux.setResponses([
+  fauxAssistantMessage([], {stopReason: 'error', errorMessage: '401 Unauthorized ' + secret}),
+  fauxAssistantMessage('Successor completed'),
+ ]);
+ const session = await f.open();
+ assert.equal((await session.lane.accept({kind: 'prompt', operationId: 'pending-predecessor', prompt: 'first'}, ctx)).ok, true);
+ assert.equal((await session.promptDurable('successful-successor', 'second')).text, 'Successor completed');
+ assert.equal((await session.lane.getResult('pending-predecessor', ctx))?.status, 'failed');
+ assert.equal((await session.lane.getResult('successful-successor', ctx))?.status, 'completed');
+ assert.deepEqual(f.logs, ['IRC: durable diagnostic in #test: provider-auth']);
+ assert.equal(f.faux.state.callCount, 2);
+ assert.equal((await session.promptDurable('successful-successor', 'second')).text, 'Successor completed');
+ assert.match((await session.completedReply('pending-predecessor')).text, /Operation failed/);
+ assert.equal(f.faux.state.callCount, 2, 'neither predecessor nor successor is replayed');
+ assert.ok(![...f.logs, ...f.visible].join('\n').includes('SECRET_CANARY'));
+ assert.ok(![...f.logs, ...f.visible].join('\n').includes('private.invalid'));
+});
