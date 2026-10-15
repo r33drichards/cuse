@@ -6,9 +6,10 @@ import {createServer, type Socket} from 'node:net';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createDurableCommunicationTools} from '../packages/coding-agent/src/cuse/durable-session.ts';
 import {DurableIrcStore} from '../packages/coding-agent/src/cuse/durable-store.ts';
 import {
- WeeChatNetwork, startNativeWeeChat, weechatBuffer, weechatResource, weechatNick, weechatNicks,
+ WeeChatNetwork, startNativeWeeChat, weechatBuffer, weechatResource, weechatNick, weechatNicks, nativeTag,
  type NativeSnapshot, type NativeWeeChatSession, type WeeChatMessage, type WeeChatNetworkOptions,
 } from '../packages/coding-agent/src/cuse/weechat.ts';
 
@@ -136,7 +137,8 @@ const launcher = join(root, 'native-launcher');
 writeFileSync(launcher, '#!/bin/sh\nexec weechat-headless "$@" 2>> "$(dirname "$0")/native.log"\n', {mode: 0o700});
 const nativeOptions: WeeChatNetworkOptions = {
  server: '127.0.0.1', port, tls: false, nick: 'testcuse', profileRoot: root,
- upstreamDir: '/opt/cuse-vendor/weechat-mcp', pythonCommand: '/opt/cuse-weechat/bin/python',
+ upstreamDir: process.env.CUSE_WEECHAT_TEST_DIR ?? '/opt/cuse-vendor/weechat-mcp',
+ pythonCommand: process.env.CUSE_WEECHAT_TEST_PYTHON ?? '/opt/cuse-weechat/bin/python', fullControl: false,
  weechatCommand: launcher, peerChannels: {'#alpha': ['#beta']}, joinTimeoutMs: 20000,
 };
 const sessions = new Map<string, NativeWeeChatSession>();
@@ -178,7 +180,79 @@ const handlers = {
 transport.setHandlers(handlers);
 try {
  const version = execFileSync('weechat-headless', ['--version'], {encoding: 'utf8'}).trim();
- assert.match(version, /\b3\.8\b/, 'This smoke must exercise the image\'s real WeeChat 3.8');
+ assert.equal(version, process.env.CUSE_WEECHAT_TEST_VERSION ?? '3.8', 'Run the expected real native WeeChat version');
+
+ // Full mode uses a separate real native identity and the same loopback server.
+ // Explicitly remove the setting to prove the shipped default, then restore it.
+ const savedPolicy = process.env.WEECHAT_MCP_FULL_CONTROL;
+ delete process.env.WEECHAT_MCP_FULL_CONTROL;
+ let fullSession: NativeWeeChatSession | undefined;
+ const fullOptions: WeeChatNetworkOptions = {...nativeOptions, fullControl: undefined, peerChannels: {}};
+ const full = new WeeChatNetwork({...fullOptions, createSession: async identity => {
+  fullSession = await startNativeWeeChat(fullOptions, identity); return fullSession;
+ }});
+ const fullMessages: WeeChatMessage[] = [], fullFaults: unknown[] = [], fullTopics: string[] = [];
+ full.setHandlers({message: async event => { fullMessages.push(event); }, joined: () => {}, disconnected: () => {},
+  topic: (_channel, topic) => { fullTopics.push(topic); }, fault: (_channel, error) => { fullFaults.push(error); }});
+ try {
+  await full.join('#full');
+  const communication = full.communication('#full');
+  const json = async (name: string, args: Record<string, unknown> = {}) => {
+   const result = await communication.call(name, args); assert.ok(!result.isError, JSON.stringify(result));
+   const text = (result.content as {type: string; text?: string}[]).find(part => part.type === 'text')?.text;
+   assert.ok(text); return JSON.parse(text);
+  };
+  const manifest = await json('weechat_command_manifest');
+  const tools = await communication.tools();
+  for (const name of ['join', 'msg', 'topic']) assert.ok(manifest.commands.some((command: any) => command.plugin === 'irc' && command.name === name));
+  assert.ok(!tools.some(tool => tool.name === 'weechat_msg'));
+  const registered = await createDurableCommunicationTools(communication);
+  assert.deepEqual(registered.map(tool => tool.name), tools.map(tool => tool.name));
+  assert.deepEqual(registered.map(tool => tool.parameters), tools.map(tool => tool.inputSchema), 'All native schemas register without rewriting or filtering');
+  console.log('Full-mode native tool catalog:', JSON.stringify({version, tools: tools.length, generatedCommands: manifest.commands.length, durableRegistered: registered.length}));
+  assert.ok((await json('weechat_command_contexts')).includes('core.weechat'));
+  const invoke = async (name: string, buffer: string, arguments_: string) => {
+   const current = await json('weechat_command_manifest');
+   const command = current.commands.find((command: any) => command.plugin === 'irc' && command.name === name); assert.ok(command);
+   return json(command.tool_name, {buffer, registry_revision: command.revision, syntax: 'raw', params: {arguments: arguments_}});
+  };
+  await invoke('join', 'irc.server.docker', '#dynamic');
+  await until(() => [...peers].some(peer => peer.nick === full.nickFor('#full') && peer.channels.has('#dynamic')), 'generated JOIN outside configured peers');
+  await until(() => !!fullSession, 'full native session');
+  assert.ok((await json('weechat_command_contexts')).includes(weechatBuffer('#dynamic')));
+  assert.ok((await json('weechat_buffers')).includes(weechatBuffer('#dynamic')));
+  const incoming = retain('fixture-human', '#dynamic', 'dynamic channel data'); publish(incoming);
+  const deadline = Date.now() + 5000;
+  for (;;) {
+   const snapshot = await json('weechat_buffers', {buffer: weechatBuffer('#dynamic')});
+   if (snapshot.lines.some((line: any) => line.message === incoming.text)) break;
+   assert.ok(Date.now() < deadline); await sleep(25);
+  }
+  const resources = await fullSession!.client.listResources({}, {cacheMode: 'bypass'});
+  assert.ok(resources.resources.some(resource => resource.uri === weechatResource('#dynamic')));
+  const dynamicResource = await fullSession!.client.readResource({uri: weechatResource('#dynamic')}, {cacheMode: 'bypass'});
+  assert.ok(JSON.stringify(dynamicResource).includes(incoming.text));
+  await invoke('msg', weechatBuffer('#dynamic'), '* dynamic send');
+  await until(() => wire.some(message => message.target === '#dynamic' && message.text === 'dynamic send'), 'generated message to dynamic channel');
+  await full.say('#full', '-literal /quit\nsecond host line');
+  await until(() => wire.filter(message => message.target === '#full').length === 2, 'full-mode host replies');
+  assert.deepEqual(wire.filter(message => message.target === '#full').map(message => message.text), ['-literal /quit', 'second host line']);
+  await full.setTopic('#full', '#other remains topic text');
+  await until(() => fullTopics.includes('#other remains topic text'), 'full-mode native host topic set');
+  await full.queryTopic('#full');
+  await until(() => fullTopics.includes('Synthetic test room'), 'full-mode native host topic query');
+  await sleep(200);
+  assert.equal(fullMessages.length, 0, 'Dynamic channel reads/notifications do not expand home durable intake');
+  publish(retain('fixture-human', '#full', 'home remains active'));
+  await until(() => fullMessages.length === 1, 'full-mode home durable intake');
+  assert.equal(fullMessages[0].target, '#full'); assert.equal(fullFaults.length, 0);
+  console.log('Full-mode native integration OK: unset default, generated JOIN, dynamic contexts/buffers/resources, read/send, fixed host replies/topics, home-only intake');
+ } finally {
+  await full.close();
+  if (savedPolicy === undefined) delete process.env.WEECHAT_MCP_FULL_CONTROL; else process.env.WEECHAT_MCP_FULL_CONTROL = savedPolicy;
+ }
+ await until(() => peers.size === 0, 'full-mode subprocess cleanup');
+
  await Promise.all([transport.join('#alpha'), transport.join('#beta')]);
  const alpha = transport.nickFor('#alpha'), beta = transport.nickFor('#beta');
  assert.notEqual(alpha, beta); assert.equal(peers.size, 2, 'SDK discovery must not create extra IRC identities');
@@ -199,7 +273,8 @@ try {
  const firstSnapshot = await nativeSnapshot('#beta');
  const originalLine = firstSnapshot.lines.find(line => line.message === rawBody);
  assert.ok(originalLine, 'Actual native snapshot must contain the received PRIVMSG');
- assert.ok(originalLine.tags.includes(`irc_tag_msgid_${originalWire.msgid}`), 'Real WeeChat 3.8 must emit the irc_tag_msgid_ native tag form');
+ assert.equal(nativeTag(originalLine, "msgid"), originalWire.msgid, "Real native tag must retain the exact server ID");
+ if (version === "3.8") assert.ok(originalLine.tags.includes(`irc_tag_msgid_${originalWire.msgid}`), "Image WeeChat 3.8 emits underscore-form native tags");
  console.log('Actual native readResource evidence:', JSON.stringify({version, source: firstSnapshot.source, tags: originalLine.tags}));
 
  const before = attempts.length;

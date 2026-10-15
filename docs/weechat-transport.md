@@ -12,14 +12,28 @@ unchanged. Home buffer subscriptions feed the existing durable inbox; sending a
 native message never directly invokes another session. IRC delivery remains
 at-least-once at the uncertain-send boundary, not exactly-once.
 
-Each identity joins only its home and explicitly configured peer channels. Adding
-peer access exposes that channel's history to that identity and enables posting;
-review that access before deployment. The default has no cross-channel access.
-Peer-target commands recheck native membership immediately before dispatch, without
-subscribing peer traffic or waking the home model. History reads remain available
-for diagnosis after a peer PART/KICK. An unobserved peer history gap or epoch
-change blocks commands rather than assuming membership from a retained buffer.
-An observed own JOIN in the same continuous history restores peer commands.
+Each identity initially joins its home and explicitly configured peer channels.
+Full native WeeChat control is the default (`WEECHAT_MCP_FULL_CONTROL=1`, also
+when unset). Generated commands can join other channels, use core/server/plugin
+contexts, change configuration, run scripting/process commands, or send direct
+messages. Buffer tools/resources expose all current native contexts, including
+newly joined channels and private messages. Only a trusted operator should have
+this access; native command semantics are not a sandbox.
+
+Set `WEECHAT_MCP_FULL_CONTROL=0` before startup to restore the six scoped adapters,
+the home/peer buffer allowlist, and on-demand peer membership checks. Only `0` and
+`1` are accepted; invalid values fail startup. In restricted mode, history remains
+readable after a peer PART/KICK, but commands require confirmed membership and
+continuous history. Full mode leaves command eligibility to native WeeChat.
+
+Automatic durable intake and subscriptions remain home-channel-only in both
+modes. Joining or reading another channel never wakes the home agent from that
+channel's traffic. Host replies and topic operations use the exact native IRC
+command registration/current revision in full mode, with fixed home targeting;
+model calls still receive unmodified native schemas and arguments. Destructive
+commands such as PART, QUIT, server disconnect, buffer close/clear, or plugin
+unload can interrupt or invalidate the home identity and its durable continuity.
+Full access does not promise those actions preserve a running Cuse session.
 
 No credentials are generated and no HTTP port is opened. Existing IRC server
 password configuration fails startup until an authenticated bootstrap is explicitly

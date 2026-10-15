@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/r33drichards/weechat-mcp",
-  "commit": "49bfd98f15853c2cec2228ee2cc978512fbd10c1",
+  "commit": "ad6252851b3d7d4d85163de8f80092ef93aae583",
   "license": "GPL-3.0-or-later",
   "files": [
     {
@@ -9,7 +9,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "26e3d18e8f225ea77d3c87497243b52ab1e4219349dddb9e1fa33797998cf9f4"
+      "sha256": "cdaf967f7a3690951feb21e12bd3968ff1eb64e9ed3a86e877694507915f4d48"
     },
     {
       "path": "bridge.py",
@@ -17,7 +17,7 @@
     },
     {
       "path": "weechat_mcp.py",
-      "sha256": "72ef0c0cc04368f51c52f9329dbd6cc4478317b93596599342d86e506e132c21"
+      "sha256": "d66bb2f699b399d8dd36804a94ecc066213e34d681c3831dedc7973bfa794d23"
     },
     {
       "path": "command_manifest.py",
