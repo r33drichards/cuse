@@ -38,6 +38,9 @@ export interface InboxMessage {
 	body: string;
 }
 
+export type NativeDisposition = "ignored" | "prompt" | "command-started" | "command-completed";
+export interface NativeReceipt { disposition: NativeDisposition }
+
 export interface NativeAdmission {
  admitted: boolean;
  added: boolean;
@@ -228,7 +231,50 @@ export class DurableIrcStore {
 		return true;
 	}
 
- /** Commit native input and its loop-budget effect together, before advancing the IRC cursor.
+ /** A reviewed one-time boundary for legacy IDs, persisted independently of
+  * native positions. No automatic choice, mapping, deletion, or time fallback.
+  */
+ nativeHistoryCutoff(approved?: string, legacyProfile = false): number | undefined {
+  const id = "irc/native-migration/v1";
+  const saved = this.db.prepare("SELECT result_json FROM schedule_receipts WHERE id=?").get(id);
+  const parsed = approved === undefined ? undefined : (/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(approved) ? Date.parse(approved) : NaN);
+  const normalized = approved?.replace(/(?:\.(\d{1,3}))?Z$/, (_match, fraction) => "." + (fraction ?? "").padEnd(3, "0") + "Z");
+  if (parsed !== undefined && (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== normalized)) throw new Error("CUSE_WEECHAT_HISTORY_AFTER must be an explicit UTC ISO timestamp");
+  if (saved) {
+   const cutoff = JSON.parse(String(saved.result_json)).value.cutoff;
+   if (!Number.isFinite(cutoff) || (parsed !== undefined && cutoff !== parsed)) throw new Error("Reviewed WeeChat migration cutoff cannot change");
+   return cutoff;
+  }
+  const legacy = this.db.prepare("SELECT id FROM inbox WHERE id LIKE 'weechat:%' UNION SELECT id FROM irc_admissions WHERE id LIKE 'weechat:%' UNION SELECT id FROM schedule_receipts WHERE id LIKE '%weechat:%'").all()
+   .some(row => /(?:^|\/)weechat:[0-9a-f]{64}(?:$|\/)/.test(String(row.id)));
+  if ((legacy || legacyProfile) && parsed === undefined) throw new PublicError("nativeReplayMigration");
+  if (parsed !== undefined) this.receiptOperation(id, "reviewed-server-time-cutoff/v1", () => ({cutoff: parsed}));
+  return parsed;
+ }
+
+ /** Raw-event receipts are checked before current preferences or prompt framing
+  * can reinterpret a replay. Reuse the existing transaction/receipt primitive.
+  */
+ nativeReceipt(message: InboxMessage): NativeReceipt | undefined {
+  const receipt = this.db.prepare("SELECT fingerprint,result_json FROM schedule_receipts WHERE id=?").get("irc/native/" + message.id);
+  if (!receipt) return;
+  if (receipt.fingerprint !== JSON.stringify([message.channel, message.sender, message.body])) throw new Error("Native event ID collision");
+  const value = JSON.parse(String(receipt.result_json)).value as NativeReceipt;
+  if (!["ignored", "prompt", "command-started", "command-completed"].includes(value?.disposition)) throw new Error("Invalid native event receipt");
+  return value;
+ }
+ recordNativeReceipt(message: InboxMessage, disposition: NativeDisposition, operation: () => void = () => {}): void {
+  this.receiptOperation("irc/native/" + message.id, JSON.stringify([message.channel, message.sender, message.body]), () => {
+   operation();
+   return {disposition};
+  });
+ }
+ completeNativeCommand(message: InboxMessage): void {
+  if (this.nativeReceipt(message)?.disposition !== "command-started") throw new Error("Native command was not claimed");
+  this.db.prepare("UPDATE schedule_receipts SET result_json=? WHERE id=?").run(JSON.stringify({value: {disposition: "command-completed"}}), "irc/native/" + message.id);
+ }
+
+ /** Commit native input and its loop-budget effect together, before advancing the process-local IRC position.
   * A receipt also preserves rejected decisions and prevents old human replays from
   * resetting a newer peer exchange. JSON counts are a one-time migration seed.
   */

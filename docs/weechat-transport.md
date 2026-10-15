@@ -25,10 +25,71 @@ No credentials are generated and no HTTP port is opened. Existing IRC server
 password configuration fails startup until an authenticated bootstrap is explicitly
 implemented and reviewed. TLS verification stays enabled when IRC_TLS is true.
 
-The native profile and cursor are separate from Pi's durable session. Temporary IRC disconnects pause intake and sends while the same WeeChat process reconnects. A fresh own JOIN resumes only after native epoch/cursor continuity checks. Own kicks stay paused rather than automatically overriding the channel operator. A changed native history epoch, retention gap, or failed persistence stops that identity for reconciliation. Restart recovery requiring missing IRC
-history must be reconciled by an operator; deleting a cursor is not automatic
-recovery. Preserve the old profile/cursor and inspect server history and durable
-inbox before deciding where intake can safely resume.
+## Restart intake and durable receipts
+
+Native line positions are process-local only. No `cursor.json` is read or written;
+old positions are never read. Old file existence is only a one-time migration
+indicator, inert once a reviewed cutoff has been saved. A fresh WeeChat process subscribes before reading all
+available home-buffer lines, then handles later notifications through the same
+serialized intake path. There is no skip-to-tail, message-ID ordering, batch wait,
+or separate replay engine. Bounded server retention can leave a gap while Cuse is
+offline; this change does not recover messages the server no longer holds.
+
+Each input ID contains the configured network endpoint (lowercase hostname, port,
+and TLS mode), canonical channel, and exact case-sensitive opaque server `msgid`.
+Changing the configured endpoint changes its namespace and needs operator review.
+Both WeeChat 3.8 `irc_tag_msgid_VALUE` and newer `irc_tag_msgid=VALUE` forms are
+supported. Message tags and server-time are explicitly negotiated; batch is not
+required. Missing, duplicate, or lossy IDs pause that identity with controlled
+operator guidance. In particular, WeeChat 3.8 replaces commas with semicolons;
+an underscore-form value containing a semicolon cannot be recovered exactly and
+is refused. There is no text/time hash or local native-ID fallback.
+
+Native runtime intake requires `CUSE_DURABLE_IRC=true`. Raw-event receipts use the
+existing SQLite receipt store. A prompt's receipt, inbox admission, and peer-budget
+effect commit atomically. Ignored-input receipts prevent a later mention-setting
+change from making old chatter actionable. Replays are checked before prompt
+framing or command classification changes. Pi sessions, existing pending inbox
+work, goal ledgers, schedules, desktop mappings, and workspaces remain intact.
+
+Commands reserve a durable receipt before any asynchronous/external action, then
+mark it completed afterward. Completed commands are not repeated. An interrupted
+or failed command remains explicitly uncertain and is logged, never automatically
+retried. Inspect its effects before issuing a fresh command. This favors avoiding
+repeated side effects over silently retrying an action that may already have run;
+it is not an exactly-once guarantee for external systems.
+
+Temporary IRC disconnects pause intake and sends while the same WeeChat process
+reconnects. Own kicks remain paused. In-process native gaps/epoch changes still
+stop that identity rather than inventing continuity; the position is discarded
+when the identity closes. Failed durable writes stop intake without advancing
+that position, and uncommitted receipt/inbox/budget writes roll back together.
+
+## One-time legacy migration, subject to review
+
+Legacy IDs hash `[channel, native epoch, native line ID]` and cannot establish
+whether a server `msgid` has already executed. Startup rejects detected legacy
+receipts or old cursor-file existence until an operator approves a cutoff. Nothing automatically resets,
+deletes, converts, or chooses a production boundary.
+
+The minimal rollout choice is `CUSE_WEECHAT_HISTORY_AFTER=<UTC ISO timestamp>`.
+After backing up and inspecting the old state, choose a server-time boundary that
+retires all potentially executed legacy history. This explicitly sacrifices any
+unprocessed retained messages at or before the boundary. Existing durable inbox
+work remains intact and can still resume through Pi's normal recovery path.
+The cutoff commits once into the receipt database, survives later restarts without
+the environment setting, and cannot be silently changed. Every future historical
+input at/before it is ignored. Above it, exact server-ID receipts govern admission.
+A missing/ambiguous server-time tag pauses intake whenever a cutoff applies.
+
+The old cursor file also identifies command-only deployments whose commands never
+wrote an inbox or schedule receipt. Its contents are never read, its position is
+never reused, and after the reviewed migration receipt is saved its existence no
+longer affects startup. Do not delete old files/receipts to bypass the review gate.
+Inspect other restored or manually modified legacy deployments before enabling
+replay; absence of evidence alone does not establish a new installation. An alternative pre-restart mapping would require trustworthy
+native-line-to-server-ID evidence and a separately reviewed migration; no mapping
+framework or automated production migration is included here.
 
 ## Deployment gate
 
@@ -41,7 +102,10 @@ inbox before deciding where intake can safely resume.
 5. Build and run the credential-free tests. Perform live validation only in
    explicitly approved disposable channels, using no real private content.
 6. Confirm visible sender identities, own-message suppression, mention routing,
-   peer budget, disconnected membership, callback failure, history-gap rejection,
-   cursor persistence, and same durable session IDs after controlled recovery.
+   peer budget, disconnected membership, callback failure, in-process gap rejection,
+   fresh-process server-ID replay, and same durable session IDs after recovery.
+7. Verify server `msgid` retention and the channel history mode/retention in approved
+   disposable channels. The loopback CI fixture is not a production replay test.
+8. Review and approve the one-time legacy cutoff and acknowledged bounded gap.
 
 No merge or production deployment is implied by this code change.
