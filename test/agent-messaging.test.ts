@@ -83,7 +83,7 @@ test("terminal mailbox history is preserved while new ordinary prompts have no a
   assert.equal(store.claimNext()?.id, "human-new");
   store.complete("human-new", [{ id: "human-new/reply/0", channel: "#worker", text: "new answer" }]);
   assert.equal(store.listInbox().length, 3);
-  assert.deepEqual(f.db.prepare("SELECT * FROM inbox WHERE id GLOB 'agent-*'").all(), archived);
+  assert.deepEqual(f.db.prepare("SELECT *, reply_target FROM inbox WHERE id GLOB 'agent-*'").all().map(row => ({...row})), archived.map(row => ({...row, reply_target: null})));
   assert.equal(f.db.prepare("SELECT state FROM outbox WHERE id='ordinary-output'").get()!.state, "pending");
  } finally { store.close(); }
 });
@@ -130,7 +130,7 @@ test("completed private-message history is preserved while new direct-message qu
   assert.equal(store.claimNext(), undefined);
   assert.throws(() => store.enqueue({ id: "new-dm", channel: "human", sender: "human", body: "private request" }), directBlocked);
   assert.throws(() => store.enqueueOutput({ id: "new-dm/reply/0", channel: "human", text: "private answer" }), directBlocked);
-  assert.deepEqual(f.db.prepare("SELECT * FROM inbox").all(), archived);
+  assert.deepEqual(f.db.prepare("SELECT *, reply_target FROM inbox").all().map(row => ({...row})), archived.map(row => ({...row, reply_target: null})));
  } finally { store.close(); }
 });
 
