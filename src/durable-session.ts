@@ -32,6 +32,7 @@ import {
 import type { TSchema } from "typebox";
 import { SessionManager } from "../core/session-manager.ts";
 import { convertToLlm } from "../core/messages.ts";
+import { withSafePngImages } from "./provider-images.ts";
 import type {
 	ChannelSessionDeps,
 	OpenChannelSession,
@@ -351,7 +352,7 @@ export class DurableChannelSession {
 					thinkingLevel: thinking,
 					tools,
 					toolExecution: "sequential",
-					toProviderMessages: convertToLlm,
+					toProviderMessages: messages => withSafePngImages(convertToLlm(messages)),
 					systemPrompt: [
 						resourceLoader.getSystemPrompt() ??
 							"You are cuse, an IRC computer-use assistant. Use only this channel's isolated desktop and communication tools. Never repeat an action whose outcome is unknown; inspect its result first.",
