@@ -72,10 +72,10 @@ The core isolation gap from the baseline audit is addressed:
   addresses reach WeeChat; these internal keys are never IRC channel names.
 - Session transcripts, opening maps, durable FIFO lanes, peer budgets, schedules
   and goal ledgers are pair-local. Two sessions may execute model turns independently.
-- State format 2 stores shared-room session bindings under their owning agent.
-  Version 1 is read without copying or moving its home transcript. The first
+- State format 3 stores shared-room session bindings under their owning agent.
+  Versions 1 and 2 are read without copying or moving its home transcript. The first
   successful state write upgrades the file atomically. Older runtimes reject
-  version 2 rather than silently discarding shared-session bindings.
+  version 3 rather than silently discarding shared-session bindings.
 - Existing accepted home-lane work and receipts retain their original IDs and
   ownership, including previously accepted shared-room prompts and reply targets.
   New shared-room work gets a fresh isolated session. Mixed legacy home history
@@ -84,12 +84,63 @@ The core isolation gap from the baseline audit is addressed:
   that agent's existing native identity and the original room. Parallel completed
   turns explicitly re-kick output draining so one result cannot be stranded by
   an overlapping drain finishing.
-- Workspace and desktop remain agent-shared. One desktop MCP client serializes
-  individual desktop calls, while session queues remain independent. Desktop
-  pause/start/delete/recreate and snapshot checks cover all owned lanes.
+- Workspace remains agent-shared. Desktop attachment is optional and separately
+  persisted per session; the backward-compatible default shares the agent-managed
+  desktop. Explicit existing desktop IDs may be shared across agents. One MCP
+  client per actual desktop ID serializes individual calls. Resource lifecycle
+  gates inspect every referencing lane, while session queues remain independent.
 - Model-originated schedules/goals inherit the caller's pair. Shared-room goal
   topic mirroring is disabled because several agents must not overwrite the same
   room topic. Home-room command behavior remains unchanged.
+
+### Optional and shared desktops
+
+A session's transcript, queue, native IRC tools, schedules, durable goals and
+ordinary text skills do not require a desktop. Configure new sessions with:
+
+```dotenv
+CUSE_SESSION_DESKTOP_DEFAULT=none
+CUSE_SESSION_DESKTOPS=[{"agent":"#alpha","channel":"#wchat","desktop":{"id":"desk-existing"}},{"agent":"#beta","channel":"#wchat","desktop":{"id":"desk-existing"}},{"agent":"#alpha","channel":"#research","desktop":"none"}]
+```
+
+Agent names are stable home channels, not display nicknames. Each override is an
+exact agent/actual-room pair; the home session uses the same value for both.
+The default is `shared`, preserving existing managed agent desktops. An override
+may use `"shared"` for that agent-managed desktop, `"none"` for no desktop, or
+`{"id":"…"}` for an already-existing resource. Direct references never create,
+ensure or silently replace a desktop. A fully desktop-free deployment can omit
+`COMPUTERUSE_API_TOKEN`; desktop-backed bindings still require it.
+
+Binding intent is persisted before native work or a schedule is accepted, even
+before the first transcript opens. Restart and default changes do not retarget
+existing sessions or accepted work. Conflicting explicit overrides fail closed.
+Legacy sessions and accepted work retain managed-agent ownership; old transcripts
+are not copied. Schema 3 also supports binding-only sessions and agents awaiting
+their first managed resource provisioning.
+
+This release selects attachment at session creation. It does not expose live
+attach, detach or rebind commands; editing an existing binding in configuration
+is not a migration mechanism, particularly for interrupted tool calls. Desktop-free
+adapters omit desktop MCP tools, desktop-backed skill tools and desktop control;
+native communication, schedules, durable goals and ordinary resource-loader text
+skills remain available. Their goals are supplied as text, without assuming a
+desktop filesystem. `,sessions` and `,desktop ls` show effective attachments.
+
+Explicit references grant use and status, not ownership to stop, delete, recreate
+or fork the resource. Those mutations are refused both from the reference and
+from a managed owner while any explicit reference exists, including configured
+but unopened references. Pending recreation protects both old and replacement
+IDs. Legacy managed-agent lifecycle behavior is retained, and deleting its desktop
+does not close an unrelated desktop-free session. An operator must resolve shared
+resource lifecycle outside this attachment API; removing a config override does
+not discard its persisted reference.
+
+Desktop call serialization is process-local and keyed by actual DesktopId, including
+across agents in this Cuse instance. It does not coordinate external clients or
+other deployments using the same resource.
+Sharing does not merge transcripts, queues, persona or agent workspace. Individual
+calls are serialized, but multi-call browser/file workflows can still interleave.
+This is coordination, not an execution or filesystem security boundary.
 
 ### Deliberate remaining limits
 
@@ -118,7 +169,7 @@ remains the cross-session mechanism, without an in-process mailbox.
 ### Rollout and rollback
 
 Back up the state directory before deploying. Do not deploy a prior runtime on a
-format-2 volume or attempt to downgrade the version field: that would lose the
+format-3 volume or attempt to downgrade the version field: that would lose the
 new bindings. A rollback requires an operator-reviewed state backup and careful
 handling of messages/actions accepted since that backup. This PR neither deploys
 nor changes a live volume. Existing home work is not reset or replayed to create
@@ -131,9 +182,13 @@ room FIFO/context, two agents in one room, shared identity/desktop ownership,
 restart transcript selection, replay deduplication, pending-pair startup, scoped
 schedules, agent-wide lifecycle gates and preserved version-1 pending work.
 `test/session-key-state.test.ts` covers key validation, version-1 preservation,
-format-2 persistence and state boundaries. Existing transport tests intentionally
+format-3 persistence and state boundaries. Existing transport tests intentionally
 continue to assert home *transport identity*; bot routing now converts that
-identity plus actual source room into a session pair.
+identity plus actual source room into a session pair. Optional/shared coverage in
+`test/optional-shared-desktops.test.ts`, `test/optional-desktop-runtime.test.ts` and
+`test/session-desktop-state.test.ts` verifies no-service sessions, restart, binding
+immutability, cross-agent resource sharing and lifecycle safety. Entrypoint tests
+cover explicit desktop-free startup without desktop credentials.
 
 ## Baseline audit: before this implementation
 

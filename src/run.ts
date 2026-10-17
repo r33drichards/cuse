@@ -1,3 +1,4 @@
+import { parseDesktopPolicy } from "./desktop-binding.ts";
 import { PublicError, publicError } from "./public-error.ts";
 /**
  * `cuse`: connect the agent to an IRC network, one session per channel.
@@ -114,6 +115,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	const log = options.log ?? ((line: string) => console.log(line));
 	const env = options.env ?? process.env;
  const fullControl = weechatFullControl(env.WEECHAT_MCP_FULL_CONTROL);
+ const desktopPolicy = parseDesktopPolicy(env.CUSE_SESSION_DESKTOP_DEFAULT, env.CUSE_SESSION_DESKTOPS);
 	const agentDir = getAgentDir();
 	const cwd = command.cwd ?? process.cwd();
 	const config = resolveIrcConfig(command, env, agentDir);
@@ -146,15 +148,16 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 
 	const maxDesktops = Number(env.CUSE_MAX_DESKTOPS ?? 10);
 	if (!Number.isInteger(maxDesktops) || maxDesktops < 1 || maxDesktops > 10) throw new PublicError("maxDesktops");
-	const desktops = new ComputerUseClient({
+	const desktops = env.COMPUTERUSE_API_TOKEN ? new ComputerUseClient({
 		token: env.COMPUTERUSE_API_TOKEN ?? "",
 		baseUrl: env.COMPUTERUSE_API_URL,
 		appUrl: env.COMPUTERUSE_APP_URL,
 		size: env.COMPUTERUSE_SESSION_SIZE ?? "small",
 		namespace: env.CUSE_INSTANCE_ID ?? env.RAILWAY_SERVICE_ID ?? config.server + ":" + config.port + ":" + config.nick,
 		maxDesktops,
-	});
-	await desktops.request("/v1/me");
+	}) : undefined;
+ if (!desktops && (desktopPolicy.defaultBinding.kind !== "none" || Object.values(desktopPolicy.overrides).some(binding => binding.kind !== "none"))) throw new PublicError("tokenRequired");
+ if (desktops) await desktops.request("/v1/me");
 	const botOptions: IrcBotOptions = {
 		...config,
   transport: new WeeChatNetwork({
@@ -164,6 +167,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
    pythonCommand: env.CUSE_WEECHAT_PYTHON ?? "/opt/cuse-weechat/bin/python",
    weechatCommand: env.CUSE_WEECHAT_BIN ?? "weechat-headless", peerChannels, fullControl, mentionChannels: (env.CUSE_WEECHAT_MENTION_CHANNELS ?? "").split(",").map(value => value.trim()).filter(Boolean),
   }),
+  desktopPolicy,
   durable,
   nativeHistoryAfter: env.CUSE_WEECHAT_HISTORY_AFTER,
   goalsEnabled,
