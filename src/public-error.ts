@@ -1,5 +1,6 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ weechatIdentityLocked: "WeeChat identity is already locked. No second process was started; ask the private administrator to verify ownership before recovery. State was preserved.",
  desktopAbsent: "This session has no desktop. Desktop tools and lifecycle commands are unavailable; no desktop was provisioned.",
  desktopShared: "This desktop has an explicit shared reference. Session commands cannot stop, replace or delete it; ask the resource owner to coordinate its lifecycle.",
  desktopBusy: "Another session or desktop operation is using this shared desktop. Wait before changing its lifecycle.",

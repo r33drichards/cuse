@@ -404,7 +404,13 @@ export class WeeChatNetwork implements WeeChatTransport {
    mkdirSync(directory, {recursive: true, mode: 0o700});
    if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error("Unsafe WeeChat identity directory");
    lock = join(directory, "active.lock");
-   mkdirSync(lock, {mode: 0o700}); // A stale lock needs operator review, never a second identity.
+   try { mkdirSync(lock, {mode: 0o700}); }
+   catch (error) {
+    // Only classify this local exclusive-create failure; never expose paths or
+    // arbitrary native/remote error messages, and never remove another owner.
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw Object.assign(new PublicError("weechatIdentityLocked"), {code: "EEXIST"});
+    throw error;
+   }
    locked = true;
    profile = join(directory, "profile");
    mkdirSync(profile, {recursive: true, mode: 0o700});
