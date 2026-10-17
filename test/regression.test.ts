@@ -121,10 +121,10 @@ test('state roundtrip case-normalized records, secure file and atomic rename', (
  const s = new ChannelSessionStore(path); assert.equal(s.get('#missing'), undefined);
  const record = { desktopId: 'd', createdAt: 123, sessionId: 's', sessionFile: 'file' }; s.set('#ROOM', record);
  const restored = new ChannelSessionStore(path); assert.deepEqual(restored.get('#room'), record); assert.deepEqual(restored.entries(), [['#room', record]]);
- assert.equal(statSync(path).mode & 0o777, 0o600); assert.equal(existsSync(path + '.tmp'), false); assert.equal(JSON.parse(readFileSync(path, 'utf8')).version, 1);
+ assert.equal(statSync(path).mode & 0o777, 0o600); assert.equal(existsSync(path + '.tmp'), false); assert.equal(JSON.parse(readFileSync(path, 'utf8')).version, 2);
 }));
 test('corrupt JSON/version/record state errors surface rather than silently reset', () => stateCase(path => {
- for (const text of ['{', '{}', '{"version":2,"channels":{}}', '{"version":1,"channels":{"#a":null}}', '{"version":1,"channels":{"#a":{"desktopId":1,"createdAt":1}}}', '{"version":1,"channels":{"#a":{"desktopId":"d","createdAt":"bad"}}}']) {
+ for (const text of ['{', '{}', '{"version":3,"channels":{}}', '{"version":1,"channels":{"#a":null}}', '{"version":1,"channels":{"#a":{"desktopId":1,"createdAt":1}}}', '{"version":1,"channels":{"#a":{"desktopId":"d","createdAt":"bad"}}}']) {
   writeFileSync(path, text); assert.throws(() => new ChannelSessionStore(path), undefined, text);
  }
 }));
@@ -293,4 +293,30 @@ test('only transient desktop discovery failures qualify for opening retry', () =
  assert.equal(isTransientDesktopDiscoveryError(new TypeError('private',{cause:Object.assign(new Error('private'),{code:'ECONNRESET'})})),true);
  assert.equal(isTransientDesktopDiscoveryError(new TypeError('programming error')),false);
  assert.equal(isTransientDesktopDiscoveryError(new Error('private')),false);
+});
+
+test('agent-shared desktop calls serialize and an aborted queued call never dispatches', async () => {
+ let release!: () => void;
+ const gate = new Promise<void>(resolve => { release = resolve; });
+ let entered!: () => void;
+ const started = new Promise<void>(resolve => { entered = resolve; });
+ const names: string[] = [];
+ const h = rpcHarness(async body => {
+  names.push(body.params.name);
+  if (body.params.name === 'first') { entered(); await gate; }
+  return json({id: body.id, result: {content: []}});
+ });
+ const shared = new DesktopMcp(h.c, 'shared', true);
+ const abort = new AbortController();
+ const first = shared.call('first', {});
+ await started;
+ const cancelled = shared.call('cancelled', {}, abort.signal);
+ const cancelledCheck = assert.rejects(cancelled, /cancelled before dispatch/);
+ const last = shared.call('last', {});
+ abort.abort(new Error('cancelled before dispatch'));
+ await new Promise(resolve => setImmediate(resolve));
+ assert.deepEqual(names, ['first']);
+ release();
+ await Promise.all([first, cancelledCheck, last]);
+ assert.deepEqual(names, ['first', 'last']);
 });

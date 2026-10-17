@@ -41,8 +41,8 @@ export async function createDesktopTools(desktop: DesktopMcp): Promise<ToolDefin
  return remote.filter(tool => ALLOWED_TOOLS.has(tool.name)).map(tool => defineTool({
   name: tool.name, label: tool.name,
   description: tool.description ?? "Call " + tool.name + " on this channel's Computer Use desktop.",
-  promptSnippet: "Use this channel's isolated desktop, browser, shell, files and artifacts.",
-  promptGuidelines: ["All execution belongs to this IRC channel's desktop. Host filesystem tools are unavailable. JavaScript variables do not persist between calls; save reusable code and notes under /data/."],
+  promptSnippet: "Use this agent's shared desktop, browser, shell, files and artifacts.",
+  promptGuidelines: ["The agent's channel sessions share this desktop; coordinate conflicting multi-call workflows. Host filesystem tools are unavailable. JavaScript variables do not persist between calls; save reusable code and notes under /data/."],
   parameters: tool.inputSchema as TSchema,
   executionMode: "sequential",
   async execute(_id, params, signal) {

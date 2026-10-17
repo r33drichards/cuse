@@ -177,6 +177,8 @@ export function parseRpc(text: string, id: number, sse: boolean): Record<string,
 }
 
 export class DesktopMcp {
+ #calls: Promise<unknown> = Promise.resolve();
+ readonly #serializeCalls: boolean;
  readonly client: ComputerUseClient;
  readonly id: string;
  #nextId = 1;
@@ -186,7 +188,8 @@ export class DesktopMcp {
  #handshake?: Promise<void>;
  #hasSkills = false;
  readonly skills: McpSkills;
- constructor(client: ComputerUseClient, id: string) {
+ constructor(client: ComputerUseClient, id: string, serializeCalls = false) {
+  this.#serializeCalls = serializeCalls;
   this.client = client; this.id = id;
   this.skills = new McpSkills((method, params, signal) => this.#toolRequest(method, params, signal, true));
  }
@@ -278,7 +281,15 @@ export class DesktopMcp {
   return tools;
  }
  async call(name: string, args: unknown, signal?: AbortSignal): Promise<RemoteResult> {
-  return await this.#toolRequest("tools/call", { name, arguments: args }, signal) as RemoteResult;
+  if (!this.#serializeCalls) return await this.#toolRequest("tools/call", { name, arguments: args }, signal) as RemoteResult;
+  // One agent shares this client across its room sessions. Serialize desktop
+  // calls, not whole model turns; a queued aborted call must never dispatch.
+  const call = this.#calls.then(async () => {
+   signal?.throwIfAborted();
+   return await this.#toolRequest("tools/call", { name, arguments: args }, signal) as RemoteResult;
+  });
+  this.#calls = call.catch(() => {});
+  return call;
  }
 }
 

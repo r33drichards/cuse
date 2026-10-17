@@ -1,3 +1,4 @@
+import { isSessionKey } from "./session-key.ts";
 import { PublicError } from "./public-error.ts";
 import { PiGoalLedger } from "./pi-goal.ts";
 import { mkdirSync } from "node:fs";
@@ -104,16 +105,16 @@ function assertNoUnresolvedLegacyDirectMessages(db: DatabaseSync): void {
  const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)));
  const direct = "channel NOT GLOB '#*' AND channel NOT GLOB '&*'";
  try {
-  if (tables.has("inbox") && db.prepare(`SELECT 1 FROM inbox WHERE state != 'completed' AND ${direct} LIMIT 1`).get()) throw new Error();
-  if (tables.has("outbox") && db.prepare(`SELECT 1 FROM outbox WHERE state != 'sent' AND ${direct} LIMIT 1`).get()) throw new Error();
-  if (tables.has("schedules") && db.prepare(`SELECT 1 FROM schedules WHERE next_run_at IS NOT NULL AND ${direct} LIMIT 1`).get()) throw new Error();
+  if (tables.has("inbox")) for (const row of db.prepare(`SELECT channel FROM inbox WHERE state != 'completed' AND ${direct}`).all()) if (!isSessionKey(String(row.channel))) throw new Error();
+  if (tables.has("outbox")) for (const row of db.prepare(`SELECT channel FROM outbox WHERE state != 'sent' AND ${direct}`).all()) if (!isSessionKey(String(row.channel))) throw new Error();
+  if (tables.has("schedules")) for (const row of db.prepare(`SELECT channel FROM schedules WHERE next_run_at IS NOT NULL AND ${direct}`).all()) if (!isSessionKey(String(row.channel))) throw new Error();
  } catch {
   throw new PublicError("legacyDirectMessagesMigration");
  }
 }
 
 function assertChannelDestination(channel: string): void {
- if (!channel.startsWith("#") && !channel.startsWith("&")) throw new PublicError("legacyDirectMessagesMigration");
+ if (!channel.startsWith("#") && !channel.startsWith("&") && !isSessionKey(channel)) throw new PublicError("legacyDirectMessagesMigration");
 }
 
 function isLegacyPeerMessage(message: InboxMessage): boolean {
@@ -207,7 +208,7 @@ export class DurableIrcStore {
 	/** Call before acknowledging acceptance. Reusing an ID with different contents is an error. */
 	enqueue(message: InboxMessage, now = Date.now()): boolean {
         assertChannelDestination(message.channel);
-        if (message.replyTarget !== undefined) assertChannelDestination(message.replyTarget);
+        if (message.replyTarget !== undefined) { if (isSessionKey(message.replyTarget)) throw new Error("Reply target must be an IRC channel"); assertChannelDestination(message.replyTarget); }
         if (isLegacyGoalMessage(message)) throw new PublicError("legacyGoalsMigration");
         if (isLegacyPeerMessage(message)) throw new PublicError("legacyPeersMigration");
 		const previous = this.db
@@ -286,7 +287,7 @@ export class DurableIrcStore {
   */
  admitNative(message: InboxMessage, origin: "peer" | "human", legacyPeerTurns = 0, now = Date.now()): NativeAdmission {
   assertChannelDestination(message.channel);
-        if (message.replyTarget !== undefined) assertChannelDestination(message.replyTarget);
+        if (message.replyTarget !== undefined) { if (isSessionKey(message.replyTarget)) throw new Error("Reply target must be an IRC channel"); assertChannelDestination(message.replyTarget); }
   if (origin !== "peer" && origin !== "human") throw new Error("Invalid native input origin");
   if (!Number.isSafeInteger(legacyPeerTurns) || legacyPeerTurns < 0 || legacyPeerTurns > 4) throw new Error("Invalid legacy peer budget");
   const fingerprint = JSON.stringify([origin, message.channel, message.sender, message.body, ...(message.replyTarget ? [message.replyTarget] : [])]);
@@ -364,7 +365,7 @@ export class DurableIrcStore {
 
 	enqueueOutput(message: OutboxMessage): boolean {
         assertChannelDestination(message.channel);
-        if (message.replyTarget !== undefined) assertChannelDestination(message.replyTarget);
+        if (message.replyTarget !== undefined) { if (isSessionKey(message.replyTarget)) throw new Error("Reply target must be an IRC channel"); assertChannelDestination(message.replyTarget); }
 		const previous = this.db
 			.prepare("SELECT * FROM outbox WHERE id=?")
 			.get(message.id);

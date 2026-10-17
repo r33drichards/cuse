@@ -551,7 +551,7 @@ test("active agent can stop and start its own desktop without closing itself",as
 });
 
 
-test("shared mention uses existing home session, persists source reply and never executes control", async () => {
+test("shared mention uses agent-room session, persists source reply and never executes control", async () => {
  const root = mkdtempSync(join(tmpdir(), "cuse-shared-bot-"));
  const opened: string[] = [], prompts: string[] = [];
  const {bot, irc} = app(root, async channel => {
@@ -562,10 +562,10 @@ test("shared mention uses existing home session, persists source reply and never
   const event = {nick: "human", target: "#control", source: "#wchat", message: "@cuse: ,model do-not-change", tags: {msgid: "shared-1"}};
   irc.emit("privmsg", event);
   await until(() => irc.messages.some(m => m.text === "SHARED_REPLY"));
-  assert.deepEqual(opened, ["#control"]);
+  assert.deepEqual(opened, ["session:v1:#control:#wchat"]);
   assert(prompts[0].includes("#wchat")); assert(prompts[0].includes(",model do-not-change"));
   assert.equal(irc.messages.find(m => m.text === "SHARED_REPLY")?.target, "#wchat");
-  const rows = readInbox(root); assert.equal(rows[0].channel, "#control"); assert.equal(rows[0].reply_target, "#wchat");
+  const rows = readInbox(root); assert.equal(rows[0].channel, "session:v1:#control:#wchat"); assert.equal(rows[0].reply_target, "#wchat");
   irc.emit("privmsg", event); await tick(); await tick(); assert.equal(prompts.length, 1);
   irc.emit("privmsg", {...event, message: "ordinary chatter", tags: {msgid: "shared-2"}}); await tick(); assert.equal(prompts.length, 1);
  } finally { await bot.close(); rmSync(root, {recursive: true, force: true}); }
