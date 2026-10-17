@@ -193,7 +193,7 @@ export class DurableDelivery {
 				);
 				activeId = undefined;
 				this.activeMessages.delete(channel);
-				await this.drainOutputs();
+				await this.drainOutputs(true);
 			}
 		} catch (error) {
             if (!opened && isDesktopOpenUnavailable(error) && !this.closing) {

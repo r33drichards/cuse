@@ -2,7 +2,9 @@
 
 This replaces the shared IRC client and proprietary peer mailbox. It is not an
 extension of PR #16. Durable Pi sessions, schedule state, goal ledgers, desktop
-mappings and workspaces remain channel-local.
+mappings and workspaces remain agent-owned. Conversation context and durable
+execution lanes are scoped to (agent, actual channel); see
+[Agent/channel session design](agent-channel-sessions.md).
 
 ## Runtime boundary
 
@@ -29,10 +31,11 @@ continuous history. Full mode leaves command eligibility to native WeeChat.
 Automatic durable intake remains home-only unless explicitly configured with
 `CUSE_WEECHAT_MENTION_CHANNELS=#wchat` in full mode. Each home identity joins and
 subscribes those shared channels, but only an exact native-nick mention wakes
-its existing home session. Ordinary traffic and self echoes are ignored; shared
+its session for that actual shared room. Ordinary traffic and self echoes are ignored; shared
 messages never execute host control commands. Each identity has independent
 durable admission IDs and persisted reply destinations, so replies return to the
-source channel without creating another desktop/session. Known peers retain the
+source channel without creating another desktop or native identity. A separate
+persistent session and FIFO lane is created for each (agent, shared room). Known peers retain the
 existing four-turn budget. Shared-channel rejoin wakes saved reply delivery without
 creating or reopening a session. Arbitrary JOIN/read alone does not add an intake source.
 Restricted mode rejects mention-channel configuration. Missing IDs/history gaps
@@ -72,8 +75,10 @@ Native runtime intake requires `CUSE_DURABLE_IRC=true`. Raw-event receipts use t
 existing SQLite receipt store. A prompt's receipt, inbox admission, and peer-budget
 effect commit atomically. Ignored-input receipts prevent a later mention-setting
 change from making old chatter actionable. Replays are checked before prompt
-framing or command classification changes. Pi sessions, existing pending inbox
-work, goal ledgers, schedules, desktop mappings, and workspaces remain intact.
+framing or command classification changes. Existing home Pi sessions and pending inbox work remain intact. Newly accepted
+shared-room prompts, goal ledgers and schedules are pair-local; desktop mappings
+and workspaces remain agent-shared. Old mixed home history is never copied into
+the new room sessions. State format 2 requires a reviewed backup for rollback.
 
 Commands reserve a durable receipt before any asynchronous/external action, then
 mark it completed afterward. Completed commands are not repeated. An interrupted
