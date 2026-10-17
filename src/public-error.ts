@@ -1,5 +1,9 @@
 /** Only owned codes may supply public guidance; never stringify arbitrary failures. */
 const GUIDANCE = {
+ desktopAbsent: "This session has no desktop. Desktop tools and lifecycle commands are unavailable; no desktop was provisioned.",
+ desktopShared: "This desktop has an explicit shared reference. Session commands cannot stop, replace or delete it; ask the resource owner to coordinate its lifecycle.",
+ desktopBusy: "Another session or desktop operation is using this shared desktop. Wait before changing its lifecycle.",
+ desktopBindingImmutable: "The configured desktop binding conflicts with an existing session. State was preserved; use a new session or an explicitly reviewed migration.",
  nativeMsgidRequired: "WeeChat intake paused: a message has no lossless, unambiguous server msgid. No fallback ID or automatic replay was used.",
  nativeTimeRequired: "WeeChat intake paused: the approved history cutoff requires an unambiguous server-time tag. State was preserved.",
  nativeReplayRequiresDurable: "WeeChat restart replay requires CUSE_DURABLE_IRC=true so accepted inputs and commands have durable receipts.",

@@ -4,7 +4,7 @@ import { publicError } from "./public-error.ts";
  * One IRC channel's agent session.
  *
  * A channel owns a classic `AgentSession` running in the bot's own process,
- * with host tools disabled and this channel's Computer Use desktop and the
+ * with host tools disabled and this channel's optional Computer Use desktop and the
  * native WeeChat tools bound to the channel. Installed pi extensions load
  * normally, which is the point of running on this runtime.
  */
@@ -24,7 +24,7 @@ import type { SettingsManager } from "../core/settings-manager.ts";
 import { requireExplicitModel } from "./model-selection.ts";
 import { runInDomain } from "./fault-domain.ts";
 import { describeToolCall, describeToolResult, toIrcLines } from "./format.ts";
-import { type ChannelDelegate, type CommunicationMcp, assertUniqueToolNames, createCommunicationTools, createControlTools, createDesktopTools } from "./tools.ts";
+import { type ChannelDelegate, type CommunicationMcp, assertUniqueToolNames, createCommunicationTools, createControlTools, createDesktopTools, desktopCapabilityGuidance } from "./tools.ts";
 
 export interface RelayEvents {
 	/** Completed assistant text, already split into IRC lines. */
@@ -45,7 +45,8 @@ export interface ChannelSessionDeps {
 	createResources: (cwd: string) => Promise<{ resourceLoader: ResourceLoader; settingsManager: SettingsManager }>;
 	modelRuntime: ModelRuntime;
 	delegate: ChannelDelegate;
-	desktop: DesktopMcp;
+	/** Optional shared desktop binding, fixed for this session's lifetime. */
+	desktop?: DesktopMcp;
 	/** Isolated native WeeChat MCP client for this channel identity. */
 	communication: CommunicationMcp;
 	log: (line: string) => void;
@@ -83,7 +84,7 @@ function desktopSettings(settings: SettingsManager): SettingsManager {
  });
 }
 
-/** A channel's session plus the desktop it controls. */
+/** A channel's session, optionally bound to an agent-shared desktop. */
 export class ChannelSession {
 	readonly channel: string;
 	readonly sessionId: string;
@@ -138,13 +139,26 @@ export class ChannelSession {
 			sessionManager.setSessionFile(sessionFile);
 		}
 
-		const customTools: ToolDefinition[] = await createDesktopTools(deps.desktop);
+		const desktop = deps.desktop;
+		const customTools: ToolDefinition[] = desktop ? await createDesktopTools(desktop) : [];
 		customTools.push(...await createCommunicationTools(deps.communication));
-		customTools.push(...createControlTools(deps.delegate, channel, sessionId), ...createClassicSkillTools(deps.desktop));
+		customTools.push(...createControlTools(deps.delegate, channel, sessionId));
+		if (desktop) customTools.push(...createClassicSkillTools(desktop));
 		assertUniqueToolNames(customTools);
 
 		const { resourceLoader, settingsManager } = await deps.createResources(deps.cwd);
-		const channelSettings = desktopSettings(settingsManager);
+		const channelSettings = desktop ? desktopSettings(settingsManager) : settingsManager;
+		// Keep the binding description accurate across SDK reloads without changing
+		// the caller's loader or losing its ordinary text skills and prompt context.
+		const channelResources = new Proxy(resourceLoader, {
+			get(target, key) {
+				if (key === "getAppendSystemPrompt") return () => [
+					...target.getAppendSystemPrompt(), desktopCapabilityGuidance(Boolean(desktop)),
+				];
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
 		const configuredModel = await requireExplicitModel(
 			deps.modelRuntime, settingsManager.getDefaultProvider(), settingsManager.getDefaultModel(),
 		);
@@ -157,7 +171,7 @@ export class ChannelSession {
 			modelRuntime: deps.modelRuntime,
 			model: restoredModel ?? configuredModel,
 			settingsManager: channelSettings,
-			resourceLoader,
+			resourceLoader: channelResources,
 			sessionManager,
 			// Explicit allowlist survives reload; neither host nor spawn/merge tools are enabled.
 			noTools: "builtin",

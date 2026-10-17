@@ -121,10 +121,10 @@ test('state roundtrip case-normalized records, secure file and atomic rename', (
  const s = new ChannelSessionStore(path); assert.equal(s.get('#missing'), undefined);
  const record = { desktopId: 'd', createdAt: 123, sessionId: 's', sessionFile: 'file' }; s.set('#ROOM', record);
  const restored = new ChannelSessionStore(path); assert.deepEqual(restored.get('#room'), record); assert.deepEqual(restored.entries(), [['#room', record]]);
- assert.equal(statSync(path).mode & 0o777, 0o600); assert.equal(existsSync(path + '.tmp'), false); assert.equal(JSON.parse(readFileSync(path, 'utf8')).version, 2);
+ assert.equal(statSync(path).mode & 0o777, 0o600); assert.equal(existsSync(path + '.tmp'), false); assert.equal(JSON.parse(readFileSync(path, 'utf8')).version, 3);
 }));
 test('corrupt JSON/version/record state errors surface rather than silently reset', () => stateCase(path => {
- for (const text of ['{', '{}', '{"version":3,"channels":{}}', '{"version":1,"channels":{"#a":null}}', '{"version":1,"channels":{"#a":{"desktopId":1,"createdAt":1}}}', '{"version":1,"channels":{"#a":{"desktopId":"d","createdAt":"bad"}}}']) {
+ for (const text of ['{', '{}', '{"version":4,"channels":{}}', '{"version":1,"channels":{"#a":null}}', '{"version":1,"channels":{"#a":{"desktopId":1,"createdAt":1}}}', '{"version":1,"channels":{"#a":{"desktopId":"d","createdAt":"bad"}}}']) {
   writeFileSync(path, text); assert.throws(() => new ChannelSessionStore(path), undefined, text);
  }
 }));

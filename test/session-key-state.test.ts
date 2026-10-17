@@ -52,7 +52,7 @@ test("encoded pair grammar rejects malformed, ambiguous, and same-as-home forms"
  assert.equal(sessionAddress(sessionKey("#" + "a".repeat(100), "#" + "b".repeat(100))).channel.length, 101);
 });
 
-test("v1 home migration preserves identity and only writes v2 on commit", () => fixture(path => {
+test("v1 home migration preserves identity and only writes v3 on commit", () => fixture(path => {
  const original = JSON.stringify({ version: 1, channels: { "#Home": { ...agent, ...home } } });
  writeFileSync(path, original);
  const store = new ChannelSessionStore(path);
@@ -62,7 +62,7 @@ test("v1 home migration preserves identity and only writes v2 on commit", () => 
  assert.deepEqual(store.sessionEntries(), [["#home", home]]);
  store.setSession(sessionKey("#home", "#room"), shared);
  const disk = JSON.parse(readFileSync(path, "utf8"));
- assert.equal(disk.version, 2);
+ assert.equal(disk.version, 3);
  assert.deepEqual(disk.channels["#home"], { ...agent, ...home, sessions: { "#room": shared } });
  assert.deepEqual(new ChannelSessionStore(path).getSession("#home"), home);
  assert.deepEqual(new ChannelSessionStore(path).getSession(sessionKey("#HOME", "#ROOM")), shared);
@@ -123,7 +123,7 @@ test("loaded shared room names normalize and duplicate aliases or home entries f
  }
  writeFileSync(path, JSON.stringify({ version: 2, channels: { "&home": { ...agent, sessions: { "#room": shared } } } }));
  assert.throws(() => new ChannelSessionStore(path), /Invalid cuse session/);
- for (const version of [0, 3, "2", null]) {
+ for (const version of [0, 4, "2", null]) {
   writeFileSync(path, JSON.stringify({ version, channels: {} }));
   assert.throws(() => new ChannelSessionStore(path), /Invalid cuse state file/);
  }

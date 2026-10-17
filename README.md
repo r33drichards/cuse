@@ -175,7 +175,10 @@ put credentials/data on a desktop that every participant is authorized to
 access; use separate accounts/channels where needed. Viewer links and
 conversation archives should be treated as sensitive.
 
-Joining creates/reconciles a desktop; channel activity can wake it. Leaving
+By default joining creates/reconciles an agent desktop; channel activity can wake it.
+Desktop-free sessions and explicit existing desktop sharing are supported through
+`CUSE_SESSION_DESKTOP_DEFAULT` and `CUSE_SESSION_DESKTOPS`; see the
+[attachment configuration and safety limits](docs/agent-channel-sessions.md#optional-and-shared-desktops). Leaving
 a channel retains its desktop and conversation. Commands include desktop,
 sleep and wake. The planned ,fork command copies the conversation PLUS an
 independent disk snapshot: use ,fork #target, or bare ,fork for an auto-named

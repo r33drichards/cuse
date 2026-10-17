@@ -7,7 +7,10 @@ startup_failed() { printf '%s\n' 'cuse startup failed; ask the private administr
 set -E
 trap startup_failed ERR
 shopt -s execfail
-[[ -n "${COMPUTERUSE_API_TOKEN:-}" && -n "${IRC_SERVER:-}" ]] || startup_failed
+[[ -n "${IRC_SERVER:-}" ]] || startup_failed
+# A fully desktop-free runtime needs no Computer Use credential. Strict policy
+# validation and any desktop-backed requirement are checked by run.ts.
+[[ -n "${COMPUTERUSE_API_TOKEN:-}" || "${CUSE_SESSION_DESKTOP_DEFAULT:-shared}" == "none" ]] || startup_failed
 export PI_CODING_AGENT_DIR=/data/agent
 export IRC_NICK="${IRC_NICK:-cuse}" IRC_CONTROL_CHANNEL="${IRC_CONTROL_CHANNEL:-#cuse}"
 mkdir -p /data/agent
