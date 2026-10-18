@@ -30,8 +30,11 @@ export function settledDiagnostic(result: unknown): string {
  if (typeof message !== "string") return "provider-unclassified";
  // Bound processing and never include any part of the input in the result.
  const text = message.slice(0, 16_384).toLowerCase();
+ // Cancellation and integrity failures take precedence over transient-looking text.
+ if (/\babort(?:ed)?\b|\bcancel(?:led|ed)\b/.test(text)) return "provider-cancelled";
+ if (/corrupt|integrity failure|invariant/.test(text)) return "provider-state-invalid";
  if (/context_length_exceeded|maximum context length|context window|too many tokens|input is too long|prompt is too long/.test(text)) return "provider-context-limit";
- if (/insufficient_quota|quota exceeded|billing_hard_limit/.test(text)) return "provider-quota";
+ if (/insufficient_quota|quota exceeded|billing|out of budget|available balance|gousagelimiterror|freeusagelimiterror/.test(text)) return "provider-quota";
  // Codex rewrites several quota/rate-limit responses into this same sentence.
  if (/usage_limit_reached|usage_not_included|usage limit/.test(text)) return "provider-usage-limit";
  if (/provider is not configured|no api key for provider|oauth (?:refresh failed|auth derivation failed|refresh returned a token that expires too soon)|api key auth failed|credential store (?:read|modify) failed|failed to extract accountid from token|invalid_api_key|incorrect api key|invalid api key|invalid access token|token (?:has )?expired|unauthorized|authentication_error|\b401\b/.test(text)) return "provider-auth";

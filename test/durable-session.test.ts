@@ -105,7 +105,7 @@ test("committed operation survives reopen without another provider request", asy
 		await s.abort();
 		assert.match(
 			(await s.promptDurable("aborted-op", "cancel")).text,
-			/Operation failed/,
+			/Paused: the operation was cancelled/,
 		);
         const fenced=await s.lane.accept({kind:"prompt",operationId:"fenced-current",prompt:"do not touch successor"},ctx);
         assert.equal(fenced.ok,true);
@@ -113,7 +113,7 @@ test("committed operation survives reopen without another provider request", asy
         assert.equal((await s.lane.inspectExecution(ctx)).current?.id,"fenced-current");
         assert.equal((await s.lane.inspectExecution(ctx)).current?.status,"open");
         await s.abortDurable("fenced-current");
-        assert.match((await s.promptDurable("fenced-current","do not touch successor")).text,/Operation failed/);
+        assert.match((await s.promptDurable("fenced-current","do not touch successor")).text,/Paused: the operation was cancelled/);
         assert.equal(faux.state.callCount,2);
 		faux.setResponses([fauxAssistantMessage("after cancellation")]);
 		assert.equal(

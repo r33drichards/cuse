@@ -102,7 +102,7 @@ test("reopen preserves failed receipts and pending operations without replaying 
  let session = await f.open();
  const currentTools = await session.lane.getActiveTools(ctx);
  await session.lane.setActiveTools([...currentTools, ...legacyNames], ctx);
- assert.match((await session.promptDurable("failed-acceptance", "Harmless acceptance request")).text, /Operation failed/);
+ assert.match((await session.promptDurable("failed-acceptance", "Harmless acceptance request")).text, /Needs input:/);
  const failed = await session.lane.getResult("failed-acceptance", ctx);
  assert.equal(failed?.status, "failed");
  assert.equal(failed?.error?.code, "configured_tools_unavailable");
@@ -119,7 +119,7 @@ test("reopen preserves failed receipts and pending operations without replaying 
  assert.deepEqual(await session.lane.getResult("failed-acceptance", ctx), failed);
  assert.equal(f.faux.state.callCount, 0);
  assert.deepEqual(f.calls, []);
- assert.match((await session.promptDurable("failed-acceptance", "Do not retry")).text, /Operation failed/);
+ assert.match((await session.promptDurable("failed-acceptance", "Do not retry")).text, /Needs input:/);
  assert.equal(f.faux.state.callCount, 0);
  await session.abortDurable("pending");
  f.faux.setResponses([fauxAssistantMessage("New request works")]);
@@ -145,7 +145,7 @@ test("missing aliases are not retired without the complete full-control registry
  session = await f.open([...sharedTools, tool("weechat_command_manifest")]);
  const active = await session.lane.getActiveTools(ctx);
  assert.ok(legacyNames.every(name => active.includes(name)));
- assert.match((await session.promptDurable("incomplete", "No provider request")).text, /Operation failed/);
+ assert.match((await session.promptDurable("incomplete", "No provider request")).text, /Needs input:/);
  assert.equal(f.faux.state.callCount, 0);
 });
 
@@ -169,7 +169,7 @@ test("captured generation configuration stays immutable across registry migratio
  assert.deepEqual(await session.store.getValue(operationState("captured"), ctx), captured);
  const active = await session.lane.getActiveTools(ctx);
  assert.ok(legacyNames.every(name => !active.includes(name)));
- assert.match((await session.promptDurable("captured", "Do not rewrite prepared work")).text, /Operation failed/);
+ assert.match((await session.promptDurable("captured", "Do not rewrite prepared work")).text, /Needs input:/);
  const result = await session.lane.getResult("captured", ctx);
  assert.equal(result?.error?.code, "configured_tools_unavailable");
  assert.deepEqual(result?.error?.details, { tools: legacyNames });
@@ -185,7 +185,7 @@ for (const missingName of ["unknown_host_tool", "weechat_unknown", "weechat_cmd_
   session = await f.open();
   assert.ok((await session.lane.getActiveTools(ctx)).includes(missingName));
   assert.equal((await session.lane.getActiveTools(ctx)).includes("weechat_msg"), false);
-  assert.match((await session.promptDurable("unknown", "Do not request provider")).text, /Operation failed/);
+  assert.match((await session.promptDurable("unknown", "Do not request provider")).text, /Needs input:/);
   const result = await session.lane.getResult("unknown", ctx);
   assert.equal(result?.error?.code, "configured_tools_unavailable");
   assert.deepEqual(result?.error?.details, { tools: [missingName] });

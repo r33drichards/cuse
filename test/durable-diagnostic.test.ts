@@ -61,3 +61,10 @@ test('tool diagnostics expose only the fixed boundary category', () => {
  assert.equal(toolDiagnostic(secret), 'host-tool-failed');
  assert.equal(toolDiagnostic({toString() {throw new Error(secret);}}), 'host-tool-failed');
 });
+
+test('cancellation and integrity failures take precedence over retry-looking messages', () => {
+ assert.equal(settledDiagnostic(failed('request cancelled after timeout 503')), 'provider-cancelled');
+ assert.equal(settledDiagnostic(failed('state corruption after network error')), 'provider-state-invalid');
+ assert.equal(settledDiagnostic(failed('401 unauthorized; try again 503')), 'provider-auth');
+ assert.equal(settledDiagnostic(failed('403 forbidden; network error')), 'provider-permission');
+});
