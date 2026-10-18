@@ -79,6 +79,9 @@ validate packaging.
 Defaults: nick prefix cuse, control channel #cuse, addressed-only responses,
 https://api.computeruse.site, viewer https://app.computeruse.site, small
 sessions, and maximum 10 cuse desktops within this instance namespace. The
+optional `COMPUTERUSE_MCP_PROFILE` is sent only when creating a desktop and is
+required to match any remembered desktop. Profile contents and credentials stay
+operator-controlled in Computer Use; cuse receives only the profile name.
 limit is not a global account quota or spending cap. Choose a stable unique
 CUSE_INSTANCE_ID if service identity might change; otherwise RAILWAY_SERVICE_ID
 is used when available, falling back to IRC server:port:nick. Preserve it

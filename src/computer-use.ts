@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { McpSkills, SKILLS_EXTENSION, SkillError, boundedSkillResponse } from "./mcp-skills.ts";
 
 export interface Desktop {
- id: string; name: string; state: string; message?: string; policy?: { state: string };
+ id: string; name: string; state: string; message?: string; policy?: { state: string }; mcpProfile?: string;
 }
 export interface RemoteTool { name: string; description?: string; inputSchema: Record<string, unknown> }
 export interface RemoteResult { content?: unknown[]; isError?: boolean; structuredContent?: unknown }
@@ -48,7 +48,7 @@ export class UnsupportedDesktopForkError extends PublicError {
  }
 }
 export interface ComputerUseOptions {
- token: string; baseUrl?: string; appUrl?: string; size?: string; namespace: string;
+ token: string; baseUrl?: string; appUrl?: string; size?: string; mcpProfile?: string; namespace: string;
  maxDesktops?: number; fetch?: typeof fetch; wakeTimeoutMs?: number;
 }
 
@@ -100,6 +100,12 @@ export class ComputerUseClient {
  async get(id: string): Promise<Desktop> {
   return (await this.request("/v1/sessions/" + encodeURIComponent(id))).json() as Promise<Desktop>;
  }
+ #requireConfiguredProfile(desktop: Desktop): Desktop {
+  if ((desktop.mcpProfile ?? "") !== (this.options.mcpProfile ?? "")) {
+   throw new PublicError("desktopProfileMismatch");
+  }
+  return desktop;
+ }
  async list(): Promise<Desktop[]> {
   return (await (await this.request("/v1/sessions")).json() as Desktop[] | null) ?? [];
  }
@@ -111,7 +117,7 @@ export class ComputerUseClient {
  }
  /** Serialized provisioning and stable names allow reconciliation after an ambiguous create timeout. */
  ensure(room: string, id?: string, fresh = false, beforeCreate?: () => void): Promise<Desktop> {
-  if (id) return this.get(id);
+  if (id) return this.get(id).then(desktop => this.#requireConfiguredProfile(desktop));
   const work = this.#provisioning.then(async () => {
    const sessions = await this.list();
    const name = this.name(room);
@@ -119,14 +125,14 @@ export class ComputerUseClient {
    if (existing.length > 1) throw new PublicError("duplicate");
    if (existing[0]) {
     if (fresh) throw new PublicError("targetExists");
-    return existing[0];
+    return this.#requireConfiguredProfile(existing[0]);
    }
    if (sessions.filter(s => s.name.startsWith(this.prefix)).length >= (this.options.maxDesktops ?? 10)) {
     throw new PublicError("quota");
    }
    beforeCreate?.();
    const response = await this.request("/v1/sessions", {
-    method: "POST", body: JSON.stringify({ name, size: this.options.size ?? "small" }),
+    method: "POST", body: JSON.stringify({ name, size: this.options.size ?? "small", ...(this.options.mcpProfile ? { mcpProfile: this.options.mcpProfile } : {}) }),
    }).catch((error: unknown) => {
     // API create validation/auth/admission rejects before making anything.
     // storeError's 409 no_capacity and unsupported policy also guarantee no create.
@@ -134,7 +140,7 @@ export class ComputerUseClient {
     if (error instanceof HttpError && [400, 401, 403, 409].includes(error.status)) throw new DesktopCreateRejectedError();
     throw error;
    });
-   return response.json() as Promise<Desktop>;
+   return this.#requireConfiguredProfile(await response.json() as Desktop);
   });
   this.#provisioning = work.catch(() => {});
   return work;
