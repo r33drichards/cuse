@@ -256,3 +256,47 @@ test('unsolicited provider abort never becomes a transient retry', async t => {
  assert.ok(!f.visible.some(line => /Retrying/.test(line)));
  assert.ok(![...f.logs, ...f.visible].join(' ').includes('SECRET_CANARY'));
 });
+
+for (const errorMessage of [
+ 'The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)',
+ '413 {"error":{"type":"request_too_large","message":"Request exceeds the maximum size"}}',
+ 'Please reduce the length of the messages or completion',
+]) {
+ test('provider-specific overflow still compacts before resuming: ' + errorMessage.split(' ')[0], async t => {
+  const f = await fixture(t);
+  const session = await f.open();
+  await session.harness.setCompactionSettings({enabled: true, reserveTokens: 1000, keepRecentTokens: 1}, ctx);
+  let compactions = 0;
+  session.harness.events.on('compaction_start', () => {compactions++;});
+  f.faux.setResponses([
+   fauxAssistantMessage([], {stopReason: 'error', errorMessage: errorMessage + ' ' + secret}),
+   fauxAssistantMessage('A concise summary of the test conversation.'),
+   fauxAssistantMessage('Recovered after compaction'),
+  ]);
+  assert.equal((await session.promptDurable('overflow', 'A sufficiently long test prompt that can be compacted.')).text, 'Recovered after compaction');
+  assert.equal(compactions, 1);
+  assert.equal(f.faux.state.callCount, 3);
+  assert.ok(!f.visible.some(line => line.startsWith('Retrying:')));
+  assert.ok(![...f.logs, ...f.visible].join(' ').includes('SECRET_CANARY'));
+ });
+}
+
+for (const errorMessage of ['rate limit: too many tokens', 'Throttling error: too many tokens', 'Service unavailable: too many tokens']) {
+ test('overflow exclusion retains bounded transient retry: ' + errorMessage.split(':')[0], async t => {
+  const f = await fixture(t);
+  const session = await f.open();
+  await session.harness.setCompactionSettings({enabled: true, reserveTokens: 1000, keepRecentTokens: 1}, ctx);
+  await session.harness.setRetryPolicy({enabled: true, maxRetries: 3, baseDelayMs: 0}, ctx);
+  let compactions = 0;
+  session.harness.events.on('compaction_start', () => {compactions++;});
+  f.faux.setResponses([
+   fauxAssistantMessage([], {stopReason: 'error', errorMessage: errorMessage + ' ' + secret}),
+   fauxAssistantMessage('Recovered without compaction'),
+  ]);
+  assert.equal((await session.promptDurable('throttle', 'A sufficiently long test prompt that can be compacted.')).text, 'Recovered without compaction');
+  assert.equal(compactions, 0);
+  assert.equal(f.faux.state.callCount, 2);
+  assert.ok(f.visible.some(line => line.startsWith('Retrying:')));
+  assert.ok(![...f.logs, ...f.visible].join(' ').includes('SECRET_CANARY'));
+ });
+}

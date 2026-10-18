@@ -7,13 +7,15 @@ checkpoint. Reopening a session does not reset a prepared generation's budget.
 Provider SDK retries are disabled at the request hook, including reopened work.
 No outer loop starts a second operation to retry a failed one.
 
-Failed provider messages are classified into a fixed allowlist before the harness
+Returned failed provider messages are classified into a fixed allowlist before the harness
 makes its retry decision. Only rate-limit, server, and transport categories are
 eligible. Cancellation, authentication/permission, quota/billing, invalid requests,
 state-integrity failures, and unknown failures are not automatically retried.
 Classification uses bounded provider text because the harness's stored operation
 error has no structured provider error code; it is conservative, not a root-cause
-diagnosis. Existing context-overflow compaction remains owned by the harness.
+diagnosis. Before redacting provider text, the adapter uses the harness's full
+context-overflow predicate, including its rate-limit exclusions. Overflow recovery
+and its one-compaction limit remain owned by the harness.
 
 The live IRC progress path reports a committed retry schedule. Intermediate
 assistant errors do not announce terminal failure. Final delivery and later
@@ -32,3 +34,8 @@ Goal accounting is unchanged: intermediate retries do not fault a goal, while
 terminal failure or cancellation pauses it. Process restart still pauses active
 goals and revokes their old continuation inputs. This change does not add automatic
 goal restart, automatic tool replay, or recovery from storage corruption.
+
+The existing orphaned-provider-generation path may regenerate an interrupted
+model response within its saved attempt budget. That is distinct from retrying a
+returned unclassified error; it does not replay a dispatched tool or revive a
+revoked goal continuation.

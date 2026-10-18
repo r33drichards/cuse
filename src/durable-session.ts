@@ -24,6 +24,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import {
 	getSupportedThinkingLevels,
+	isContextOverflow,
 	type Api,
 	type Model,
 } from "@earendil-works/pi-ai";
@@ -146,7 +147,7 @@ export class DurableChannelSession {
 		harness.hooks.on("before_request", () => ({streamOptions: {maxRetries: 0}}), {id: "cuse.retry-owner"});
 		harness.hooks.on("after_response", (event) => {
 			if (event.message.stopReason !== "error") return;
-			return {message: {...event.message, errorMessage: safeProviderError(event.message.errorMessage)}};
+			return {message: {...event.message, errorMessage: safeProviderError(event.message.errorMessage, isContextOverflow(event.message))}};
 		}, {id: "cuse.provider-error"});
 		harness.events.on("retry_scheduled", (event) => {
 			// Only this committed event establishes that another attempt will run.

@@ -19,8 +19,14 @@ const PROVIDER_ERRORS: Readonly<Record<string, string>> = {
  "provider-state-invalid": "state integrity failure",
 };
 
-export function safeProviderError(message: unknown): string {
+export function safeProviderError(message: unknown, contextOverflow: boolean): string {
  const category = settledDiagnostic({status: "failed", error: {code: "assistant_error", message}});
+ // Preserve the harness's full provider-specific overflow matcher and its
+ // throttling exclusions before discarding text. Diagnostics alone are not
+ // an overflow decision. Explicit stop/access failures still fail closed.
+ if (["provider-cancelled", "provider-state-invalid", "provider-auth", "provider-permission", "provider-quota", "provider-usage-limit"].includes(category)) return PROVIDER_ERRORS[category]!;
+ if (contextOverflow) return PROVIDER_ERRORS["provider-context-limit"]!;
+ if (category === "provider-context-limit") return "Unclassified provider failure";
  return PROVIDER_ERRORS[category] ?? "Unclassified provider failure";
 }
 
