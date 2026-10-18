@@ -184,7 +184,7 @@ test("desktop-free reopen removes historical desktop selections and preserves un
  await session.lane.setActiveTools([...names, "unknown_missing_tool", ...desktopNames], ctx);
  session = await f.openDurable();
  assert.deepEqual(await session.lane.getActiveTools(ctx), [...names, "unknown_missing_tool"]);
- assert.match((await session.promptDurable("unknown", "Do not hide missing capabilities")).text, /Operation failed/);
+ assert.match((await session.promptDurable("unknown", "Do not hide missing capabilities")).text, /Needs input:/);
  assert.equal((await session.lane.getResult("unknown", ctx))?.error?.code, "configured_tools_unavailable");
  assert.equal(f.faux.state.callCount, requests);
 });

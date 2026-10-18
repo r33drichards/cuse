@@ -1,3 +1,4 @@
+import { recoveryGuidance, safeProviderError } from "./durable-recovery.ts";
 import { sessionAddress } from "./session-key.ts";
 import { createDurableSkillTools, SKILL_GUIDANCE, SKILL_TOOL_NAMES } from "./skill-tools.ts";
 import { durableDiagnostic, settledDiagnostic, toolDiagnostic } from "./durable-diagnostic.ts";
@@ -23,6 +24,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import {
 	getSupportedThinkingLevels,
+	isContextOverflow,
 	type Api,
 	type Model,
 } from "@earendil-works/pi-ai";
@@ -48,7 +50,7 @@ import {
 	modelContent,
 } from "./tools.ts";
 import { describeToolCall, describeToolResult, toIrcLines } from "./format.ts";
-import { PublicError, publicError } from "./public-error.ts";
+import { PublicError } from "./public-error.ts";
 import { createPiGoalTools } from "./pi-goal-tools.ts";
 import type { GoalTurnSnapshot, PiGoalDelegate } from "./pi-goal.ts";
 import { budgetLimitPrompt, continuationPrompt } from "./pi-goal-prompts.ts";
@@ -140,6 +142,21 @@ export class DurableChannelSession {
 		this.thinking = thinking;
   this.log=log;
 		this.goal = goal;
+		// The durable harness owns retries. Provider SDK retries would multiply
+		// attempts and hide cancellation/backoff from the persisted checkpoint.
+		harness.hooks.on("before_request", () => ({streamOptions: {maxRetries: 0}}), {id: "cuse.retry-owner"});
+		harness.hooks.on("after_response", (event) => {
+			if (event.message.stopReason !== "error") return;
+			return {message: {...event.message, errorMessage: safeProviderError(event.message.errorMessage, isContextOverflow(event.message))}};
+		}, {id: "cuse.provider-error"});
+		harness.events.on("retry_scheduled", (event) => {
+			// Only this committed event establishes that another attempt will run.
+			// Durable delivery suppresses text relays until final settlement; use
+			// its live progress path, as tool activity does, for retry status.
+			for (const relay of this.#relays) relay.tool(
+				`Retrying: temporary provider failure; attempt ${event.attempt} of ${event.maxAttempts}.`,
+			);
+		});
 		if (goal) {
 			const requestGoals = new Map<string, GoalTurnSnapshot>();
 			// before_request precedes turn_start. Capture before later async hooks
@@ -172,12 +189,10 @@ export class DurableChannelSession {
 		}
 		harness.events.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
-			const lines = toIrcLines(
-				event.message.stopReason === "error" ||
-					event.message.stopReason === "aborted"
-					? publicError(undefined)
-					: textOf(event.message.content),
-			);
+			// message_end precedes retry/settlement. An intermediate error is not
+			// terminal; promptDurable/completedReply report the committed outcome.
+			if (event.message.stopReason === "error" || event.message.stopReason === "aborted") return;
+			const lines = toIrcLines(textOf(event.message.content));
 			if (lines.length)
 				for (const relay of this.#relays) relay.text(lines, event.entryId);
 		});
@@ -192,7 +207,7 @@ export class DurableChannelSession {
 					describeToolResult(
 						event.toolName,
 						event.isError
-							? publicError(undefined)
+							? "Tool step failed; the error was returned to the agent. Check uncertain outcomes before retrying."
 							: textOf(event.result.content),
 						event.isError,
 					),
@@ -325,17 +340,14 @@ export class DurableChannelSession {
 							_invocation,
 							context,
 						) {
+							let result;
 							try {
-								const result = await desktop!.call(
-									t.name,
-									params,
-									context.abortSignal,
-								);
-								if (result.isError) throw new Error();
-								return { content: modelContent(result), details: {} };
+								result = await desktop!.call(t.name, params, context.abortSignal);
 							} catch {
-								throw new Error(publicError(undefined));
+								throw new PublicError("remoteTool");
 							}
+							if (result.isError) throw new PublicError("toolReported");
+							return { content: modelContent(result), details: {} };
 						},
 					}),
 				);
@@ -356,6 +368,8 @@ export class DurableChannelSession {
 					thinkingLevel: thinking,
 					tools,
 					toolExecution: "sequential",
+					retry: {enabled: true, maxRetries: 3, baseDelayMs: 1000},
+					streamOptions: {maxRetries: 0},
 					toProviderMessages: messages => withSafePngImages(convertToLlm(messages)),
 					systemPrompt: [
                         `Your agent identity is bound to ${sessionAddress(channel).agent}. This session belongs only to IRC channel ${sessionAddress(channel).channel}; reply there unless explicitly directed elsewhere. Other channel sessions do not share your transcript.`,
@@ -522,7 +536,7 @@ export class DurableChannelSession {
 			}
 			if (result.status === "failed" || result.status === "aborted") {
                 this.reportDiagnostic(settledDiagnostic(result));
-                return { text: publicError(undefined), steered: false };
+                return { text: recoveryGuidance(result), steered: false };
             }
 			const entry = result.tipId
 				? await this.store.getEntry(result.tipId, ctx)
@@ -537,7 +551,7 @@ export class DurableChannelSession {
 					entry?.type === "message" && entry.message.role === "assistant"
 						? entry.message.stopReason === "error" ||
 							entry.message.stopReason === "aborted"
-							? publicError(undefined)
+							? recoveryGuidance({status: entry.message.stopReason === "aborted" ? "aborted" : "failed", error: {code: "assistant_error", message: entry.message.errorMessage}})
 							: textOf(entry.message.content)
 						: "",
 				steered: false,
@@ -564,7 +578,7 @@ export class DurableChannelSession {
 		const result = await this.lane.getResult(operationId, ctx);
 		if (result?.status === "failed" || result?.status === "aborted") {
 			this.reportDiagnostic(settledDiagnostic(result));
-			return { text: publicError(undefined) };
+			return { text: recoveryGuidance(result) };
 		}
 		const entry = result?.tipId
 			? await this.store.getEntry(result.tipId, ctx)

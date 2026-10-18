@@ -11,7 +11,7 @@ const GUIDANCE = {
  nativeReplayMigration: "Legacy WeeChat receipts require a reviewed history cutoff before server-ID replay. State was preserved; choose CUSE_WEECHAT_HISTORY_AFTER only after reviewing the bounded history gap.",
 
  legacyDirectMessagesMigration: "Unfinished direct-message work requires operator inspection before channel-only WeeChat startup. State was preserved.",
- communicationTool: "WeeChat MCP tool failed; no automatic replay was attempted.",
+ communicationTool: "WeeChat MCP tool failed; its outcome may be unknown. Inspect the affected service or ask the user before repeating an action. No automatic replay was attempted.",
  legacyPeersMigration: "Saved work from the removed peer mailbox requires operator inspection before startup. State was preserved; no peer work was replayed.",
  sessionBusy: "A turn is running; wait before manual compaction.",
  goalUnavailable: "Pi Goal requires CUSE_GOALS_ENABLED=true and CUSE_DURABLE_IRC=true.",
@@ -30,7 +30,8 @@ const GUIDANCE = {
  tokenRequired: "COMPUTERUSE_API_TOKEN is required; ask the private administrator to configure it privately.",
  maxDesktops: "CUSE_MAX_DESKTOPS must be an integer from 1 to 10",
  httpsRequired: "Computer Use URLs must use HTTPS",
- remoteTool: "Computer Use tool failed; remote details were withheld. No automatic replay was attempted.",
+ toolReported: "The tool reported an execution error. Inspect the script and current state, then correct the next step; do not repeat side effects without checking their outcome; remote details were withheld.",
+ remoteTool: "Computer Use tool failed; its outcome may be unknown and remote details were withheld. Inspect the affected service or ask the user before repeating an action. No automatic replay was attempted.",
  generic: "Operation failed. Ask the private administrator to check configuration; details were withheld.",
  forkUnavailable: "Disk snapshot fork is unavailable: Computer Use has no validated backend fork API yet. No desktop or conversation was copied.",
  modelSettings: "Explicit model settings require both provider and model; ask the private administrator to correct configuration. No fallback was selected.",
