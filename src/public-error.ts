@@ -17,6 +17,7 @@ const GUIDANCE = {
  goalUnavailable: "Pi Goal requires CUSE_GOALS_ENABLED=true and CUSE_DURABLE_IRC=true.",
  legacyGoalsMigration: "Saved work from the removed goal engine requires operator inspection before this runtime can start. State was preserved; no old goal work was replayed.",
  desktopCreateRejected: "Replacement creation was rejected; no desktop was created. The original desktop and queue state were restored. Check permissions or available capacity, then retry.",
+ desktopProfileMismatch: "The remembered desktop does not have the configured MCP profile. State was preserved; ask the private administrator to stop it, apply the profile, and resume it.",
  desktopCreateUncertain: "Replacement creation may still be in progress. No matching desktop is visible yet. Wait and repeat the same confirmed command, or ask the private administrator to inspect it; no second create will be sent.",
  desktopOpening: "Desktop is still starting or temporarily unavailable. Your messages are saved; I will retry automatically.",
  scheduleUnavailable: "Scheduling requires CUSE_DURABLE_IRC=true and a running bot.",

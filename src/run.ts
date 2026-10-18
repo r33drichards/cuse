@@ -153,6 +153,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 		baseUrl: env.COMPUTERUSE_API_URL,
 		appUrl: env.COMPUTERUSE_APP_URL,
 		size: env.COMPUTERUSE_SESSION_SIZE ?? "small",
+		mcpProfile: env.COMPUTERUSE_MCP_PROFILE,
 		namespace: env.CUSE_INSTANCE_ID ?? env.RAILWAY_SERVICE_ID ?? config.server + ":" + config.port + ":" + config.nick,
 		maxDesktops,
 	}) : undefined;

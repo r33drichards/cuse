@@ -43,6 +43,22 @@ test("provisioning is serialized with stable names and an absolute cap", async (
  assert.throws(() => new ComputerUseClient({token: "fake", namespace: "test", maxDesktops: 11}), /1 to 10/);
 });
 
+test("configured MCP profile is requested and required on remembered desktops", async () => {
+ const bodies: unknown[] = [];
+ const created = new ComputerUseClient({token: "fake", namespace: "profile", mcpProfile: "nocodb", fetch: async (_url, init) => {
+  if (init?.method === "POST") { bodies.push(JSON.parse(String(init.body))); return Response.json({id:"new", name:"n", state:"starting", mcpProfile:"nocodb"}); }
+  return Response.json([]);
+ }});
+ await created.ensure("#one");
+ assert.deepEqual(bodies, [{name: created.name("#one"), size:"small", mcpProfile:"nocodb"}]);
+ const mismatch = new ComputerUseClient({token:"fake", namespace:"profile", mcpProfile:"nocodb", fetch: async () => Response.json([{id:"old", name:created.name("#one"), state:"running"}])});
+ await assert.rejects(mismatch.ensure("#one"), /does not have the configured MCP profile/);
+ const unexpected = new ComputerUseClient({token:"fake", namespace:"profile", fetch: async () => Response.json([{id:"old", name:created.name("#one"), state:"running", mcpProfile:"nocodb"}])});
+ await assert.rejects(unexpected.ensure("#one"), /does not have the configured MCP profile/);
+ const remembered = new ComputerUseClient({token:"fake", namespace:"profile", mcpProfile:"nocodb", fetch: async () => Response.json({id:"old", name:created.name("#one"), state:"running"})});
+ await assert.rejects(remembered.ensure("#one", "old"), /does not have the configured MCP profile/);
+});
+
 test("remembered 404 or outage never provisions or changes persisted identity", async () => {
  const dir = mkdtempSync(join(tmpdir(), "cuse-state-"));
  try {
