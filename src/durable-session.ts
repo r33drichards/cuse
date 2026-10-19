@@ -105,6 +105,7 @@ export async function createDurableCommunicationTools(communication: Communicati
 export class DurableChannelSession {
 	readonly #relays = new Set<RelayEvents>();
 	#depth = 0;
+	#clearingContext = false;
 	readonly channel: string;
 	readonly sessionId: string;
 	readonly sessionFile: string;
@@ -460,7 +461,7 @@ export class DurableChannelSession {
 		catch { /* An unavailable logger cannot fail or replay an operation. */ }
 	}
 	get busy(): boolean {
-		return this.#depth > 0;
+		return this.#depth > 0 || this.#clearingContext;
 	}
 
 	/** Restart recovery can settle a revoked goal operation but cannot run its
@@ -474,6 +475,7 @@ export class DurableChannelSession {
 		operationId: string,
 		body: string,
 	): Promise<{ text: string; steered: boolean }> {
+        if (this.#clearingContext) throw new PublicError("contextClearing");
         if (operationId.startsWith("goal/")) throw new PublicError("legacyGoalsMigration");
 		this.#depth++;
 		try {
@@ -644,6 +646,30 @@ export class DurableChannelSession {
 		);
 		return this.thinking;
 	}
+ /** Move to the empty root; immutable entries and operation receipts remain recoverable. */
+ async clearContext(): Promise<void> {
+  if (this.busy) throw new PublicError("contextClearBusy");
+  if (this.goal?.read()) throw new PublicError("contextClearGoal");
+  this.#clearingContext = true;
+  try {
+   const watch = await this.lane.watch(ctx);
+   try {
+    if (watch.snapshot.operation || watch.snapshot.queues.length) throw new PublicError("contextClearBusy");
+    if (watch.snapshot.tipId === null) return;
+   } finally { watch.unsubscribe(); }
+   // Drive only navigation. navigateTree() also admits queued follow-ups, which a
+   // context reset must never execute. No summary and no model request are made.
+   const admitted = await this.lane.accept({ kind: "navigation", targetId: null, options: { summarize: false } }, ctx);
+   if (!admitted.ok) {
+    if (admitted.error._tag === "LaneBusy") throw new PublicError("contextClearBusy");
+    throw admitted.error;
+   }
+   const result = await this.lane.drive({ operationId: admitted.value.operationId }, ctx);
+   if (!result.ok) throw result.error;
+   if (result.value.kind !== "settled" || result.value.outcome.status !== "completed"
+    || await this.lane.getTipId(ctx) !== null) throw new PublicError("generic");
+  } finally { this.#clearingContext = false; }
+ }
 	async compact(instructions: string | null): Promise<void> {
         if(this.busy)throw new PublicError("sessionBusy");
 		const result = await this.lane.compact(
