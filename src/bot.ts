@@ -39,6 +39,7 @@ export type BotSession = Pick<ChannelSession,
  cycleThinkingLevel(): ReturnType<ChannelSession["cycleThinkingLevel"]> | Promise<ReturnType<ChannelSession["cycleThinkingLevel"]>>;
  promptDurable?(id: string, body: string): Promise<{text: string; steered: boolean}>;
  clearContext?(): Promise<void>;
+ stop?(): Promise<void>;
  close?(): Promise<void>;
  suspend?(): Promise<void>;
 };
@@ -144,6 +145,8 @@ export class IrcPiBot implements ChannelDelegate {
 	readonly #opening = new Map<string, Promise<BotSession>>();
  readonly #desktopChanging = new Set<string>();
  readonly #clearingContext = new Set<string>();
+ readonly #stopEpochs = new Map<string, number>();
+ readonly #stoppingSessions = new Map<string, Promise<void>>();
 	readonly #sendQueues = new Map<string, (lines: string[]) => Promise<void>>();
 	/** Recent extension faults per channel, to keep the log readable. */
 	readonly #faults = new Map<string, number[]>();
@@ -196,7 +199,15 @@ export class IrcPiBot implements ChannelDelegate {
    notice: (channel, text) => this.say(channel, text),
   });
   if (this.#durableStore) this.#delivery = new DurableDelivery(this.#durableStore, {
-   canOpen: (channel) => !this.#clearingContext.has(channel) && !this.#desktopBlocked(channel),
+   canOpen: (channel) => !this.#clearingContext.has(channel) && !this.#desktopBlocked(channel)
+    && !(this.#sessions.has(channel) && this.#durableStore!.needsStop(channel)),
+   stopSession: async channel => {
+    const session = this.#sessions.get(channel) ?? await this.#opening.get(channel);
+    if (session) {
+     await (session.stop ? session.stop() : session.abort());
+     this.#durableStore!.finishStop(channel);
+    }
+   },
    open: async (channel) => {
     const session = await this.#sessionFor(channel);
     if (!session.promptDurable) throw new Error("Durable queue requires durable session adapter");
@@ -209,7 +220,7 @@ export class IrcPiBot implements ChannelDelegate {
       }
       throw error;
      }
-    }, abort: () => session.suspend ? session.suspend() : session.abort()};
+    }, stop: () => session.stop ? session.stop() : session.abort(), abort: () => session.suspend ? session.suspend() : session.abort()};
    },
    canDeliver: (channel) => this.#connected && this.#joined.has(sessionAddress(channel).agent),
    deliver: async (channel, text, replyTarget) => {
@@ -490,7 +501,13 @@ export class IrcPiBot implements ChannelDelegate {
 				await created.abort();
 				throw new PublicError("recovery");
 			}
-			this.#store.setSession(key, { sessionId: created.sessionId, sessionFile: created.sessionFile });
+			if (this.#durableStore?.needsStop(key)) {
+    try {
+     await (created.stop ? created.stop() : created.abort());
+     this.#durableStore.finishStop(key);
+    } catch (error) { await created.close?.(); throw error; }
+   }
+   this.#store.setSession(key, { sessionId: created.sessionId, sessionFile: created.sessionFile });
 			return created;
 		})();
 		this.#opening.set(key, open);
@@ -508,6 +525,7 @@ export class IrcPiBot implements ChannelDelegate {
 
 	async #onMessage(event: WeeChatMessage): Promise<void> {
   const room = event.target.toLowerCase();
+  const stopEpoch = this.#stopEpochs.get(room) ?? 0;
   const ownNick = this.#transport.nickFor(room);
   if (event.nick.toLowerCase() === ownNick.toLowerCase() || !isChannel(room)) return;
   const raw = {id: event.id, channel: room, sender: event.nick, body: event.message};
@@ -559,14 +577,17 @@ export class IrcPiBot implements ChannelDelegate {
    } else {
     if ((record.peerTurns ?? 0) >= 4) return;
     this.#store.set(room, {...record, peerTurns: (record.peerTurns ?? 0) + 1});
-    await (await this.#sessionFor(room)).prompt(body);
+    await this.#stoppingSessions.get(room);
+    const session = await this.#sessionFor(room);
+    if ((this.#stopEpochs.get(room) ?? 0) !== stopEpoch) return;
+    await session.prompt(body);
    }
    return;
   }
 
 		const mentionRequired = this.#store.get(room)?.mentionRequired ?? this.#options.addressedOnly;
 		const toggle = parseCommand(event.message);
-		if (toggle?.kind === "toggle-mention") {
+		if (toggle?.kind === "toggle-mention" || toggle?.kind === "stop") {
 			await this.#nativeCommand(event, () => this.#onCommand(toggle, room, control, commandId, event.nick));
 			return;
 		}
@@ -598,7 +619,9 @@ export class IrcPiBot implements ChannelDelegate {
   }
   if (record?.peerTurns) this.#store.set(room, {...record, peerTurns: 0});
 		if (this.#desktopBlocked(room)) { this.say(room, "Desktop is paused; use ,desktop start before sending a prompt."); return; }
-		const session = await this.#sessionFor(room);
+		await this.#stoppingSessions.get(room);
+  const session = await this.#sessionFor(room);
+  if ((this.#stopEpochs.get(room) ?? 0) !== stopEpoch) return;
 		if (session.busy) this.say(room, `(steering the running turn)`);
 		await this.#promptWithNotice(session, room, room, event.nick, body);
 	}
@@ -657,6 +680,8 @@ export class IrcPiBot implements ChannelDelegate {
 		try { return await work; } finally { this.#provisioning.delete(key); }
 	}
 
+ isStoppedOperation(id: string): boolean { return this.#durableStore?.isStopped(id) ?? false; }
+
  /** Reset only an idle durable conversation. New intake stays durable behind the gate. */
  async #clearContext(room: string): Promise<void> {
   if (!this.#durableStore || !this.#delivery) throw new PublicError("contextClearUnavailable");
@@ -681,6 +706,7 @@ export class IrcPiBot implements ChannelDelegate {
 
 	/** Session commands act on the room's own session. */
 	async #onSessionCommand(command: IrcCommand, room: string): Promise<boolean> {
+  const stopEpoch = this.#stopEpochs.get(room) ?? 0;
   if (command.kind === "model" || command.kind === "models") {
    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
    const query = command.query.trim();
@@ -712,6 +738,7 @@ export class IrcPiBot implements ChannelDelegate {
     await requireExplicitModel(this.#options.modelRuntime, "openrouter", model.id);
     if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
     const session = await this.#sessionFor(room);
+   if ((this.#stopEpochs.get(room) ?? 0) !== stopEpoch || this.#stoppingSessions.has(room)) return true;
     if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
     await session.setModel(model);
     this.say(room, `model → openrouter/${model.id}`);
@@ -742,6 +769,7 @@ export class IrcPiBot implements ChannelDelegate {
    await requireExplicitModel(runtime, chosen.provider, chosen.modelId);
    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
    const session = await this.#sessionFor(room);
+   if ((this.#stopEpochs.get(room) ?? 0) !== stopEpoch || this.#stoppingSessions.has(room)) return true;
    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
    await session.setModel(chosen.model);
    this.say(room, `model → ${chosen.provider}/${chosen.modelId}`);
@@ -756,6 +784,7 @@ export class IrcPiBot implements ChannelDelegate {
 		}
 		if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
 		const session = await this.#sessionFor(room);
+   if ((this.#stopEpochs.get(room) ?? 0) !== stopEpoch || this.#stoppingSessions.has(room)) return true;
 		if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
 		switch (command.kind) {
 			case "thinking": {
@@ -774,18 +803,33 @@ export class IrcPiBot implements ChannelDelegate {
 			}
 			case "compact":
 				await session.compact(command.instructions);
-				this.say(room, "compacted");
+				if ((this.#stopEpochs.get(room) ?? 0) === stopEpoch) this.say(room, "compacted");
 				return true;
 			case "reload":
 				await session.reload();
-				this.say(room, "extensions reloaded");
+				if ((this.#stopEpochs.get(room) ?? 0) === stopEpoch) this.say(room, "extensions reloaded");
 				return true;
 		}
 		return false;
 	}
 
 	async #onCommand(command: IrcCommand, room: string, control: boolean, commandId: string = randomUUID(), sender = ""): Promise<void> {
-		if (command.kind === "clear") { await this.#clearContext(room); return; }
+		if (command.kind === "stop") {
+   if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+   this.#stopEpochs.set(room, (this.#stopEpochs.get(room) ?? 0) + 1);
+   const stop = this.#delivery ? this.#delivery.stopChannel(room).then(() => {}) : (async () => {
+    const session = this.#sessions.get(room) ?? await this.#opening.get(room);
+    if (session) await (session.stop ? session.stop() : session.abort());
+   })();
+   this.#stoppingSessions.set(room, stop);
+   try { await stop; }
+   finally { if (this.#stoppingSessions.get(room) === stop) this.#stoppingSessions.delete(room); }
+   this.#goalTopics?.refresh(room);
+   this.say(room, "Stopped current and queued work. History and desktop retained; goal paused. Future prompts and schedules still run. Actions already sent may still finish.");
+   return;
+  }
+  if (this.#stoppingSessions.has(room) || (this.#sessions.has(room) && this.#durableStore?.needsStop(room))) throw new PublicError("sessionBusy");
+  if (command.kind === "clear") { await this.#clearContext(room); return; }
 		if (await this.#onSessionCommand(command, room)) return;
 		if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
 		switch (command.kind) {

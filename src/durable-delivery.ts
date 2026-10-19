@@ -9,12 +9,14 @@ export interface DurablePromptSession {
 		body: string,
 	): Promise<{ text: string; steered: boolean }>;
 	abort(): Promise<void>;
+ stop?(): Promise<void>;
 }
 export interface DurableDeliveryHandlers {
 	open(channel: string): Promise<DurablePromptSession>;
 	deliver(channel: string, text: string, replyTarget?: string): Promise<void>;
 	canDeliver?(channel: string): boolean;
  canOpen?(channel: string): boolean;
+ stopSession?(channel: string): Promise<void>;
 	report(channel: string, error: unknown): void;
 }
 
@@ -25,6 +27,7 @@ export class DurableDelivery {
 	private readonly workers = new Map<string, Promise<void>>();
 	private readonly sessions = new Map<string, DurablePromptSession>();
 	private readonly blocked = new Set<string>();
+ private readonly stopping = new Map<string, Promise<number>>();
  private readonly openRetries = new Map<string, ReturnType<typeof setTimeout>>();
  private readonly openAttempts = new Map<string, number>();
 	private readonly activeMessages = new Map<string, InboxMessage>();
@@ -48,6 +51,33 @@ export class DurableDelivery {
  }
 
 	isActive(channel: string): boolean { return this.workers.has(channel); }
+
+ /** Fence this lane before the first await; new intake waits, old intake is tombstoned. */
+ stopChannel(channel: string): Promise<number> {
+  const ids = this.store.stopChannel(channel);
+  const current = this.stopping.get(channel);
+  if (current) return current;
+  const timer = this.openRetries.get(channel);
+  if (timer) clearTimeout(timer);
+  this.openRetries.delete(channel);
+  this.openAttempts.delete(channel);
+  const work = Promise.resolve().then(async () => {
+   if (this.handlers.stopSession) await this.handlers.stopSession(channel);
+   else if (this.sessions.has(channel)) {
+    const session = this.sessions.get(channel)!;
+    if (!session.stop) throw new Error("Session stop is unavailable");
+    await session.stop();
+   }
+   await this.workers.get(channel);
+   this.blocked.delete(channel);
+   return ids.length;
+  }).catch(error => { this.blocked.add(channel); throw error; }).finally(() => {
+   this.stopping.delete(channel);
+   this.kick(channel);
+  });
+  this.stopping.set(channel, work);
+  return work;
+ }
 
 	getMessage(id: string): InboxMessage | undefined {
 		return this.store.listInbox().find((message) => message.id === id);
@@ -126,7 +156,7 @@ export class DurableDelivery {
 	}
 
 	private kick(channel: string): void {
-		if (this.closing || this.handlers.canOpen?.(channel) === false || this.blocked.has(channel) || this.openRetries.has(channel) || this.workers.has(channel))
+		if (this.stopping.has(channel) || this.closing || this.handlers.canOpen?.(channel) === false || this.blocked.has(channel) || this.openRetries.has(channel) || this.workers.has(channel))
 			return;
 		// Recovery must run first; newer messages cannot overtake an uncertain older operation.
 		if (
@@ -172,7 +202,7 @@ export class DurableDelivery {
 				return;
 			}
 			this.sessions.set(channel, session);
-			while (!this.closing && this.handlers.canOpen?.(channel) !== false) {
+			while (!this.blocked.has(channel) && !this.stopping.has(channel) && !this.closing && this.handlers.canOpen?.(channel) !== false) {
 				const message = this.store.claimNext(channel);
 				if (!message) return;
 				activeId = message.id;
@@ -196,7 +226,9 @@ export class DurableDelivery {
 				await this.drainOutputs(true);
 			}
 		} catch (error) {
-            if (!opened && isDesktopOpenUnavailable(error) && !this.closing) {
+            if (this.stopping.has(channel) || (activeId && this.store.isStopped(activeId))) {
+                // User cancellation wins a late provider/tool failure; do not retry it.
+            } else if (!opened && isDesktopOpenUnavailable(error) && !this.closing) {
                 const attempt = this.openAttempts.get(channel) ?? 0;
                 this.openAttempts.set(channel, attempt + 1);
                 const delay = [5000, 15000, 30000, 60000][Math.min(attempt, 3)];
@@ -256,6 +288,7 @@ export class DurableDelivery {
 			[...this.sessions.values()].map((session) => session.abort()),
 		);
 		await Promise.allSettled([...this.workers.values()]);
+        await Promise.allSettled([...this.stopping.values()]);
 		if (this.outputWorker) await this.outputWorker;
 		this.drained = true;
 	}

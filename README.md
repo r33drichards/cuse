@@ -5,6 +5,7 @@ The cuse IRC agent and its complete vendored Pi runtime live together on `main`.
 - [`src/`](src/): cuse commands, durable sessions, scheduling, agent messaging, and desktop integration.
 - [`vendor/pi/packages/`](vendor/pi/packages/): Pi agent loop, durable harness, model providers, and supporting packages.
 - [`test/`](test/): cuse regression and packaging tests.
+- [Stop current work](docs/stop-command.md): `,stop` interrupts current/queued work and pauses the goal, retaining history and desktop.
 - [Clear conversation context](docs/context-reset.md): `,clear` in durable mode retains history, desktop, files and schedules.
 - [Agent/channel session design](docs/agent-channel-sessions.md): target model, implementation boundaries, migration and pinned baseline audit.
 - [`vendor/README.md`](vendor/README.md): upstream revision and vendor update notes; upstream licenses are preserved.
