@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
- WeeChatNetwork, WeeChatProcessError, startNativeWeeChat, WEECHAT_PROTOCOL_VERSION, weechatBuffer, weechatResource, weechatNick, weechatNicks, weechatLaunchArguments,
+ WeeChatNetwork, WeeChatProcessError, startNativeWeeChat, WEECHAT_PROTOCOL_VERSION, weechatBuffer, weechatResource, weechatNick, weechatNicks, weechatLaunchArguments, privateIrcPacing,
  nativeMessageId, nativeTag, weechatFullControl, type NativeMcpClient, type NativeSnapshot, type NativeWeeChatSession, type WeeChatIdentity, type WeeChatMessage,
 } from "../src/weechat.ts";
 import {DurableIrcStore} from "../.runtime/pi/packages/coding-agent/src/cuse/durable-store.ts";
@@ -916,4 +916,31 @@ test("shared rejoin signals delivery readiness without opening another home", as
   assert.deepEqual(env.joined, ["#alpha"]);
   assert.equal(env.faults.length, 0);
  } finally { await env.cleanup(); }
+});
+
+
+test("private-server pacing is strict opt-in and preserves the normal default", () => {
+ for (const value of [undefined, "0"]) assert.deepEqual(privateIrcPacing(value), {disableOutgoingThrottle: false, sendSpacingMs: 350});
+ assert.deepEqual(privateIrcPacing("1"), {disableOutgoingThrottle: true, sendSpacingMs: 0});
+ for (const value of ["", "true", "false", "2", " 1"]) assert.throws(() => privateIrcPacing(value), /must be 0 or 1/);
+});
+
+test("private pacing is reapplied only to docker after recreation and before connection", () => {
+ const base = {server: "localhost", port: 16667, tls: false, nick: "cuse", profileRoot: "/tmp/test", upstreamDir: "/app/weechat"};
+ const identity = {channel: "#alpha", channels: ["#alpha"], nick: "cuse-alpha", profile: "/tmp/identity", signal: new AbortController().signal};
+ const normal = weechatLaunchArguments(base, identity);
+ assert(!normal.some(arg => arg.includes("anti_flood")));
+ assert.deepEqual(weechatLaunchArguments({...base, disableOutgoingThrottle: false}, identity), normal);
+ const enabled = weechatLaunchArguments({...base, disableOutgoingThrottle: true}, identity);
+ const commands = enabled.filter(arg => arg.includes("anti_flood"));
+ assert.deepEqual(commands, [
+  "/eval ${if:${info:version_number} >= 0x04020000?/set irc.server.docker.anti_flood 0:/set irc.server.docker.anti_flood_prio_high 0}",
+  "/eval ${if:${info:version_number} < 0x04020000?/set irc.server.docker.anti_flood_prio_low 0:}",
+ ]);
+ for (const command of commands) {
+  assert(enabled.indexOf(command) > enabled.findIndex(arg => arg.startsWith("/server add docker ")));
+  assert(enabled.indexOf(command) < enabled.indexOf("/connect docker"));
+ }
+ assert(!enabled.join(" ").includes("server_default"));
+ assert.deepEqual(weechatLaunchArguments({...base, disableOutgoingThrottle: true}, identity), enabled);
 });

@@ -17,7 +17,7 @@ import { SettingsManager } from "../core/settings-manager.ts";
 import { type IrcBotOptions, IrcPiBot } from "./bot.ts";
 import { requireExplicitModel } from "./model-selection.ts";
 import { OpenRouterCatalog } from "./openrouter-catalog.ts";
-import { WeeChatNetwork, weechatFullControl } from "./weechat.ts";
+import { WeeChatNetwork, weechatFullControl, privateIrcPacing } from "./weechat.ts";
 import { ComputerUseClient } from "./computer-use.ts";
 import { clearFaultingDomain, faultingDomain, installFaultDomains } from "./fault-domain.ts";
 
@@ -116,6 +116,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	const log = options.log ?? ((line: string) => console.log(line));
 	const env = options.env ?? process.env;
  const fullControl = weechatFullControl(env.WEECHAT_MCP_FULL_CONTROL);
+ const pacing = privateIrcPacing(env.CUSE_PRIVATE_IRC_NO_THROTTLE);
  const desktopPolicy = parseDesktopPolicy(env.CUSE_SESSION_DESKTOP_DEFAULT, env.CUSE_SESSION_DESKTOPS);
 	const agentDir = getAgentDir();
 	const cwd = command.cwd ?? process.cwd();
@@ -164,7 +165,9 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
  if (desktops) await desktops.request("/v1/me");
 	const botOptions: IrcBotOptions = {
 		...config,
+  sendSpacingMs: pacing.sendSpacingMs,
   transport: new WeeChatNetwork({
+   disableOutgoingThrottle: pacing.disableOutgoingThrottle,
    server: config.server, port: config.port, tls: config.tls, nick: config.nick,
    profileRoot: join(config.statePath, "..", "weechat"),
    upstreamDir: env.CUSE_WEECHAT_DIR ?? "/opt/cuse-vendor/weechat-mcp",

@@ -596,3 +596,14 @@ JSON/SSE responses are also bounded. Oversized or unverifiable catalogs fail
 with a controlled message. A desktop without the capability reports skills
 unavailable and retains its ordinary desktop tools. Skill files are not materialized as host files or shared between channels;
 verified text is retained in the ordinary per-channel conversation history.
+
+### Private IRC outgoing pacing
+
+For a private IRC server you control, opt in with `CUSE_PRIVATE_IRC_NO_THROTTLE=1`.
+This removes cuse's 350 ms outgoing delay and disables WeeChat's anti-flood delay
+only on cuse's `docker` server connection, for every channel identity. Settings
+are reapplied after server recreation on each restart, using the appropriate
+options for WeeChat before/after 4.2. The default (unset or `0`) retains pacing.
+Other values fail startup. No IRC server-side protections or other networks are
+changed. Replies can arrive in bursts; independent server-side limits still apply.
+To restore pacing after using this option, set it to `0` and restart cuse.

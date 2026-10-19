@@ -73,6 +73,8 @@ export interface WeeChatNetworkOptions {
  peerChannels?: Record<string, readonly string[]>;
  /** Startup policy; defaults to WEECHAT_MCP_FULL_CONTROL (unset means true). */
  fullControl?: boolean;
+ /** Explicit private-server opt-in; never changes server defaults or other networks. */
+ disableOutgoingThrottle?: boolean;
  /** Explicit shared channels whose addressed messages wake this home identity. */
  mentionChannels?: readonly string[];
  joinTimeoutMs?: number;
@@ -250,6 +252,13 @@ function assertContinuity(snapshot: NativeSnapshot, cursor?: Cursor): void {
  if (snapshot.last_assigned_id > Math.max(last, newest)) throw new Error("WeeChat unread native lines were cleared; operator recovery required");
 }
 
+/** Strict opt-in shared by the application queue and native IRC connection. */
+export function privateIrcPacing(value: string | undefined): {disableOutgoingThrottle: boolean; sendSpacingMs: number} {
+ if (value !== undefined && value !== "0" && value !== "1") throw new Error("CUSE_PRIVATE_IRC_NO_THROTTLE must be 0 or 1");
+ const disableOutgoingThrottle = value === "1";
+ return {disableOutgoingThrottle, sendSpacingMs: disableOutgoingThrottle ? 0 : 350};
+}
+
 /** Validated startup arguments; unrelated environment is never inherited. */
 export function weechatLaunchArguments(options: WeeChatNetworkOptions, identity: WeeChatIdentity): string[] {
  const script = resolve(options.upstreamDir, "weechat_mcp.py");
@@ -259,6 +268,12 @@ export function weechatLaunchArguments(options: WeeChatNetworkOptions, identity:
   "/set plugins.var.python.mcp.buffers " + identity.channels.map(weechatBuffer).join(","),
   "/server del docker",
   `/server add docker ${options.server}/${options.port} -${options.tls ? "tls" : "notls"}`,
+  // Reapply after server recreation on every identity startup. WeeChat 4.2
+  // replaced the two seconds-based settings with one milliseconds-based setting.
+  ...(options.disableOutgoingThrottle ? [
+   "/eval ${if:${info:version_number} >= 0x04020000?/set irc.server.docker.anti_flood 0:/set irc.server.docker.anti_flood_prio_high 0}",
+   "/eval ${if:${info:version_number} < 0x04020000?/set irc.server.docker.anti_flood_prio_low 0:}",
+  ] : []),
   "/set irc.server.docker.tls_verify on",
   "/set irc.server.docker.command \"\"",
   "/set irc.server.docker.password \"\"",
