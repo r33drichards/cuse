@@ -21,7 +21,8 @@ import { DurableIrcStore, type StoredSchedule } from "./durable-store.ts";
 import { DurableDelivery } from "./durable-delivery.ts";
 import type { ScheduleRequest } from "./schedule-commands.ts";
 
-import { filterModels } from "./session-commands.ts";
+import { matchModels } from "./session-commands.ts";
+import { requireExplicitModel } from "./model-selection.ts";
 import { ChannelSessionStore } from "./state.ts";
 import type { ChannelDelegate } from "./tools.ts";
 import type { PiGoalDelegate } from "./pi-goal.ts";
@@ -676,8 +677,38 @@ export class IrcPiBot implements ChannelDelegate {
 
 	/** Session commands act on the room's own session. */
 	async #onSessionCommand(command: IrcCommand, room: string): Promise<boolean> {
+  if (command.kind === "model" || command.kind === "models") {
+   if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+   const runtime = this.#options.modelRuntime;
+   const choices = runtime.getModels().map(model => ({ provider: model.provider, modelId: model.id, name: model.name, model }));
+   const { browse, matches } = matchModels(choices, command.query);
+   if (command.kind === "models" || browse || matches.length !== 1) {
+    const available = await runtime.getAvailable();
+    const ready = new Set(available.map(model => `${model.provider}/${model.id}`));
+    const lines = matches.slice(0, 15).map(choice => {
+     const id = `${choice.provider}/${choice.modelId}`;
+     return `${id}${ready.has(id) ? "" : " [private setup required]"}`;
+    });
+    this.say(room, [
+     ...(command.kind === "model" && !command.query && this.#sessions.has(room) ? [`model: ${this.#sessions.get(room)!.modelLabel()} · thinking: ${this.#sessions.get(room)!.thinkingLevel()}`] : []),
+     `${command.kind === "model" && !browse && matches.length > 1 ? "Ambiguous model; no change. " : ""}Installed models (${matches.length}):`,
+     ...lines,
+     matches.length > 15 ? "Showing first 15. Narrow the query with ,models <provider/id or name>." : "Select with ,model <provider/model-id>.",
+     ...(matches.some(choice => choice.provider === "openrouter" && !ready.has(`${choice.provider}/${choice.modelId}`))
+      ? ["OpenRouter needs private administrator setup: OPENROUTER_API_KEY or pi /login openrouter. Separate OpenRouter billing applies. Never post keys or login codes in IRC."] : []),
+    ]);
+    return true;
+   }
+   const chosen = matches[0]!;
+   await requireExplicitModel(runtime, chosen.provider, chosen.modelId);
+   if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+   const session = await this.#sessionFor(room);
+   if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+   await session.setModel(chosen.model);
+   this.say(room, `model → ${chosen.provider}/${chosen.modelId}`);
+   return true;
+  }
 		if (
-			command.kind !== "model" &&
 			command.kind !== "thinking" &&
 			command.kind !== "compact" &&
 			command.kind !== "reload"
@@ -688,35 +719,6 @@ export class IrcPiBot implements ChannelDelegate {
 		const session = await this.#sessionFor(room);
 		if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
 		switch (command.kind) {
-			case "model": {
-				const available = await this.#options.modelRuntime.getAvailable();
-				const choices = available.map((model) => ({
-					provider: model.provider,
-					modelId: model.id,
-					name: model.name,
-					model,
-				}));
-				const matches = filterModels(choices, command.query);
-				if (command.query.length === 0) {
-					const names = matches.slice(0, 15).map((choice) => `${choice.provider}/${choice.modelId}`);
-					this.say(room, [
-						`model: ${session.modelLabel()} · thinking: ${session.thinkingLevel()}`,
-						`available (${matches.length}): ${names.join(", ")}${matches.length > 15 ? ", …" : ""}`,
-					]);
-					return true;
-				}
-				const chosen = matches[0];
-				if (!chosen) {
-					this.say(room, `no model matches "${command.query}"`);
-					return true;
-				}
-				await session.setModel(chosen.model);
-				this.say(
-					room,
-					`model → ${chosen.provider}/${chosen.modelId}${matches.length > 1 ? ` (${matches.length - 1} other match${matches.length > 2 ? "es" : ""})` : ""}`,
-				);
-				return true;
-			}
 			case "thinking": {
 				const supported = session.availableThinkingLevels();
 				if (command.level !== undefined && !supported.includes(command.level)) {

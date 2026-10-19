@@ -111,3 +111,20 @@ test("desktop delete is idempotent on absent desktop and does not invent POST en
  await client.delete("old/id");
  assert.deepEqual(requests, ["DELETE https://api.computeruse.site/v1/sessions/old%2Fid"]);
 });
+
+
+test("model matching prefers exact qualified IDs and preserves provider browsing", async () => {
+ const { matchModels, parseSessionCommand } = await import("../src/session-commands.ts");
+ const models = [
+  { provider: "openrouter", modelId: "openai/gpt-5", name: "GPT 5" },
+  { provider: "openrouter", modelId: "openai/gpt-5-mini", name: "GPT 5 mini" },
+  { provider: "openai-codex", modelId: "gpt-5", name: "GPT 5" },
+ ];
+ assert.deepEqual(parseSessionCommand("models", " openrouter "), {kind:"models",query:"openrouter"});
+ assert.equal(matchModels(models,"openrouter").browse,true);
+ assert.equal(matchModels(models,"openrouter").matches.length,2);
+ assert.deepEqual(matchModels(models,"OPENROUTER/OPENAI/GPT-5").matches,[models[0]]);
+ assert.deepEqual(matchModels(models,"mini").matches,[models[1]]);
+ assert.equal(matchModels(models,"GPT").matches.length,3);
+ assert.equal(matchModels(models,"missing").matches.length,0);
+});

@@ -40,6 +40,7 @@ const GUIDANCE = {
  modelSettings: "Explicit model settings require both provider and model; ask the private administrator to correct configuration. No fallback was selected.",
  modelMissing: "Configured model is absent from the installed catalog. Ask the private administrator to correct configuration. No fallback was selected.",
  codexAuth: "Authentication unavailable. Ask the private administrator to reauthenticate the ChatGPT account using pi login/setup. No fallback was selected.",
+ openrouterAuth: "OpenRouter authentication unavailable. Ask the private administrator to configure OPENROUTER_API_KEY or pi /login openrouter privately. Separate OpenRouter billing applies. Never post keys or login codes in IRC. No fallback was selected.",
  providerAuth: "Authentication unavailable. Ask the private administrator to configure authentication for this provider. No fallback was selected.",
  recovery: "Remembered session identity could not be recovered. Ask the private administrator to reconcile it; no replacement was selected.",
  preparing: "Conversation fork is still being prepared; try again shortly",

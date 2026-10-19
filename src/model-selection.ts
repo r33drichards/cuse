@@ -21,7 +21,7 @@ export async function requireExplicitModel(
   // Never put credential details or raw provider error text into IRC messages.
   if (!await runtime.getAuth(model)) throw new Error("Model authentication is unavailable");
  } catch {
-  throw new PublicError(provider === "openai-codex" ? "codexAuth" : "providerAuth");
+  throw new PublicError(provider === "openai-codex" ? "codexAuth" : provider === "openrouter" ? "openrouterAuth" : "providerAuth");
  }
  return model;
 }

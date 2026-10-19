@@ -29,3 +29,13 @@ test("ChatGPT auth errors request private reauthentication without raw token det
  });
  assert.equal(resolutions, 1);
 });
+
+
+test("OpenRouter auth failure stays private and never falls back", async () => {
+ const model = { id: "anthropic/example", provider: "openrouter" } as Model<Api>;
+ const runtime = { getModel: () => model, getAvailable: async () => [model], getAuth: async () => { throw Error("fake-secret-key"); } };
+ await assert.rejects(requireExplicitModel(runtime, "openrouter", model.id), error => {
+  assert(error instanceof Error); assert.match(error.message, /OpenRouter.*private.*OPENROUTER_API_KEY/);
+  assert.match(error.message, /No fallback/); assert(!error.message.includes("fake-secret-key")); return true;
+ });
+});
