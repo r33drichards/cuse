@@ -36,6 +36,7 @@ export type BotSession = Pick<ChannelSession,
  setThinkingLevel(level: Parameters<ChannelSession["setThinkingLevel"]>[0]): void | Promise<void>;
  cycleThinkingLevel(): ReturnType<ChannelSession["cycleThinkingLevel"]> | Promise<ReturnType<ChannelSession["cycleThinkingLevel"]>>;
  promptDurable?(id: string, body: string): Promise<{text: string; steered: boolean}>;
+ clearContext?(): Promise<void>;
  close?(): Promise<void>;
  suspend?(): Promise<void>;
 };
@@ -138,6 +139,7 @@ export class IrcPiBot implements ChannelDelegate {
  readonly #desktops = new Map<string, DesktopMcp>();
 	readonly #opening = new Map<string, Promise<BotSession>>();
  readonly #desktopChanging = new Set<string>();
+ readonly #clearingContext = new Set<string>();
 	readonly #sendQueues = new Map<string, (lines: string[]) => Promise<void>>();
 	/** Recent extension faults per channel, to keep the log readable. */
 	readonly #faults = new Map<string, number[]>();
@@ -189,7 +191,7 @@ export class IrcPiBot implements ChannelDelegate {
    notice: (channel, text) => this.say(channel, text),
   });
   if (this.#durableStore) this.#delivery = new DurableDelivery(this.#durableStore, {
-   canOpen: (channel) => !this.#desktopBlocked(channel),
+   canOpen: (channel) => !this.#clearingContext.has(channel) && !this.#desktopBlocked(channel),
    open: async (channel) => {
     const session = await this.#sessionFor(channel);
     if (!session.promptDurable) throw new Error("Durable queue requires durable session adapter");
@@ -650,6 +652,28 @@ export class IrcPiBot implements ChannelDelegate {
 		try { return await work; } finally { this.#provisioning.delete(key); }
 	}
 
+ /** Reset only an idle durable conversation. New intake stays durable behind the gate. */
+ async #clearContext(room: string): Promise<void> {
+  if (!this.#durableStore || !this.#delivery) throw new PublicError("contextClearUnavailable");
+  if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+  // No await between eligibility and the gate: a worker cannot acquire this lane.
+  if (this.#opening.has(room) || this.#sessions.get(room)?.busy || this.#delivery.isActive(room)
+   || this.#durableStore.listInbox().some(message => message.channel === room && message.state !== "completed")) {
+   throw new PublicError("contextClearBusy");
+  }
+  if (this.#durableStore.piGoals.read(room)) throw new PublicError("contextClearGoal");
+  this.#clearingContext.add(room);
+  try {
+   const session = await this.#sessionFor(room);
+   if (!session.clearContext) throw new PublicError("contextClearUnavailable");
+   await session.clearContext();
+   this.say(room, "Context cleared. Conversation history retained; desktop, files, model settings and schedules unchanged. Future scheduled prompts still run.");
+  } finally {
+   this.#clearingContext.delete(room);
+   this.#delivery.resumePending(room);
+  }
+ }
+
 	/** Session commands act on the room's own session. */
 	async #onSessionCommand(command: IrcCommand, room: string): Promise<boolean> {
 		if (
@@ -660,7 +684,9 @@ export class IrcPiBot implements ChannelDelegate {
 		) {
 			return false;
 		}
+		if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
 		const session = await this.#sessionFor(room);
+		if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
 		switch (command.kind) {
 			case "model": {
 				const available = await this.#options.modelRuntime.getAvailable();
@@ -718,7 +744,9 @@ export class IrcPiBot implements ChannelDelegate {
 	}
 
 	async #onCommand(command: IrcCommand, room: string, control: boolean, commandId: string = randomUUID(), sender = ""): Promise<void> {
+		if (command.kind === "clear") { await this.#clearContext(room); return; }
 		if (await this.#onSessionCommand(command, room)) return;
+		if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
 		switch (command.kind) {
 			case "goal": {
     if (!this.#options.goalsEnabled || !this.#durableStore || !this.#delivery) throw new PublicError("goalUnavailable");

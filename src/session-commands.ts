@@ -15,6 +15,7 @@ export const SESSION_COMMANDS = [
 		usage: "thinking [level]",
 		description: `Set the thinking level (${THINKING_LEVELS.join(", ")}); no level cycles`,
 	},
+	{ name: "clear", usage: "clear", description: "Reset context; retain history, desktop, files and schedules (durable mode; idle, no goal)" },
 	{ name: "compact", usage: "compact [instructions]", description: "Compact the session context" },
 	{ name: "reload", usage: "reload", description: "Reload the session's plugins" },
 ] as const;
@@ -24,6 +25,7 @@ export type SessionCommandAction =
 	| { kind: "thinking"; level: ThinkingLevel | undefined }
 	| { kind: "compact"; instructions: string | null }
 	| { kind: "reload" }
+	| { kind: "clear" }
 	| { kind: "error"; message: string };
 
 export function isThinkingLevel(value: string): value is ThinkingLevel {
@@ -45,6 +47,8 @@ export function parseSessionCommand(name: string, argument: string): SessionComm
 				};
 			}
 			return { kind: "thinking", level: text };
+		case "clear":
+			return text ? { kind: "error", message: "Usage: ,clear (no arguments)" } : { kind: "clear" };
 		case "compact":
 			return { kind: "compact", instructions: text.length === 0 ? null : text };
 		case "reload":
