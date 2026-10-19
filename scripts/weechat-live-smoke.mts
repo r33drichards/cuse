@@ -139,7 +139,7 @@ const nativeOptions: WeeChatNetworkOptions = {
  server: '127.0.0.1', port, tls: false, nick: 'testcuse', profileRoot: root,
  upstreamDir: process.env.CUSE_WEECHAT_TEST_DIR ?? '/opt/cuse-vendor/weechat-mcp',
  pythonCommand: process.env.CUSE_WEECHAT_TEST_PYTHON ?? '/opt/cuse-weechat/bin/python', fullControl: false,
- weechatCommand: launcher, peerChannels: {'#alpha': ['#beta']}, joinTimeoutMs: 20000,
+ disableOutgoingThrottle: true, weechatCommand: launcher, peerChannels: {'#alpha': ['#beta']}, joinTimeoutMs: 20000,
 };
 const sessions = new Map<string, NativeWeeChatSession>();
 const options: WeeChatNetworkOptions = {...nativeOptions, createSession: async identity => {
@@ -156,6 +156,16 @@ async function nativeSnapshot(channel: string): Promise<NativeSnapshot> {
  const snapshot = JSON.parse(content.text) as NativeSnapshot;
  assert.equal(snapshot.source, 'weechat_hdata');
  return snapshot;
+}
+async function assertUnthrottled(network: WeeChatNetwork, label: string) {
+ const messages = Array.from({length: 6}, (_, index) => `pacing-${label}-${index}`);
+ for (const message of messages) await network.say('#beta', message);
+ await until(() => messages.every(text => wire.some(message => message.text === text)), 'unthrottled ' + label);
+ const sent = wire.filter(message => messages.includes(message.text));
+ assert.deepEqual(sent.map(message => message.text), messages, 'unthrottled output retains ordering');
+ const elapsed = Date.parse(sent.at(-1)!.time) - Date.parse(sent[0].time);
+ assert.ok(elapsed < 1500, `six lines must not incur the native two-second delay: ${elapsed}ms`);
+ console.log(`Private IRC unthrottled ${label}: six lines in ${elapsed}ms`);
 }
 const transport = new WeeChatNetwork(options);
 let restarted: WeeChatNetwork | undefined;
@@ -284,6 +294,7 @@ try {
  if (version === "3.8") assert.ok(originalLine.tags.includes(`irc_tag_msgid_${originalWire.msgid}`), "Image WeeChat 3.8 emits underscore-form native tags");
  console.log('Actual native readResource evidence:', JSON.stringify({version, source: firstSnapshot.source, tags: originalLine.tags}));
 
+ await assertUnthrottled(transport, 'initial');
  const before = attempts.length;
  await transport.say('#beta', 'own output'); await sleep(300);
  assert.equal(attempts.length, before, 'Own echoes do not become prompts');
@@ -330,6 +341,7 @@ try {
  await until(() => accepted.some(m => m.message === offline.text) && accepted.some(m => m.message === restartReplay.live.text), 'restarted intake reads both interleaved live and unseen history');
  const secondSnapshot = await nativeSnapshot('#beta');
  assert.notEqual(secondSnapshot.data_epoch, firstSnapshot.data_epoch, 'Restart must actually create a new native epoch');
+ await assertUnthrottled(restarted, 'restart');
  const restartAttempts = attempts.filter(m => m.incarnation === incarnation);
  const replayedOriginal = restartAttempts.find(m => m.event.message === rawBody);
  assert.ok(replayedOriginal); assert.equal(replayedOriginal.event.id, original.id); assert.equal(replayedOriginal.added, false);

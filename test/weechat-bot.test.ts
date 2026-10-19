@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {DurableIrcStore} from '../.runtime/pi/packages/coding-agent/src/cuse/durable-store.ts';
 import {DurableDelivery} from '../.runtime/pi/packages/coding-agent/src/cuse/durable-delivery.ts';
-import {IrcPiBot,type BotSession} from '../.runtime/pi/packages/coding-agent/src/cuse/bot.ts';
+import {IrcPiBot,createSendQueue,type BotSession} from '../.runtime/pi/packages/coding-agent/src/cuse/bot.ts';
 import {weechatNick,type WeeChatHandlers,type WeeChatTransport} from '../.runtime/pi/packages/coding-agent/src/cuse/weechat.ts';
 const settle=async()=>{for(let i=0;i<20;i++)await new Promise(r=>setImmediate(r));};
 function fixture(root:string){
@@ -338,4 +338,15 @@ test('legacy profile evidence requires a cutoff for command-only history and sav
   assert.throws(()=>store.nativeHistoryCutoff('2026-10-15T05:00:01Z',true),/cutoff cannot change/);
   assert.equal(store.nativeHistoryCutoff(undefined,true),timestamp);
  }finally{store.close();rmSync(root,{recursive:true,force:true});}
+});
+
+
+test('zero-spacing output preserves ordering and recovers from failed sends without timers', async t => {
+ const calls: string[] = [], errors: unknown[] = [];
+ const timer = t.mock.method(globalThis, 'setTimeout', () => { throw new Error('Unexpected pacing timer'); });
+ const queue = createSendQueue(async line => { calls.push(line); if (line === 'bad') throw new Error('send failed'); }, 0, error => errors.push(error));
+ await Promise.all([queue(['first', 'bad']), queue(['last'])]);
+ assert.deepEqual(calls, ['first', 'bad', 'last']);
+ assert.equal(errors.length, 1);
+ assert.equal(timer.mock.callCount(), 0);
 });

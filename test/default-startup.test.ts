@@ -25,3 +25,12 @@ test('invalid selected environment control policy fails before resources or netw
  assert.match(source, /weechatFullControl\(env\.WEECHAT_MCP_FULL_CONTROL\)/);
  assert.match(source, /peerChannels, fullControl/);
 });
+
+
+test('invalid private pacing fails before resources and is wired to both output layers', async () => {
+ await assert.rejects(runIrc({}, {env: {CUSE_PRIVATE_IRC_NO_THROTTLE: 'yes'}}), /CUSE_PRIVATE_IRC_NO_THROTTLE must be 0 or 1/);
+ const source = readFileSync(new URL('../src/run.ts', import.meta.url), 'utf8');
+ assert.match(source, /privateIrcPacing\(env\.CUSE_PRIVATE_IRC_NO_THROTTLE\)/);
+ assert.match(source, /sendSpacingMs: pacing\.sendSpacingMs/);
+ assert.match(source, /disableOutgoingThrottle: pacing\.disableOutgoingThrottle/);
+});
