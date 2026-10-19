@@ -9,8 +9,8 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export const SESSION_COMMANDS = [
-	{ name: "model", usage: "model [query]", description: "Select an exact or unique model; a provider name browses its catalog" },
-	{ name: "models", usage: "models [query]", description: "Browse installed models without switching; narrow by provider/id/name" },
+	{ name: "model", usage: "model [query]", description: "OpenRouter: or <query> searches; openrouter/<exact-id> selects. Other models accept unique queries" },
+	{ name: "models", usage: "models [query]", description: "Search without switching; OpenRouter: or <required query> uses the live catalog" },
 	{
 		name: "thinking",
 		usage: "thinking [level]",

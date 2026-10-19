@@ -116,26 +116,44 @@ build arguments or shared logs. Do not import another service's credentials.
 Restart cuse after private setup so its process sees updated environment values.
 No login or billable inference is needed to run the synthetic tests.
 
-- `,models openrouter` or `,model openrouter`: browse without changing models.
-- `,models sonnet`: narrow the installed catalog by provider, model ID or name.
-- `,model openrouter/anthropic/claude-sonnet-4.6`: choose that exact installed model.
+- `,model or qwen`: fuzzy-search the live OpenRouter catalog without switching.
+- `,model openrouter qwen` and `,models or qwen`: equivalent search-only commands.
+- `,model openrouter/qwen/<exact-model-id>`: select an exact ID returned by search.
+- `,model or/qwen/<exact-model-id>`: the same explicit selection using the alias.
 - `,model openai-codex/gpt-5.4`: return to ChatGPT.
-- `,model <unique query>`: existing unique substring shortcuts still work.
 
-Lists show at most 15 matches; narrow the query to find more. Models without
-configured authentication are marked **private setup required**. Catalog
-presence and configured authentication do not guarantee current upstream
-availability or remaining credits. Ambiguous queries list choices without
-changing the model; exact qualified IDs take precedence. Failed authentication
-never selects another provider. Selection changes only the current conversation;
-its history, desktop and schedules remain intact. Future turns, including
-scheduled turns in that conversation, use its selected model. Selecting a model
-itself does not send an inference request.
+OpenRouter searches require a nonempty query of at most 120 characters. Bare
+`,model`, `,models`, `,model or` and `,models openrouter` show usage rather than
+listing a huge catalog. Searches show at most 15 fuzzy matches and never choose
+a model, even if there is only one match. Copy the full provider/model ID to
+select it. Other providers retain exact and unique substring selection.
 
-The catalog is the reviewed offline snapshot, not a live listing of every
-OpenRouter model. Admin-controlled `models.json` can add supported model entries
-using the existing custom-provider configuration below. No SDK upgrade or live
-catalog refresh is required. See [OpenRouter authentication](https://openrouter.ai/docs/api_reference/authentication)
+The public catalog comes from `https://openrouter.ai/api/v1/models` without
+credentials, with an eight-second timeout, bounded response size and a shared
+five-minute cache. Concurrent requests share one fetch; failures have a short
+cooldown. Results explicitly say fresh or cached and show their fetch time.
+A failed refresh produces an error, never a silently substituted stale list.
+Only validated text-generation models advertising tool support are included.
+No model call occurs while searching or selecting.
+
+Newly discovered supported models are registered through Pi's existing
+OpenRouter provider. Hostnames, API type, input types and numeric limits are
+validated; arbitrary response URLs, headers and instructions are ignored.
+Existing model definitions and authentication remain unchanged. A private,
+atomic metadata cache in the agent volume restores discovered models on restart
+without a startup network request; no API keys are stored in that cache. Selected
+model metadata is retained separately if a later catalog refresh removes an ID;
+removed IDs are excluded from fresh searches and new selections.
+Removing that cache can prevent an unknown-to-the-pinned-catalog model from
+resuming until the administrator restores it or the model is discovered again.
+
+Explicit selection checks current catalog membership and configured auth; it
+never falls back to another provider. Catalog presence and configured auth do
+not guarantee upstream availability or remaining credits. Selection changes only
+the current conversation; history, desktop and schedules remain intact. Future
+turns, including scheduled turns, use that conversation's selected model.
+OpenRouter credentials are still configured privately as described above.
+See [OpenRouter authentication](https://openrouter.ai/docs/api_reference/authentication)
 and [model listing documentation](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
 
 ## Private ADMIN ChatGPT onboarding (operator-only)

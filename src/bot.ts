@@ -23,6 +23,7 @@ import type { ScheduleRequest } from "./schedule-commands.ts";
 
 import { matchModels } from "./session-commands.ts";
 import { requireExplicitModel } from "./model-selection.ts";
+import { OpenRouterCatalog } from "./openrouter-catalog.ts";
 import { ChannelSessionStore } from "./state.ts";
 import type { ChannelDelegate } from "./tools.ts";
 import type { PiGoalDelegate } from "./pi-goal.ts";
@@ -67,6 +68,7 @@ export interface IrcBotOptions {
 	/** Extensions and settings, built fresh for each channel's working directory. */
 	createResources: ChannelSessionDeps["createResources"];
 	modelRuntime: ModelRuntime;
+ openrouterCatalog?: Pick<OpenRouterCatalog, "search" | "resolve">;
 	desktops?: ComputerUseClient;
  desktopPolicy?: DesktopPolicy;
 	/** Runtime adapters are supplied by run.ts, keeping bot imports offline-testable. */
@@ -138,6 +140,7 @@ export class IrcPiBot implements ChannelDelegate {
 	readonly #store: ChannelSessionStore;
 	readonly #sessions = new Map<string, BotSession>();
  readonly #desktops = new Map<string, DesktopMcp>();
+ readonly #openrouterCatalog: Pick<OpenRouterCatalog, "search" | "resolve">;
 	readonly #opening = new Map<string, Promise<BotSession>>();
  readonly #desktopChanging = new Set<string>();
  readonly #clearingContext = new Set<string>();
@@ -159,6 +162,7 @@ export class IrcPiBot implements ChannelDelegate {
 
 	constructor(options: IrcBotOptions) {
 		this.#options = options;
+  this.#openrouterCatalog = options.openrouterCatalog ?? new OpenRouterCatalog(options.modelRuntime, {cachePath: join(options.agentDir, "openrouter-catalog.json")});
 		this.#transport = options.transport;
 		this.#store = new ChannelSessionStore(options.statePath);
   for (const [key, binding] of Object.entries(options.desktopPolicy?.overrides ?? {})) {
@@ -679,6 +683,40 @@ export class IrcPiBot implements ChannelDelegate {
 	async #onSessionCommand(command: IrcCommand, room: string): Promise<boolean> {
   if (command.kind === "model" || command.kind === "models") {
    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+   const query = command.query.trim();
+   const usage = "Usage: ,model or <search query> (fuzzy search only); select with ,model openrouter/<exact-model-id>.";
+   const router = /^(?:or|openrouter)(?:\s+(.*)|\/(.*))?$/i.exec(query);
+   if (!query || (router && !(router[1] ?? router[2] ?? "").trim())) {
+    const current = this.#sessions.get(room);
+    this.say(room, [...(current ? [`model: ${current.modelLabel()} · thinking: ${current.thinkingLevel()}`] : []), usage]);
+    return true;
+   }
+   if (router) {
+    const argument = (router[1] ?? router[2] ?? "").trim();
+    if (command.kind === "models" || router[1] !== undefined) {
+     let result: Awaited<ReturnType<OpenRouterCatalog["search"]>>;
+     try { result = await this.#openrouterCatalog.search(argument); }
+     catch { throw new PublicError("openrouterCatalog"); }
+     const age = Math.max(0, Math.floor((Date.now() - result.fetchedAt) / 1000));
+     this.say(room, [
+      `OpenRouter live catalog${result.cached ? " (cached)" : " (fresh)"}: fetched ${new Date(result.fetchedAt).toISOString()} (${age}s ago). ${result.models.length} fuzzy match${result.models.length === 1 ? "" : "es"}; no model changed.`,
+      ...result.models.slice(0, 15).map(model => `openrouter/${model.id} · ${model.name}`),
+      "Select with ,model openrouter/<exact-model-id>. Authentication is checked on selection; separate OpenRouter billing applies.",
+     ]);
+     return true;
+    }
+    let model: Awaited<ReturnType<OpenRouterCatalog["resolve"]>>;
+    try { model = await this.#openrouterCatalog.resolve(argument); }
+    catch { throw new PublicError("openrouterCatalog"); }
+    if (!model) { this.say(room, "No compatible exact OpenRouter model found in the current catalog. Search with ,model or <query>; no model changed."); return true; }
+    await requireExplicitModel(this.#options.modelRuntime, "openrouter", model.id);
+    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+    const session = await this.#sessionFor(room);
+    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
+    await session.setModel(model);
+    this.say(room, `model → openrouter/${model.id}`);
+    return true;
+   }
    const runtime = this.#options.modelRuntime;
    const choices = runtime.getModels().map(model => ({ provider: model.provider, modelId: model.id, name: model.name, model }));
    const { browse, matches } = matchModels(choices, command.query);
@@ -700,6 +738,7 @@ export class IrcPiBot implements ChannelDelegate {
     return true;
    }
    const chosen = matches[0]!;
+   if (chosen.provider === "openrouter") { this.say(room, "Search OpenRouter with ,model or <query>, then select with ,model openrouter/<exact-model-id>. No model changed."); return true; }
    await requireExplicitModel(runtime, chosen.provider, chosen.modelId);
    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
    const session = await this.#sessionFor(room);
