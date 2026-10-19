@@ -9,7 +9,8 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export const SESSION_COMMANDS = [
-	{ name: "model", usage: "model [query]", description: "Pick a model; the query filters provider/id/name" },
+	{ name: "model", usage: "model [query]", description: "Select an exact or unique model; a provider name browses its catalog" },
+	{ name: "models", usage: "models [query]", description: "Browse installed models without switching; narrow by provider/id/name" },
 	{
 		name: "thinking",
 		usage: "thinking [level]",
@@ -21,7 +22,7 @@ export const SESSION_COMMANDS = [
 ] as const;
 
 export type SessionCommandAction =
-	| { kind: "model"; query: string }
+	| { kind: "model" | "models"; query: string }
 	| { kind: "thinking"; level: ThinkingLevel | undefined }
 	| { kind: "compact"; instructions: string | null }
 	| { kind: "reload" }
@@ -38,6 +39,8 @@ export function parseSessionCommand(name: string, argument: string): SessionComm
 	switch (name.toLowerCase()) {
 		case "model":
 			return { kind: "model", query: text };
+		case "models":
+			return { kind: "models", query: text };
 		case "thinking":
 			if (text.length === 0) return { kind: "thinking", level: undefined };
 			if (!isThinkingLevel(text)) {
@@ -69,4 +72,15 @@ export function filterModels<T extends ModelChoice>(models: readonly T[], query:
 	const needle = query.trim().toLowerCase();
 	if (needle.length === 0) return [...models];
 	return models.filter((model) => `${model.provider}/${model.modelId} ${model.name}`.toLowerCase().includes(needle));
+}
+
+/** Provider-only queries browse; exact qualified IDs outrank substring matches. */
+export function matchModels<T extends ModelChoice>(models: readonly T[], query: string): { browse: boolean; matches: T[] } {
+ const needle = query.trim().toLowerCase();
+ const provider = models.filter(model => model.provider.toLowerCase() === needle);
+ if (!needle || provider.length) return { browse: true, matches: needle ? provider : [...models] };
+ const qualified = models.filter(model => `${model.provider}/${model.modelId}`.toLowerCase() === needle);
+ if (qualified.length) return { browse: false, matches: qualified };
+ const exact = models.filter(model => model.modelId.toLowerCase() === needle);
+ return { browse: false, matches: exact.length ? exact : filterModels(models, query) };
 }

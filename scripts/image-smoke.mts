@@ -12,6 +12,7 @@ globalThis.fetch=async()=>{requests++;throw Error('Image smoke must not perform 
 try {
  const runtime=await ModelRuntime.create({modelsPath:null,authPath:join(dir,'synthetic-auth.json'),refreshOnCreate:false,allowModelNetwork:false});
  assert.ok(runtime.getModel('openai-codex','gpt-5.4'),'required Codex model absent');
+ assert.ok(runtime.getModels('openrouter').length>0,'offline OpenRouter catalog absent');
  assert.ok(runtime.getModels('kimi-coding').length>0,'offline kimi-coding catalog absent');
  assert.ok(runtime.getProviders().length>=39,'offline provider catalog incomplete');
  const config=resolveIrcConfig({}, {IRC_SERVER:'synthetic.invalid'},dir);

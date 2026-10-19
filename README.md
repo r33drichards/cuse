@@ -98,6 +98,46 @@ settings are otherwise preserved. There is no automatic Anthropic or OpenAI
 API-key fallback. An alternate provider requires an explicit admin choice,
 its own credentials and acceptance of separate billing.
 
+## Optional OpenRouter models
+
+OpenRouter is already included in the pinned Pi provider catalog. It can be
+configured alongside ChatGPT; the default remains `openai-codex/gpt-5.4`.
+Adding OpenRouter authentication does not change any session's selected model.
+OpenRouter usage is billed separately from ChatGPT subscriptions.
+
+The administrator can either privately configure `OPENROUTER_API_KEY` in the
+host's secret/environment settings, or use the private Pi CLI procedure below
+with `/login openrouter` and **Sign in with OpenRouter**. Use the same dedicated
+agent volume. OpenRouter authorization creates a persistent API key. The user
+must approve that new access; configure a credit limit in
+[OpenRouter key settings](https://openrouter.ai/settings/keys). Never enter keys,
+authorization codes, or callback URLs in IRC, guest desktops, tracked files,
+build arguments or shared logs. Do not import another service's credentials.
+Restart cuse after private setup so its process sees updated environment values.
+No login or billable inference is needed to run the synthetic tests.
+
+- `,models openrouter` or `,model openrouter`: browse without changing models.
+- `,models sonnet`: narrow the installed catalog by provider, model ID or name.
+- `,model openrouter/anthropic/claude-sonnet-4.6`: choose that exact installed model.
+- `,model openai-codex/gpt-5.4`: return to ChatGPT.
+- `,model <unique query>`: existing unique substring shortcuts still work.
+
+Lists show at most 15 matches; narrow the query to find more. Models without
+configured authentication are marked **private setup required**. Catalog
+presence and configured authentication do not guarantee current upstream
+availability or remaining credits. Ambiguous queries list choices without
+changing the model; exact qualified IDs take precedence. Failed authentication
+never selects another provider. Selection changes only the current conversation;
+its history, desktop and schedules remain intact. Future turns, including
+scheduled turns in that conversation, use its selected model. Selecting a model
+itself does not send an inference request.
+
+The catalog is the reviewed offline snapshot, not a live listing of every
+OpenRouter model. Admin-controlled `models.json` can add supported model entries
+using the existing custom-provider configuration below. No SDK upgrade or live
+catalog refresh is required. See [OpenRouter authentication](https://openrouter.ai/docs/api_reference/authentication)
+and [model listing documentation](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
+
 ## Private ADMIN ChatGPT onboarding (operator-only)
 
 Based on pi/packages/coding-agent/docs/providers.md: pi interactive /login
