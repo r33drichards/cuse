@@ -13,7 +13,7 @@ PI = Path(os.environ.get("PI_SOURCE", str(ROOT / ".runtime/pi"))).resolve()
 REQUIRED = (
     "bot.ts", "channel-session.ts", "commands.ts", "session-commands.ts",
     "format.ts", "fault-domain.ts", "weechat.ts", "run.ts",
-    "computer-use.ts", "state.ts", "tools.ts", "main.ts", "model-selection.ts",
+    "computer-use.ts", "state.ts", "tools.ts", "main.ts", "model-selection.ts", "openrouter-catalog.ts",
     "durable-session.ts", "durable-store.ts", "durable-delivery.ts", "durable-diagnostic.ts",
     "pi-goal.ts", "pi-goal-tools.ts", "pi-goal-prompts.ts",
 )

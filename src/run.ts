@@ -16,6 +16,7 @@ import { DefaultResourceLoader } from "../core/resource-loader.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { type IrcBotOptions, IrcPiBot } from "./bot.ts";
 import { requireExplicitModel } from "./model-selection.ts";
+import { OpenRouterCatalog } from "./openrouter-catalog.ts";
 import { WeeChatNetwork, weechatFullControl } from "./weechat.ts";
 import { ComputerUseClient } from "./computer-use.ts";
 import { clearFaultingDomain, faultingDomain, installFaultDomains } from "./fault-domain.ts";
@@ -144,6 +145,8 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 	}
 	for (const failure of extensions.errors) log(`Extension failed: ${publicError(failure.error)}`);
 	const modelRuntime = await ModelRuntime.create();
+ const openrouterCatalog = new OpenRouterCatalog(modelRuntime, {cachePath: join(agentDir, "openrouter-catalog.json")});
+ try { await openrouterCatalog.restore(); } catch { log("OpenRouter cached catalog unavailable; custom saved models may require a fresh search."); }
 	await requireExplicitModel(modelRuntime, settingsManager.getDefaultProvider(), settingsManager.getDefaultModel());
 
 	const maxDesktops = Number(env.CUSE_MAX_DESKTOPS ?? 10);
@@ -178,6 +181,7 @@ export async function runIrc(command: IrcCommand, options: RunIrcOptions = {}): 
 		sessionDir,
 		createResources,
 		modelRuntime,
+  openrouterCatalog,
 		desktops,
 		openSession: (channel, deps, sessionOptions) => {
    if (!durable && sessionOptions.sessionFile && existsSync(sessionOptions.sessionFile + ".durable.json")) throw new PublicError("durableRequired");
