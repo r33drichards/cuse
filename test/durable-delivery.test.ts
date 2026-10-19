@@ -382,3 +382,63 @@ test("shared rejoin during a failed drain retries the saved output once without 
  assert.equal(attempts, 2);
  assert.equal(store.listOutbox()[0].state, "sent");
 });
+
+test("stop fences active/queued work, suppresses late errors and permits new intake", async t => {
+ const gate = deferred<void>(), stopped = deferred<void>();
+ const calls: string[] = [], errors: unknown[] = [];
+ const { controller, store, sent } = setup(t, {
+  open: async () => ({
+   promptDurable: async id => { calls.push(id); if (id === "one") { await gate.promise; throw Error("late tool failure"); } return {text:id,steered:false}; },
+   stop: async () => { stopped.resolve(); await gate.promise; }, abort: async () => { gate.resolve(); },
+  }), report: (_room,error) => errors.push(error),
+ });
+ controller.enqueue(message);await new Promise(resolve=>setImmediate(resolve));
+ controller.enqueue({...message,id:"queued"});
+ const stop = controller.stopChannel("#test");await stopped.promise;
+ controller.enqueue({...message,id:"future"});
+ assert.deepEqual(calls,["one"]);
+ assert.equal(store.isStopped("one"),true);assert.equal(store.isStopped("queued"),true);assert.equal(store.isStopped("future"),false);
+ gate.resolve();assert.equal(await stop,2);await controller.startChannel("#test");
+ assert.deepEqual(calls,["one","future"]);assert.deepEqual(sent,["future"]);assert.deepEqual(errors,[]);
+ assert.ok(store.listInbox().every(row=>row.state==="completed"));
+});
+
+test("stop during opening prevents old dispatch and leaves other channels alone", async t => {
+ const opening = deferred<void>();const calls:string[]=[];
+ const {controller,store} = setup(t,{open: async channel => {
+  if(channel==="#test")await opening.promise;
+  return {promptDurable:async id=>{calls.push(id);return{text:"",steered:false};},stop:async()=>{},abort:async()=>{opening.resolve();}};
+ }});
+ controller.enqueue(message);controller.enqueue({...message,id:"other",channel:"#other"});
+ const stop=controller.stopChannel("#test");controller.enqueue({...message,id:"new"});opening.resolve();await stop;
+ await controller.startChannel("#test");await controller.startChannel("#other");
+ assert.ok(!calls.includes("one"));assert.ok(calls.includes("new"));assert.ok(calls.includes("other"));assert.equal(store.isStopped("other"),false);
+});
+
+test("stop intent survives restart and never retries old IDs", async t => {
+ const root=mkdtempSync(join(tmpdir(),"cuse-stop-restart-"));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ let store=new DurableIrcStore(root);store.enqueue(message);store.claimNext();store.enqueue({...message,id:"queued"});
+ assert.deepEqual(store.stopChannel("#test"),["one","queued"]);store.close();store=new DurableIrcStore(root);
+ try {
+  assert.equal(store.isStopped("one"),true);assert.equal(store.claimNext(),undefined);
+  assert.equal(store.enqueue(message),false);store.complete("one",[{id:"late",channel:"#test",text:"late"}]);store.markRecoveryRequired("one");
+  assert.deepEqual(store.listOutbox(),[]);assert.equal(store.listInbox("recovery-required").length,0);
+  store.enqueue({...message,id:"future"});assert.equal(store.claimNext()?.id,"future");
+ }finally{store.close();}
+});
+
+test("a second stop also cancels work accepted during the first stop", async t => {
+ const gate=deferred<void>();const calls:string[]=[];
+ const {controller,store}=setup(t,{open:async()=>({promptDurable:async id=>{calls.push(id);await gate.promise;return{text:"",steered:false};},stop:async()=>gate.resolve(),abort:async()=>gate.resolve()}),stopSession:async()=>{await gate.promise;}});
+ controller.enqueue(message);await new Promise(resolve=>setImmediate(resolve));
+ const first=controller.stopChannel("#test");controller.enqueue({...message,id:"between"});const second=controller.stopChannel("#test");
+ assert.equal(store.isStopped("between"),true);gate.resolve();await Promise.all([first,second]);assert.deepEqual(calls,["one"]);
+});
+
+test("failed stop keeps future work blocked until explicit successful cancellation",async t=>{
+ let fail=true;const calls:string[]=[];
+ const {controller,store}=setup(t,{stopSession:async()=>{if(fail)throw Error("stop failed");},open:async()=>({promptDurable:async id=>{calls.push(id);return{text:"",steered:false};},abort:async()=>{}})});
+ await assert.rejects(controller.stopChannel("#test"),/stop failed/);controller.enqueue({...message,id:"new"});
+ await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(calls,[]);assert.equal(store.needsStop("#test"),true);
+ fail=false;await controller.stopChannel("#test");controller.enqueue({...message,id:"newer"});await controller.startChannel("#test");assert.deepEqual(calls,["newer"]);
+});

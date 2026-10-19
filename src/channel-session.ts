@@ -94,6 +94,9 @@ export class ChannelSession {
 	readonly #relays = new Set<RelayEvents>();
 	#running: Promise<unknown> = Promise.resolve();
 	#depth = 0;
+	#stopGeneration = 0;
+	#stopping: Promise<void> | undefined;
+	readonly #pending = new Set<Promise<void>>();
 
 	private constructor(
 		channel: string,
@@ -210,6 +213,10 @@ export class ChannelSession {
 	 */
 	#subscribe(): void {
 		this.session.subscribe((event) => {
+			// AgentSession.compact creates its controller only after awaiting abort.
+			// A stop in that admission gap must cancel the newly created controller
+			// before auth, extension hooks, or summary inference are dispatched.
+			if (event.type === "compaction_start" && this.#stopping) this.session.abortCompaction();
 			if (this.#relays.size === 0) return;
 			switch (event.type) {
 				case "message_end": {
@@ -243,7 +250,7 @@ export class ChannelSession {
 	}
 
 	get busy(): boolean {
-		return this.#depth > 0 || this.session.isStreaming;
+		return this.#depth > 0 || this.session.isStreaming || this.#pending.size > 0 || Boolean(this.#stopping);
 	}
 
 	/**
@@ -252,8 +259,15 @@ export class ChannelSession {
 	 * works.
 	 */
 	async prompt(message: string, relay?: RelayEvents): Promise<{ text: string; steered: boolean }> {
+		if (this.#stopping) return { text: "", steered: false };
+		const generation = this.#stopGeneration;
 		if (this.#depth > 0) {
-			await this.session.steer(message);
+			const pending = this.session.steer(message).then(() => {
+				if (generation !== this.#stopGeneration) this.session.clearQueue();
+			});
+			this.#pending.add(pending);
+			try { await pending; }
+			finally { this.#pending.delete(pending); }
 			return { text: "", steered: true };
 		}
 		this.#depth += 1;
@@ -262,6 +276,7 @@ export class ChannelSession {
 		const stop = relay ? this.watch(relay) : () => {};
 		const run = this.#running.then(() =>
 			runInDomain(this.channel, async () => {
+				if (generation !== this.#stopGeneration) return "";
 				await this.session.prompt(message);
 				return this.session.getLastAssistantText() ?? "";
 			}),
@@ -278,6 +293,23 @@ export class ChannelSession {
 		}
 	}
 
+	/** Abort inference, tools and retries, discard queued prompts, preserve history. */
+	stop(): Promise<void> {
+		if (this.#stopping) return this.#stopping;
+		this.#stopGeneration++;
+		this.session.clearQueue();
+		const stopping = (async () => {
+			await this.session.abort();
+			await this.#running;
+			await Promise.allSettled([...this.#pending]);
+			this.session.clearQueue();
+		})();
+		this.#stopping = stopping;
+		void stopping.finally(() => {
+			if (this.#stopping === stopping) this.#stopping = undefined;
+		}).catch(() => {});
+		return stopping;
+	}
 	async abort(): Promise<void> {
 		await this.session.abort();
 	}
@@ -313,8 +345,12 @@ export class ChannelSession {
 		return this.session.cycleThinkingLevel();
 	}
 
-	async compact(instructions: string | null): Promise<void> {
-		await this.session.compact(instructions ?? undefined);
+	compact(instructions: string | null): Promise<void> {
+		if (this.#stopping) return Promise.resolve();
+		const pending = this.session.compact(instructions ?? undefined).then(() => {});
+		this.#pending.add(pending);
+		void pending.finally(() => this.#pending.delete(pending)).catch(() => {});
+		return pending;
 	}
 
 	async reload(): Promise<void> {

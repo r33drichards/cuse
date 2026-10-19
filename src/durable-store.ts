@@ -176,6 +176,8 @@ export class DurableIrcStore {
  id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
  admitted INTEGER NOT NULL CHECK(admitted IN (0,1))
  );
+ CREATE TABLE IF NOT EXISTS pending_stops (channel TEXT PRIMARY KEY);
+ CREATE TABLE IF NOT EXISTS stopped_operations (id TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS schedule_receipts (
  id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result_json TEXT NOT NULL
  );
@@ -344,8 +346,27 @@ export class DurableIrcStore {
 		});
 	}
 
+ /** Durable cancellation intent is committed before asynchronous harness cancellation.
+  * Retain inbox history and exact IDs, so restart cannot resurrect these turns.
+  */
+ stopChannel(channel: string): string[] {
+  return this.transaction(() => {
+   this.db.prepare("INSERT OR IGNORE INTO pending_stops(channel) VALUES(?)").run(channel);
+   const ids = this.listInbox().filter(message => message.channel === channel && message.state !== "completed").map(message => message.id);
+   for (const id of ids) this.db.prepare("INSERT OR IGNORE INTO stopped_operations(id) VALUES(?)").run(id);
+   this.piGoals.command(channel, "pause");
+   this.db.prepare("UPDATE inbox SET state='completed' WHERE channel=? AND state!='completed'").run(channel);
+   return ids;
+  });
+ }
+ needsStop(channel: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM pending_stops WHERE channel=?").get(channel)); }
+ finishStop(channel: string): void { this.db.prepare("DELETE FROM pending_stops WHERE channel=?").run(channel); }
+ isStopped(id: string): boolean {
+  return Boolean(this.db.prepare("SELECT 1 FROM stopped_operations WHERE id=?").get(id));
+ }
+
 	markRecoveryRequired(id: string): void {
-		this.transition(id, "running", "recovery-required");
+		if (!this.isStopped(id)) this.transition(id, "running", "recovery-required");
 	}
 
 	/** Only retry after the caller reconciles durable execution/tool state. */
@@ -356,6 +377,7 @@ export class DurableIrcStore {
 	/** Commit the result and replies together, so a completed input cannot lose its response. */
 	complete(id: string, outputs: OutboxMessage[] = []): void {
 		this.transaction(() => {
+            if (this.isStopped(id)) return;
 			const message = this.listInbox().find((input) => input.id === id);
 			this.transition(id, "running", "completed");
 			for (const output of outputs) this.enqueueOutput(output);

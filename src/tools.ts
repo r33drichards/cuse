@@ -8,6 +8,7 @@ import { defineTool, type ToolDefinition } from "../core/extensions/index.ts";
 import type { DesktopMcp, RemoteResult, RemoteTool } from "./computer-use.ts";
 
 export interface ChannelDelegate {
+ isStoppedOperation?(id: string): boolean;
  piGoal?(room: string): PiGoalDelegate | undefined;
  desktopControl?(room: string, action: string): Promise<unknown>;
  schedule?(request: ScheduleRequest & { room: string; requestId: string }): Promise<unknown>;

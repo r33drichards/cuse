@@ -106,6 +106,9 @@ export class DurableChannelSession {
 	readonly #relays = new Set<RelayEvents>();
 	#depth = 0;
 	#clearingContext = false;
+	#stopGeneration = 0;
+	#stopping: Promise<void> | undefined;
+	readonly #pending = new Set<Promise<unknown>>();
 	readonly channel: string;
 	readonly sessionId: string;
 	readonly sessionFile: string;
@@ -117,6 +120,7 @@ export class DurableChannelSession {
 	private thinking: ThinkingLevel;
  private readonly log:(line:string)=>void;
 	private readonly goal: PiGoalDelegate | undefined;
+	private readonly isStoppedOperation: (id: string) => boolean;
 	private constructor(
 		channel: string,
 		sessionId: string,
@@ -129,6 +133,7 @@ export class DurableChannelSession {
 		thinking: ThinkingLevel,
   log:(line:string)=>void,
 		goal: PiGoalDelegate | undefined,
+		isStoppedOperation: (id: string) => boolean,
 	) {
 		this.channel = channel;
 		this.sessionId = sessionId;
@@ -141,6 +146,7 @@ export class DurableChannelSession {
 		this.thinking = thinking;
   this.log=log;
 		this.goal = goal;
+		this.isStoppedOperation = isStoppedOperation;
 		if (goal) {
 			const requestGoals = new Map<string, GoalTurnSnapshot>();
 			// before_request precedes turn_start. Capture before later async hooks
@@ -443,6 +449,7 @@ export class DurableChannelSession {
 				await lane.getThinkingLevel(ctx),
     deps.log,
 				goal,
+				id => deps.delegate.isStoppedOperation?.(id) ?? false,
 			);
 		} catch (error) {
 			await harness?.close(ctx);
@@ -461,21 +468,31 @@ export class DurableChannelSession {
 		catch { /* An unavailable logger cannot fail or replay an operation. */ }
 	}
 	get busy(): boolean {
-		return this.#depth > 0 || this.#clearingContext;
+		return this.#depth > 0 || this.#pending.size > 0 || this.#clearingContext || Boolean(this.#stopping);
 	}
 
-	/** Restart recovery can settle a revoked goal operation but cannot run its
-	 * provider or tools again. A live pause does not interrupt an admitted turn.
+	/** Restart recovery settles revoked operations without running their provider
+	 * or tools again. A goal pause alone does not interrupt an admitted turn.
 	 */
-	private async revokeStoppedGoal(operationId: string): Promise<void> {
-		if (!operationId.startsWith("pi-goal/") || this.goal?.canRun(operationId)) return;
+	private async revokeStoppedOperation(operationId: string, generation = this.#stopGeneration): Promise<void> {
+		if (generation === this.#stopGeneration && !this.isStoppedOperation(operationId) &&
+			(!operationId.startsWith("pi-goal/") || this.goal?.canRun(operationId))) return;
 		await this.abortDurable(operationId);
+		if (generation !== this.#stopGeneration || this.isStoppedOperation(operationId)) await this.cancelPending();
 	}
-	async promptDurable(
+	promptDurable(operationId: string, body: string): Promise<{ text: string; steered: boolean }> {
+		const pending = this.runPromptDurable(operationId, body);
+		this.#pending.add(pending);
+		void pending.finally(() => this.#pending.delete(pending)).catch(() => {});
+		return pending;
+	}
+	private async runPromptDurable(
 		operationId: string,
 		body: string,
 	): Promise<{ text: string; steered: boolean }> {
         if (this.#clearingContext) throw new PublicError("contextClearing");
+		if (this.#stopping || this.isStoppedOperation(operationId)) return { text: "", steered: false };
+		const generation = this.#stopGeneration;
         if (operationId.startsWith("goal/")) throw new PublicError("legacyGoalsMigration");
 		this.#depth++;
 		try {
@@ -487,7 +504,7 @@ export class DurableChannelSession {
 				if (operationId.startsWith("pi-goal/") && !this.goal?.canRun(operationId) && state.current?.id !== operationId) return { text: "", steered: false };
 				if (state.current && state.current.id !== operationId) {
 					this.goal?.admit(state.current.id);
-					await this.revokeStoppedGoal(state.current.id);
+					await this.revokeStoppedOperation(state.current.id, generation);
                     const recovered = await this.lane.drive(
 						{
 							operationId: state.current.id,
@@ -505,6 +522,7 @@ export class DurableChannelSession {
 						this.reportDiagnostic(settledDiagnostic(recovered.value.outcome));
 					}
 				}
+				if (generation !== this.#stopGeneration || this.isStoppedOperation(operationId)) return { text: "", steered: false };
 				if (!state.current || state.current.id !== operationId) {
 					const accepted = await this.lane.accept(
 						{ kind: "prompt", operationId, prompt: body },
@@ -512,7 +530,7 @@ export class DurableChannelSession {
 					);
 					if (!accepted.ok) throw accepted.error;
 				}
-				await this.revokeStoppedGoal(operationId);
+				await this.revokeStoppedOperation(operationId, generation);
                 const driven = await this.lane.drive(
 					{ operationId, waitForRetry: true, pollDeferred: true },
 					ctx,
@@ -575,12 +593,19 @@ export class DurableChannelSession {
 			? { text: textOf(entry.message.content), entryId: entry.id }
 			: { text: "" };
 	}
-	async recover(): Promise<void> {
+	recover(): Promise<void> {
+		const pending = this.runRecovery();
+		this.#pending.add(pending);
+		void pending.finally(() => this.#pending.delete(pending)).catch(() => {});
+		return pending;
+	}
+	private async runRecovery(): Promise<void> {
+		const generation = this.#stopGeneration;
 		const state = await this.lane.inspectExecution(ctx);
 		if (state.current) {
             if (state.current.id.startsWith("goal/")) throw new PublicError("legacyGoalsMigration");
 			this.goal?.admit(state.current.id);
-			await this.revokeStoppedGoal(state.current.id);
+			await this.revokeStoppedOperation(state.current.id, generation);
 			const result = await this.lane.drive(
 				{
 					operationId: state.current.id,
@@ -601,6 +626,43 @@ export class DurableChannelSession {
   const result=await this.lane.requestAbort(operationId,ctx);
   if(!result.ok&&result.error._tag!=="OperationMismatch")throw result.error;
  }
+	/** Cancel this admission generation without changing the transcript or identity. */
+	stop(): Promise<void> {
+		if (this.#stopping) return this.#stopping;
+		this.#stopGeneration++;
+		const stopping = this.stopCurrent();
+		this.#stopping = stopping;
+		void stopping.finally(() => {
+			if (this.#stopping === stopping) this.#stopping = undefined;
+		}).catch(() => {});
+		return stopping;
+	}
+	private async cancelCurrent(): Promise<void> {
+		const state = await this.lane.inspectExecution(ctx);
+		if (state.current) {
+			await this.abortDurable(state.current.id);
+			const driven = await this.lane.drive({ operationId: state.current.id }, ctx);
+			if (!driven.ok && driven.error._tag !== "OperationMismatch") throw driven.error;
+		}
+	}
+	private async stopCurrent(): Promise<void> {
+		await this.cancelCurrent();
+		// Includes an accept already in flight when stop began. Its generation
+		// check durably cancels the accepted operation before driving it.
+		await Promise.allSettled([...this.#pending]);
+		// Do not acknowledge success if a racing admission failed its own abort.
+		await this.cancelCurrent();
+		await this.cancelPending();
+	}
+	private async cancelPending(): Promise<void> {
+		const watch = await this.lane.watch(ctx);
+		try {
+			for (const item of watch.snapshot.queues) {
+				const cancelled = await this.lane.cancelQueued(item.entryId, ctx);
+				if (!cancelled.ok) throw cancelled.error;
+			}
+		} finally { watch.unsubscribe(); }
+	}
 	async abort(): Promise<void> {
 		const result = await this.lane.abort(ctx);
 		if (!result.ok) throw result.error;
@@ -670,14 +732,22 @@ export class DurableChannelSession {
     || await this.lane.getTipId(ctx) !== null) throw new PublicError("generic");
   } finally { this.#clearingContext = false; }
  }
-	async compact(instructions: string | null): Promise<void> {
-        if(this.busy)throw new PublicError("sessionBusy");
-		const result = await this.lane.compact(
-			{ customInstructions: instructions ?? undefined },
-			ctx,
-		);
+	compact(instructions: string | null): Promise<void> {
+		const pending = this.runCompaction(instructions);
+		this.#pending.add(pending);
+		void pending.finally(() => this.#pending.delete(pending)).catch(() => {});
+		return pending;
+	}
+	private async runCompaction(instructions: string | null): Promise<void> {
+		if (this.busy) throw new PublicError("sessionBusy");
+		const generation = this.#stopGeneration;
+		const accepted = await this.lane.accept({ kind: "compaction", customInstructions: instructions ?? undefined }, ctx);
+		if (!accepted.ok) throw accepted.error;
+		if (generation !== this.#stopGeneration) await this.abortDurable(accepted.value.operationId);
+		const result = await this.lane.drive({ operationId: accepted.value.operationId, waitForRetry: true }, ctx);
 		if (!result.ok) throw result.error;
 	}
+
 	async reload(): Promise<void> {
 		throw new PublicError("durableReload");
 	}
