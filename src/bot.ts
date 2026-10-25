@@ -735,7 +735,8 @@ export class IrcPiBot implements ChannelDelegate {
     try { model = await this.#openrouterCatalog.resolve(argument); }
     catch { throw new PublicError("openrouterCatalog"); }
     if (!model) { this.say(room, "No compatible exact OpenRouter model found in the current catalog. Search with ,model or <query>; no model changed."); return true; }
-    await requireExplicitModel(this.#options.modelRuntime, "openrouter", model.id);
+    try { await requireExplicitModel(this.#options.modelRuntime, "openrouter", model.id); }
+    catch (error) { this.say(room, `error: ${publicError(error)}`); return true; }
     if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
     const session = await this.#sessionFor(room);
    if ((this.#stopEpochs.get(room) ?? 0) !== stopEpoch || this.#stoppingSessions.has(room)) return true;
@@ -766,7 +767,8 @@ export class IrcPiBot implements ChannelDelegate {
    }
    const chosen = matches[0]!;
    if (chosen.provider === "openrouter") { this.say(room, "Search OpenRouter with ,model or <query>, then select with ,model openrouter/<exact-model-id>. No model changed."); return true; }
-   await requireExplicitModel(runtime, chosen.provider, chosen.modelId);
+   try { await requireExplicitModel(runtime, chosen.provider, chosen.modelId); }
+   catch (error) { this.say(room, `error: ${publicError(error)}`); return true; }
    if (this.#clearingContext.has(room)) throw new PublicError("contextClearing");
    const session = await this.#sessionFor(room);
    if ((this.#stopEpochs.get(room) ?? 0) !== stopEpoch || this.#stoppingSessions.has(room)) return true;
