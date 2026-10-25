@@ -356,3 +356,61 @@ form to clear an empty owned title. Reads are repeated before mutation; uncertai
 blocks another topic send but never faults a goal. The upstream API has no atomic
 topic compare-and-set, so this narrows but cannot eliminate a simultaneous human
 edit race. No long-lived polling connection was introduced.
+
+## Saved mailbox and task-tree tool compatibility
+
+Saved `irc_send`, `agent_list`, `agent_ask`, `goal_status` and `goal_update`
+selections have explicit host adapters and fixed legacy argument schemas. These
+names alone grant no permissions. A reviewed snapshot must set
+`compatibility.legacyGoals` for the task-tree engine and `compatibility.peers`
+for peer messaging. The latter is an exact list of `{channel,nick,buffer}` where
+`buffer` belongs to the **sending** external profile in that peer's channel.
+Every nick must also be in `policy.peerNicks`; every peer must have a unique,
+configured home route. Empty peer lists permit no outgoing peer messages.
+Neither code nor configuration joins a profile to another channel implicitly.
+
+The old goal tools are not aliases for Pi Goal. Their separate ledger retains
+ordered tasks, evidence requirements, human review/approval, explicit bounded
+start, per-step request/tool allowances, deadlines and recovery holds. Model
+requests retain the legacy 4096-output-token cap with no retries. Imported old
+work is not automatically resumed. Old task/allowance state must be inspected
+and migrated privately, or its reset explicitly approved; permission to discard
+chat history does not authorize discarding goals or schedules. With this mode,
+`,goal` uses the legacy add/start/status/list/pause/cancel/approve/recover grammar.
+It cannot silently reinterpret old tasks as a token-budget Pi Goal.
+
+Peer mailbox requests use an application framing protocol (`cuse-peer-v1`), **not
+an invented MCP API**. All network output uses existing authenticated WeeChat
+MCP message commands. All incoming fragments use the signed `message.created`
+webhook route. Fragments are bounded, hashed, assembled durably out of order,
+and correlated against approved sender nick/channel and stored requests.
+Peer responses remain untrusted data. The receiver automatically sends the
+answer back through its own approved external profile. Both directions require
+explicit existing channel membership and separate agent identities; deployments
+with only one shared external nick cannot enable this adapter.
+
+`agent_list` checks source-profile buffer membership and reads the configured
+peer session's busy state; it does not expose desktop credentials. `agent_ask`
+returns queued immediately, enforces a four-agent ancestry bound, and receives
+answers in later webhook turns. Answer turns cannot delegate further; this is a
+conservative restriction on the old mailbox. `irc_send` requires a human turn,
+uses only configured channels, and cannot forge reserved peer frames. Goal and
+scheduled turns cannot delegate. These restrictions must be reviewed with the
+permission mapping, rather than hidden behind compatibility claims.
+
+Each outgoing fragment has a durable intent and receipt. A crash or ambiguous
+MCP dispatch holds the effect for reconciliation; it never blindly resends.
+Confirmed fragments deduplicate across reopen. IRC nick checks rely on the
+reviewed external server/profile ownership; webhook signatures authenticate the
+bridge, not an independent end-to-end cryptographic peer identity. Framing adds
+visible protocol lines to IRC, which is a migration impact to review before
+activation. Existing unframed mailbox work is not automatically replayed.
+
+A reviewed snapshot may carry `retainedState.delivery.goals` and `.schedules`
+from the private exporter. Control import is transactional and keyed by snapshot
+hash. It retains schedule timing, pause/missed-run policy and prompt, and legacy
+goal tasks/evidence/remaining allowances. Nonterminal legacy goals are held for
+human outcome reconciliation; old goal-run inputs are never imported as runnable
+work. A missing control-state export remains an inventory gap, not proof that
+there are no schedules or goals. Do not enable a fresh empty ledger as a silent
+replacement for known live control state.

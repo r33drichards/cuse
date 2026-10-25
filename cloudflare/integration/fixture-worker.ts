@@ -1,3 +1,5 @@
+import {PeerMailbox} from '../src/legacy/peers.ts';
+import type {Access} from '../src/gateway.ts';
 import {TestModelAuthority,TestChannelRegistry,exerciseSkills} from './capability-fixture.ts';
 export {TestModelAuthority,TestChannelRegistry};
 // Test-only entrypoint. Never referenced by production wrangler.jsonc.
@@ -13,10 +15,18 @@ export class TestAgentSession extends AgentSession {
   private count(kind:string){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_calls VALUES (?)',kind);}
   protected createModels(){
     const faux=fauxProvider({models:[{id:'chosen'}]});
+    if((this.env as any).TEST_LEGACY_GOAL==='true'){
+      faux.setResponses([()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('goal_update',{action:'task',id:'objective',state:'done',evidence:[{kind:'inspection',ref:'synthetic evidence',result:'pass'}]})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('goal_update',{action:'submit'})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('must not run after review');}]);const models=createModels();models.setProvider(faux.provider);return models;
+    }
+    if((this.env as TestEnv & {TEST_LEGACY?:string}).TEST_LEGACY==='true'){
+      const calls=[['goal_status',{}],['agent_list',{}],['agent_ask',{channel:'#other',question:'synthetic question'}],['irc_send',{channel:'#other',text:'synthetic notice'}],['goal_update',{action:'submit'}],['desktop_control',{action:'status'}],...['run_js','get_artifact','get_artifact_upload_url','list_artifacts'].map(name=>[name,{}])];
+      faux.setResponses([()=>{this.count('model');return fauxAssistantMessage(calls.map(([name,args])=>fauxToolCall(name as string,args as any)),{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('compatibility reply');}]);const models=createModels();models.setProvider(faux.provider);return models;
+    }
     if((this.env as TestEnv & {TEST_SIMPLE?:string}).TEST_SIMPLE==='true'){faux.setResponses(Array.from({length:20},()=>()=>{this.count('model');return fauxAssistantMessage('scheduled reply');}));const models=createModels();models.setProvider(faux.provider);return models;}
     faux.setResponses([()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('synthetic reply '.repeat(60));}]);
     const models=createModels();models.setProvider(faux.provider);return models;
   }
+  protected createPeers(snapshot:Snapshot,access:Access){if((this.env as any).TEST_LEGACY!=='true')return super.createPeers(snapshot,access);return new PeerMailbox(this.sql,snapshot.route,snapshot.compatibility!.peers!,{busy:async()=>false,send:async()=>{this.count('peer-send');}});}
   protected createGateway():ToolGateway{return {call:async()=>{this.count('tool');if((this.env as TestEnv & {TEST_HOLD_TOOL?:string}).TEST_HOLD_TOOL==='true')await new Promise(()=>{});return {content:[{type:'text',text:'synthetic result'}]};}};}
   protected async sendReply(_binding:Binding,_text:string):Promise<void>{this.count('send');}
   protected async renew(binding:Binding,method:string,params:Record<string,unknown>):Promise<unknown>{

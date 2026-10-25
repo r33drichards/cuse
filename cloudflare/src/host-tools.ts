@@ -8,6 +8,8 @@ export function hostCall(a:Automations,name:string,args:Record<string,unknown>,r
   return a.schedule(args as unknown as ScheduleRequest,requestId);
  }
  return a.receipt(requestId,{name,args,operationId},()=>{
+  if(name==='goal_status'){if(!a.legacy)throw Error('legacy_goal_disabled');return a.legacy.list(channel);}
+  if(name==='goal_update'){if(!a.legacy)throw Error('legacy_goal_disabled');return a.legacy.update(channel,operationId,args as any);}
   if(name==='get_goal'){const goal=a.goals.read(channel);if(goal?.status!=='active')throw Error('no_active_goal');return {goal};}
   if(name==='create_goal'){
    if(origin!=='human')throw Error('goal_requires_human_turn');
@@ -23,4 +25,4 @@ export function hostCall(a:Automations,name:string,args:Record<string,unknown>,r
   throw Error('host_tool_unavailable');
  });
 }
-export const HOST_TOOL_NAMES=['get_goal','create_goal','update_goal','schedule_prompt'] as const;
+export const HOST_TOOL_NAMES=['get_goal','create_goal','update_goal','schedule_prompt','goal_status','goal_update'] as const;

@@ -1,3 +1,4 @@
+import {PeerMailbox,type Peer} from './legacy/peers.ts';
 import {ChannelProvisioner,type ChannelPlan} from './channels.ts';
 import {subscribe} from './subscriptions.ts';
 import {DurableGoalTopics} from './goal-topics.ts';
@@ -15,7 +16,7 @@ import {dryRun,type Snapshot,type Fence} from "./migration.ts";
 import {DesktopLedger,type Ticket} from "./desktop-coordinator.ts";
 import {configuredModels} from "./models.ts";
 import {gateway,type Access} from "./gateway.ts";
-import {withMcp,dispatchReply,dispatchChannelAction,readTopic,verifyJoined} from "./mcp.ts";
+import {withMcp,dispatchReply,dispatchChannelAction,readTopic,verifyJoined,readChannel} from "./mcp.ts";
 import {Renewal} from "./renewal.ts";
 import type {Grant,SubscriptionSpec} from "./subscriptions.ts";
 import {Runner} from "./runner.ts";
@@ -71,7 +72,7 @@ export class AgentSession extends DurableObject<Env> {
   private runner?:Runner;
   private automations?:Automations;
   private recovering=true;
-  private automation():Automations {if(!this.inbox)throw Error("route_required");return this.automations??=new Automations(this.inbox);}
+  private automation():Automations {if(!this.inbox)throw Error("route_required");const a=this.automations??=new Automations(this.inbox);if(this.prepared()?.snapshot.compatibility?.legacyGoals)a.enableLegacyGoals();return a;}
   private renewal:Renewal;
   private busy?:Promise<void>;
   private renewing?:Promise<void>;
@@ -81,7 +82,7 @@ export class AgentSession extends DurableObject<Env> {
     this.serial=result.catch(()=>{});
     return result;
   }
-  private readonly sql: Sql;
+  protected readonly sql: Sql;
   constructor(ctx: DurableObjectState,env: Env) {
     super(ctx,env);
     this.sql={all:(query,...params)=>ctx.storage.sql.exec(query,...params).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)};
@@ -162,7 +163,7 @@ export class AgentSession extends DurableObject<Env> {
     const ids=this.sql.all("SELECT id FROM cuse_inbox WHERE state IN ('running','pending')");
     for(const row of ids){if(this.runner)this.runner.cancel(String(row.id));else this.inbox.cancel(String(row.id));}
     this.sql.all("UPDATE cuse_effects SET state='cancelled' WHERE state='pending'");
-    this.automation().goals.fault(this.automation().channel);
+    this.automation().fault();
     if(this.env.CHANNELS)await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).cancel(objectKey(this.inbox.route));
     await this.active?.stop();
   }
@@ -172,13 +173,25 @@ export class AgentSession extends DurableObject<Env> {
     if(!prepared || !binding?.access || binding.access.enabledHash!==prepared.fence.snapshotHash)throw Error("activation_review_required");
     const desktop=prepared.snapshot.desktopId?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(prepared.snapshot.desktopId)):undefined;
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
-      ...prepared,automations:this.automation(),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
+      ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
       wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
-    this.runner=new Runner(this.inbox!,{completed:job=>this.automation().finish(job.id),failed:()=>this.automation().goals.fault(this.automation().channel),run:async(job,checkpoint,signal)=>{
+    this.runner=new Runner(this.inbox!,{completed:job=>this.automation().finish(job.id),failed:job=>this.automation().fault(job.id),run:async(job,checkpoint,signal)=>{
       checkpoint(JSON.stringify({requestId:job.id,conversation:this.active!.conversationId}));
       return this.active!.handle(JSON.parse(job.payload),signal,job.origin);
     }});
+  }
+  /** Read-only peer status; no prompt injection RPC exists. */
+  async peerBusy():Promise<boolean>{return !!this.busy || !!this.sql.all("SELECT id FROM cuse_inbox WHERE state IN ('pending','running','blocked') LIMIT 1").length;}
+  protected createPeers(snapshot:Snapshot,access:Access):PeerMailbox|undefined {
+    if(!snapshot.compatibility?.peers)return;
+    const peers=snapshot.compatibility.peers;
+    const bindingFor=(peer:Peer)=>{const matches=Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>).filter(b=>b.route.channel===peer.channel && b.route.agent===peer.channel && b.route.nick===peer.nick);if(matches.length!==1)throw Error('peer_route_unverified');return matches[0];};
+    for(const peer of peers)bindingFor(peer);
+    return new PeerMailbox(this.sql,snapshot.route,peers,{
+      busy:async peer=>{const b=bindingFor(peer);const data=await withMcp(access.mcp,client=>readChannel(client,{...snapshot.route,channel:peer.channel,buffer:peer.buffer},1)) as {buffer?:{full_name?:string;localvar_nick?:string;localvar_channel?:string}};if(data.buffer?.full_name!==peer.buffer || data.buffer.localvar_nick!==snapshot.route.nick || data.buffer.localvar_channel!==peer.channel)throw Error('peer_membership_unverified');return this.env.SESSIONS.get(this.env.SESSIONS.idFromName(objectKey(b.route))).peerBusy();},
+      send:(peer,text)=>withMcp(access.mcp,client=>dispatchReply(client,{...snapshot.route,channel:peer.channel,buffer:peer.buffer},text,access.fullControl)),
+    });
   }
   protected createModels(){
     const profile=this.binding()?.access?.authProfile;

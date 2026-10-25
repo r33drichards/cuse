@@ -73,13 +73,15 @@ try{
    if(chain.some(e=>e.type==='custom'))session.blockers.push('custom_context_projector_review');
    const messages=convertToLlm(await buildSessionContext(chain,undefined,undefined));
    if(JSON.stringify([...session.config.activeToolNames].sort())!==JSON.stringify(m.tools.map(t=>t.name).sort()))session.blockers.push('tool_mapping_mismatch');
-   if(m.tools.some(t=>(t.target==='host' && !['desktop_control','schedule_prompt','get_goal','create_goal','update_goal'].includes(t.name)) || (t.target==='irc' && !['weechat_buffers','weechat_msg'].includes(t.name) && m.exclusiveProfile!==true) || (t.target==='desktop' && !['run_js','get_artifact','list_artifacts','get_artifact_upload_url','skills_list','skills_read'].includes(t.name))))session.blockers.push('local_or_unscoped_tool_adapter_required');
+   if(m.tools.some(t=>(t.target==='host' && !['desktop_control','schedule_prompt','get_goal','create_goal','update_goal','goal_status','goal_update','irc_send','agent_list','agent_ask'].includes(t.name)) || (t.target==='irc' && !['weechat_buffers','weechat_msg'].includes(t.name) && m.exclusiveProfile!==true) || (t.target==='desktop' && !['run_js','get_artifact','list_artifacts','get_artifact_upload_url','skills_list','skills_read'].includes(t.name))))session.blockers.push('local_or_unscoped_tool_adapter_required');
    if(m.route.agent!==session.agent || m.route.channel!==session.channel)session.blockers.push('route_identity_mismatch');
+   if(m.tools.some(t=>['goal_status','goal_update'].includes(t.name)) && m.compatibility?.legacyGoals!==true)session.blockers.push('legacy_goal_permission_required');
+   if(m.tools.some(t=>['irc_send','agent_list','agent_ask'].includes(t.name)) && !Array.isArray(m.compatibility?.peers))session.blockers.push('legacy_peer_permission_required');
    const binding=session.record.desktopBinding??{kind:'agent'};
    const desktopId=binding.kind==='existing'?binding.desktopId:binding.kind==='agent'?session.agentRecord.desktopId:undefined;
    const peerTurns=(inventory.delivery.irc_peer_budgets??[]).find(r=>r.channel===key)?.turns??session.agentRecord.peerTurns??0;
    inventory.snapshots.push({version:1,sourceSessionId:session.sourceSessionId,route:m.route,model:session.config.model,thinkingLevel:session.config.thinkingLevel,
-    instructions:m.instructions,tools:m.tools,desktopBinding:binding,...(desktopId?{desktopId}:{}),policy:{...m.policy,peerTurns,mentionRequired:session.agentRecord.mentionRequired??m.policy.mentionRequired},
+    instructions:m.instructions,tools:m.tools,compatibility:m.compatibility,desktopBinding:binding,...(desktopId?{desktopId}:{}),policy:{...m.policy,peerTurns,mentionRequired:session.agentRecord.mentionRequired??m.policy.mentionRequired},
     archive:[...session.legacy,...rows],context:messages,retainedState:{state:{...session.agentRecord,sessions:undefined},durable:session.durable,delivery:Object.fromEntries(Object.entries(inventory.delivery).map(([table,rows])=>[table,rows.filter(r=>r.channel===key)]))},blockers:session.blockers});
   }
  }

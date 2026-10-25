@@ -41,7 +41,7 @@ export class InboxStore {
   }
   /** Internal scheduler/goal admission only; never accepted from webhook fields. */
   internal(id:string,body:string,origin:"schedule"|"goal",now=Date.now()):void {
-    if(!id.startsWith(origin==="goal"?"pi-goal/":"schedule/"))throw Error("internal_id_invalid");
+    if(!(origin==="goal"?(id.startsWith("pi-goal/") || /^goal\/[a-zA-Z0-9_-]{1,80}\/\d+\/\d+$/.test(id)):id.startsWith("schedule/")))throw Error("internal_id_invalid");
     if(Number(this.sql.all("SELECT COUNT(*) AS n FROM cuse_inbox")[0].n)>=10000)throw Error("inbox_capacity");
     const payload:MessageEvent={eventId:id,name:"message.created",timestamp:new Date(now).toISOString(),cursor:"internal",data:{channel_id:this.route.buffer,message_id:id,nick:origin,text:body}};
     this.sql.all("INSERT OR IGNORE INTO cuse_inbox(id,digest,payload,state,origin) VALUES (?,?,?,'pending',?)",id,id,JSON.stringify(payload),origin);

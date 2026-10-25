@@ -100,3 +100,14 @@ test('legacy session commands preserve settings and history with replay-safe tog
   assert.equal(f.faux.state.callCount,0,'commands must not become model instructions');
  }finally{await f.close();}
 });
+
+test('legacy goal submit reaches human review without granting another provider call or quarantine',async()=>{
+ const s=snapshot();s.compatibility={legacyGoals:true};s.policy.toolCalls=4;s.policy.modelRequests=4;s.tools=[{name:'goal_update',description:'legacy task evidence',inputSchema:{type:'object'},target:'host'},{name:'goal_status',description:'legacy task status',inputSchema:{type:'object'},target:'host'}];
+ const f=await fixture(s);try{
+ f.automation.legacyCommand('add :: synthetic objective','synthetic');f.automation.legacyCommand('start synthetic 2','start');const job=f.automation.inbox.claim(Date.now())!;
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('goal_update',{action:'task',id:'objective',state:'done',evidence:[{kind:'inspection',ref:'synthetic evidence',result:'pass'}]})],{stopReason:'toolUse'}),fauxAssistantMessage([fauxToolCall('goal_update',{action:'submit'})],{stopReason:'toolUse'}),fauxAssistantMessage('must not run after submit')]);
+ const replies=await f.active.handle(JSON.parse(job.payload),undefined,'goal');assert.match(replies[0],/review/);assert.equal(f.faux.state.callCount,2);assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').phase,'review');
+ f.automation.inbox.complete(job.id,replies,()=>f.automation.finish(job.id));await f.reopen();assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').phase,'review');assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').recoveryRequired,undefined);
+ const approval=event(99);approval.data.text=',goal approve synthetic';await f.active.handle(approval);assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').phase,'completed');
+ }finally{await f.close();}
+});

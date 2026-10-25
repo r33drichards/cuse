@@ -1,3 +1,4 @@
+import {foldPeer} from './legacy/peers.ts';
 import type {JsonValue} from "@earendil-works/chord";
 import type {Message,ModelThinkingLevel} from "@earendil-works/pi-ai";
 import {configure,defineDocFamily,type ConversationId,type Harness} from "@earendil-works/pi-durable";
@@ -16,6 +17,8 @@ export interface Snapshot {
   instructions:string; tools:{name:string;description:string;inputSchema:Record<string,unknown>;target:"irc"|"desktop"|"host"}[];
   desktopBinding:DesktopBinding; desktopId?:string;
   policy:ExecutionPolicy;
+  /** Explicit reviewed capabilities. Saved legacy names never enable permissions. */
+  compatibility?:{legacyGoals?:boolean;peers?:import('./legacy/peers.ts').Peer[]};
   /** Complete raw history and source metadata; never interpreted as new work. */
   archive:JsonValue[]; context:Message[]; retainedState:JsonValue;
   blockers:string[];
@@ -33,6 +36,11 @@ export function validateSnapshot(s:Snapshot):void {
   if(!Array.isArray(s.tools) || new Set(s.tools.map(t=>t.name)).size!==s.tools.length || s.tools.some(t=>!t.name || !t.inputSchema || !["irc","desktop","host"].includes(t.target)))throw Error("snapshot_tools");
   for(const key of ["modelRequests","toolCalls","timeoutMs"] as const)if(!Number.isSafeInteger(s.policy?.[key]) || s.policy[key]<1)throw Error("snapshot_execution_policy");
   if(s.policy.timeoutMs>240000 || !Number.isSafeInteger(s.policy.peerTurns) || typeof s.policy.mentionRequired!=="boolean" || !Array.isArray(s.policy.peerNicks) || s.policy.peerNicks.some(n=>typeof n!=="string") || s.policy.peerTurns<0 || s.policy.peerTurns>4 || !Array.isArray(s.policy.peerNicks))throw Error("snapshot_execution_policy");
+  if(s.compatibility){
+    if(Object.keys(s.compatibility).some(k=>!['legacyGoals','peers'].includes(k)) || (s.compatibility.legacyGoals!==undefined && typeof s.compatibility.legacyGoals!=='boolean'))throw Error('snapshot_compatibility');
+    const peers=s.compatibility.peers;
+    if(peers!==undefined && (!Array.isArray(peers) || peers.length>32 || new Set(peers.map(p=>p.channel)).size!==peers.length || new Set(peers.map(p=>foldPeer(String(p?.nick)))).size!==peers.length || peers.some(p=>!/^#[a-z0-9_.-]{1,100}$/.test(p.channel) || p.channel===s.route.channel || typeof p.buffer!=='string' || !p.buffer || typeof p.nick!=='string' || !p.nick || p.nick.length>32 || /[\s\x00-\x1f]/.test(p.nick) || foldPeer(p.nick)===foldPeer(s.route.nick) || !s.policy.peerNicks.some(n=>foldPeer(n)===foldPeer(p.nick)))))throw Error('snapshot_peer_identity');
+  }
   if(s.context.some(m=>!["user","assistant","toolResult"].includes(m.role)))throw Error("unsupported_context_role");
 }
 export async function dryRun(snapshot:Snapshot){validateSnapshot(snapshot);return {hash:await snapshotHash(snapshot),sessionKey:sessionKey(snapshot.route.agent,snapshot.route.channel),archiveEntries:snapshot.archive.length,contextMessages:snapshot.context.length,blockers:[...snapshot.blockers]};}
