@@ -64,22 +64,33 @@ RPC methods are not an authorization substitute; deployment/binding changes and
 these operator actions require the rollout review below. No credential,
 subscription, Cloudflare resource or network change is performed by local tests.
 
-Current provider adapters use existing API-key configuration for OpenAI,
-Anthropic and OpenRouter. Missing models/auth fail before import or model-setting
-mutation; no fallback model is selected. OAuth/custom catalogs need a reviewed
-credential/catalog adapter, including refresh-token ownership, before those agents
-can migrate. Do not copy auth.json or replace an OAuth model silently.
+The staged parity adapters now include replay-safe comma-command handlers,
+durable schedules sharing the subscription/inbox alarm, and the maintained goal
+ledger (including token accounting and cancellation). Ordinary object eviction
+keeps goals active; explicit stop/failure pauses them. Host goal/schedule tools
+retain the human-origin creation boundary. Desktop lifecycle commands use shared
+ownership and durable intent receipts, including uncertainty after interruption.
 
-Remote desktop tools use the existing `/<desktop-id>/mcp` endpoint and preserve
-the desktop ID. Native host control tools (`desktop_control`, `schedule_prompt`,
-skills and goals) are not equivalent to remote MCP tools: the exporter flags
-these, active schedules/goals and custom context projectors for adapter review.
-Only fixed-buffer `weechat_buffers` and guarded `weechat_msg` are currently
-accepted as model-facing IRC tools. Existing broader communication tools require
-explicit scoped adapters; they are never silently omitted or sent unrestricted.
-Other legacy comma commands are not yet implemented. Preserved cost/goal state is
-archived, not falsely described as an enforced active cost ledger. These are
-remaining parity gates, so this PR is not a completed live migration.
+Model adapters include OpenAI, Anthropic, OpenRouter and OpenAI Codex, plus reviewed
+custom models using the supported completions/responses/Anthropic APIs. A shared
+credential-authority object encrypts OAuth credentials at rest and serializes
+refresh; interrupted rotating refreshes require reconciliation. Only explicit
+internal seeding is supported; no login, grant creation or credential copying runs
+at startup. This has been tested with synthetic credentials, not live accounts.
+
+Remote desktop skills use the existing verified MCP skill reader. Broader IRC
+catalog tools require a reviewed exclusive profile; fixed-buffer read/reply guards
+remain in place. Join/part only address already-approved routes and subscriptions.
+They cannot provision a new identity or subscription implicitly.
+
+**Parity is still incomplete:** goal-topic publication, dynamic channel provisioning,
+legacy desktop provisioning quotas/policies, full custom-catalog compatibility and
+live provider coverage remain review/implementation gates. The new skill transport
+and shared OAuth authority still need dedicated workerd integration coverage.
+The inventory exporter remains conservative about unsupported host capabilities;
+do not clear its blockers without reviewing the actual configuration. Archived
+cost state is not an enforced cost ledger. This PR remains staged work, not a
+completed migration or permission to replace the live agents.
 
 ## Private inventory and import rehearsal
 
@@ -108,11 +119,14 @@ may use synthetic owners only. A changed snapshot cannot overwrite an import.
 Raw history imports in atomic 50-entry batches, advancing a receipt in the same
 transaction. Rehearsal never starts the model scheduler or uploads data.
 
-Live per-agent inventory is still blocked in the current cloud task: the connected
-Railway tools expose redacted variables and service metadata, but no production
-shell/volume reader; the execution environment has neither a mounted state volume
-nor existing CLI authentication. No replacement credentials were created. The
-private operator report is kept outside this public repository.
+Private read-only inventory was obtained separately through the authorized
+operator browser. Live inventory and credentials are not included here. Actual
+conversation history can reside in SQLite while JSONL contains only headers;
+a history-preserving export must be transaction-consistent and WAL-aware.
+
+History import is optional for the approved fresh-start path. Keep the original
+Railway volume intact for rollback even when history is intentionally skipped.
+This does not waive model, identity, tools, command, schedule or goal parity.
 
 ## Verified upstream contract
 
@@ -187,7 +201,7 @@ is needed for the verified webhook contract and none is proposed here.
    session keys, nick, remote connection mapping, provider/model/thinking settings,
    histories, active/queued work, schedules, receipts, pending/uncertain outputs,
    peer budgets, goals, desktop bindings, tool permissions and cost/turn caps.
-2. Make a consistent private backup/export with hashes/counts. Never include
+2. Preserve the original volume. If retaining history, make a consistent private backup/export with hashes/counts. Never include
    credentials or private conversations in a PR/log. Current vendored Pi 0.85.1
    state is not assumed schema-compatible with Pi Durable 1.2.0. Rehearse the
    implemented importer against a sanitized export. Shadow conversations are not an
@@ -222,7 +236,7 @@ is needed for the verified webhook contract and none is proposed here.
    signature/challenge behavior and isolate route failures. Disable/unsubscribe
    using the same exact callback and arguments after the test. A passive callback without a prepared snapshot
    has no active outputs. Never prepare/enable that generation during passive tests.
-3. **Parity rehearsal:** complete the private inventory/import and distributed
+3. **Parity rehearsal:** complete the private configuration inventory and optional history import, and distributed
    capability parity above; test synthetic models/tools, restart at each
    commit boundary, bad-model selection, cancellation and uncertain sends. Review
    actual per-agent impact, with exact model/tool budgets retained.
@@ -274,3 +288,28 @@ three-part outbox drain, renewal and durable duplicate rejection after restart.
 It also terminates workerd during an unresolved tool call and verifies that neither
 the tool nor subsequent model/output work repeats. No Cloudflare account is required. Logs
 contain aggregate state counts only. Keep `.dev.vars*` and `.wrangler/` out of git.
+
+## Pending deployment actions (no action performed)
+
+Each action needs its exact target reviewed before execution:
+
+1. Confirm Cloudflare account access, then approve the Worker and SQLite namespaces
+   for sessions, shared desktop coordination and model credential authority.
+2. Review per-agent route, immutable generation, fresh snapshot hash, model/tool
+   configuration and external MCP identity. Provisioning distinct external IRC
+   connections requires its own approval; shared nick switching is prohibited.
+3. Approve secret bindings: existing MCP/desktop access, model keys or explicit
+   OAuth transfer to a single refresh owner, encryption key and per-route signing
+   keys. Do not place values in the PR or deployment logs. Coordinate the old OAuth
+   owner before transfer; two refresh owners may invalidate each other's tokens.
+4. Approve each actual `events/subscribe` call with callback, stable principal,
+   exact arguments, signing key and TTL. Verify the signed challenge, retain the
+   returned grant, then explicitly arm renewal. A local fixture is not this check.
+5. After parity verification, review one-agent cutover: quiesce the old owner,
+   reconcile uncertain effects, fix the generation boundary, enable the new
+   snapshot and verify its actual nick, replies, model, tools and renewal.
+   Preserve the Railway volume and use the rollback procedure above.
+
+Browser sign-in alone authorizes none of these actions. No production stop,
+restart, resource creation, credential installation or subscription is part of
+local validation.

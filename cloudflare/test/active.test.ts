@@ -1,3 +1,4 @@
+import {Automations} from '../src/automations.ts';import {InboxStore} from '../src/store.ts';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';
 import {createModels} from '@earendil-works/pi-ai/models';
@@ -12,9 +13,10 @@ async function fixture(s?:Snapshot){
  const models=createModels();models.setProvider(faux.provider);const snap=s??snapshot(faux.provider.id);snap.model.provider=faux.provider.id;
  const fence={snapshotHash:await snapshotHash(snap),generation:route.generation,after:route.after,legacyOwnerReleased:true as const,identityVerified:true as const};
  let calls=0;const lockDb=database();const ledger=new DesktopLedger(lockDb.sql);
- const options={snapshot:snap,fence,models,gateway:{call:async()=>{calls++;return {content:[{type:'text',text:'tool result'}]};}},desktop:{acquire:async(id:string)=>ledger.acquire(id),verify:async(t:any)=>ledger.verify(t),settle:async(t:any,ok:boolean)=>ledger.settle(t,ok)},wake:async()=>{},report:()=>{}};
+ const automation=new Automations(new InboxStore(lockDb.sql,snap.route));
+ const options={automations:automation,snapshot:snap,fence,models,gateway:{call:async()=>{calls++;return {content:[{type:'text',text:'tool result'}]};}},desktop:{acquire:async(id:string)=>ledger.acquire(id),verify:async(t:any)=>ledger.verify(t),settle:async(t:any,ok:boolean)=>ledger.settle(t,ok)},wake:async()=>{},report:()=>{}};
  let active=await ActiveSession.open(await openNodeSqliteStorage(join(dir,'pi.db')),options);
- return {faux,options,get active(){return active;},get calls(){return calls;},ledger,lockDb,async reopen(){await active.close();active=await ActiveSession.open(await openNodeSqliteStorage(join(dir,'pi.db')),options);},async close(){await active.close();lockDb.db.close();rmSync(dir,{recursive:true,force:true});}};
+ return {faux,options,automation,get active(){return active;},get calls(){return calls;},ledger,lockDb,async reopen(){await active.close();active=await ActiveSession.open(await openNodeSqliteStorage(join(dir,'pi.db')),options);},async close(){await active.close();lockDb.db.close();rmSync(dir,{recursive:true,force:true});}};
 }
 test('active Pi retains imported context, executes a real synthetic model and deduplicates after reopen',async()=>{
  const f=await fixture();try{
@@ -81,5 +83,20 @@ test('shared rooms cannot change models; peers cannot issue control commands',as
  assert.deepEqual(await f.active.handle({...event(),data:{...event().data,text:`${route.nick}: ,model ${f.faux.provider.id}/other`}}),[]);
  assert.deepEqual(await f.active.handle({...event(2),data:{...event(2).data,nick:'peer',text:`${route.nick}: ,stop`}}),[]);
  assert.equal(f.faux.state.callCount,0);
+ }finally{await f.close();}
+});
+
+test('legacy session commands preserve settings and history with replay-safe toggles and resets',async()=>{
+ const f=await fixture();try{
+  const cmd=(n:number,text:string)=>f.active.handle({...event(n),data:{...event(n).data,text}},undefined,'control');
+  const help=await cmd(20,',help');assert.ok(help.some(s=>s.includes(',schedule')));assert.ok(help.every(s=>Buffer.byteLength(s)<=350));
+  assert.match((await cmd(21,',models other')).join(' '),/other/);
+  assert.match((await cmd(22,',thinking off')).join(' '),/off/);
+  const toggle=await cmd(23,',toggle mention');await f.reopen();assert.deepEqual(await cmd(23,',toggle mention'),toggle);
+  await cmd(24,',clear');const c=(await f.active.harness.conversation(f.active.conversationId,ctx))!;
+  assert.equal((await c.context(ctx)).messages.length,0);assert.ok((await c.entries({},100,undefined,ctx)).items.length>=3);
+  assert.match((await cmd(25,',reload')).join(' '),/reloaded/);
+  const scheduled=await cmd(26,',schedule once 10s :: keep working');assert.ok(scheduled[0].includes('id'));assert.ok(f.automation.deadline());
+  assert.equal(f.faux.state.callCount,0,'commands must not become model instructions');
  }finally{await f.close();}
 });

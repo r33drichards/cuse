@@ -53,3 +53,15 @@ export async function dispatchReply(client:ToolClient,route:Route,text:string,fu
   const response=result(await client.callTool({name,arguments:args})) as {accepted?:boolean;dispatched?:boolean;buffer?:string};
   if (response.buffer!==route.buffer || (fullControl?response.dispatched!==true:response.accepted!==true)) throw Error("dispatch_uncertain");
 }
+/** Human control path: exact registered IRC command, bound to this profile/buffer. */
+export async function dispatchChannelAction(client:ToolClient,route:Route,action:'join'|'part'|'topic',text?:string):Promise<void>{
+ const identity=await readChannel(client,route,1) as {buffer?:{full_name?:string;localvar_nick?:string}};
+ if(identity.buffer?.full_name!==route.buffer || identity.buffer.localvar_nick!==route.nick)throw Error('identity_mapping_changed');
+ const manifest=result(await client.callTool({name:'weechat_command_manifest',arguments:{}})) as {schema_version?:number;commands?:Record<string,unknown>[]};
+ const matches=manifest.commands?.filter(c=>c.plugin==='irc' && c.name===action)??[];const c=matches[0];
+ if(manifest.schema_version!==1 || matches.length!==1 || typeof c.tool_name!=='string' || !c.tool_name.startsWith('weechat_cmd_irc_') || typeof c.revision!=='string' || !/^[a-f0-9]{64}$/.test(c.revision) || c.raw_fallback!==true)throw Error('command_unavailable');
+ if(text!==undefined && (/[\x00-\x1f\x7f]/.test(text) || new TextEncoder().encode(text).length>250))throw Error('topic_invalid');
+ const args=action==='topic'?`${route.channel} ${text??''}`:route.channel;
+ const reply=result(await client.callTool({name:c.tool_name,arguments:{buffer:route.buffer,registry_revision:c.revision,syntax:'raw',params:{arguments:args}}})) as {dispatched?:boolean;buffer?:string};
+ if(reply.dispatched!==true || reply.buffer!==route.buffer)throw Error('dispatch_uncertain');
+}

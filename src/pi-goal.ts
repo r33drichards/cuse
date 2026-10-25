@@ -53,6 +53,7 @@ export class PiGoalLedger {
 		db: DatabaseSync,
 		transaction: <T>(operation: () => T) => T,
 		enqueue: (message: InboxMessage) => unknown,
+    options: {pauseOnRestart?: boolean} = {},
 	) {
 		this.db = db;
 		this.tx = transaction;
@@ -64,7 +65,7 @@ export class PiGoalLedger {
    CREATE TABLE IF NOT EXISTS pi_goal_inputs (message_id TEXT PRIMARY KEY, channel TEXT NOT NULL, goal_id TEXT NOT NULL, kind TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, revoked_turn_seq INTEGER NOT NULL DEFAULT 0);
   `);
 		// Restart pauses continuation. Preserve interrupted rows for exact-ID recovery.
-		this.tx(() => {
+		if(options.pauseOnRestart !== false)this.tx(() => {
 			for (const row of db.prepare("SELECT channel FROM pi_goals").all()) {
 				const channel = String(row.channel);
 				const goal = this.read(channel);

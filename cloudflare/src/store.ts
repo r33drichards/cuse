@@ -4,7 +4,7 @@ export interface Sql {
   all(query: string, ...params: (string | number | null)[]): Row[];
   transaction<T>(fn: () => T): T;
 }
-export interface Job extends Row { id: string; payload: string; state: string; attempts: number; checkpoint: string | null; }
+export interface Job extends Row { id: string; payload: string; state: string; attempts: number; checkpoint: string | null; origin:string; }
 /** SQL is shared between actual DO storage and file-backed Node tests. All mutations are synchronous transactions. */
 export class InboxStore {
   readonly sql: Sql;
@@ -17,6 +17,7 @@ export class InboxStore {
       attempts INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL DEFAULT 0, checkpoint TEXT, error TEXT)`);
     sql.all(`CREATE TABLE IF NOT EXISTS cuse_effects (id TEXT PRIMARY KEY, event TEXT NOT NULL,
       payload TEXT NOT NULL, state TEXT NOT NULL, error TEXT)`);
+    if(!sql.all("PRAGMA table_info(cuse_inbox)").some(c=>c.name==="origin"))sql.all("ALTER TABLE cuse_inbox ADD COLUMN origin TEXT NOT NULL DEFAULT 'webhook'");
     sql.transaction(() => {
       const manifest = JSON.stringify(route);
       const old = sql.all("SELECT value FROM cuse_manifest WHERE key='route'")[0];
@@ -38,6 +39,13 @@ export class InboxStore {
       return "accepted";
     });
   }
+  /** Internal scheduler/goal admission only; never accepted from webhook fields. */
+  internal(id:string,body:string,origin:"schedule"|"goal",now=Date.now()):void {
+    if(!id.startsWith(origin==="goal"?"pi-goal/":"schedule/"))throw Error("internal_id_invalid");
+    if(Number(this.sql.all("SELECT COUNT(*) AS n FROM cuse_inbox")[0].n)>=10000)throw Error("inbox_capacity");
+    const payload:MessageEvent={eventId:id,name:"message.created",timestamp:new Date(now).toISOString(),cursor:"internal",data:{channel_id:this.route.buffer,message_id:id,nick:origin,text:body}};
+    this.sql.all("INSERT OR IGNORE INTO cuse_inbox(id,digest,payload,state,origin) VALUES (?,?,?,'pending',?)",id,id,JSON.stringify(payload),origin);
+  }
   /** Interrupted tool/model work may already have external effects. Never replay automatically. */
   recover(): void {
     this.sql.transaction(() => {
@@ -48,7 +56,7 @@ export class InboxStore {
   claim(now: number): Job | undefined {
     return this.sql.transaction(() => {
       // An unresolved head blocks later turns; no reordering after failure/cancellation races.
-      const head = this.sql.all("SELECT * FROM cuse_inbox WHERE state NOT IN ('done','cancelled') ORDER BY position LIMIT 1")[0] as Job | undefined;
+      const head = this.sql.all("SELECT * FROM cuse_inbox WHERE state NOT IN ('done','cancelled') ORDER BY CASE WHEN origin='control' THEN 0 ELSE 1 END,position LIMIT 1")[0] as Job | undefined;
       if (!head || head.state !== "pending" || Number(head.due) > now) return;
       this.sql.all("UPDATE cuse_inbox SET state='running',attempts=attempts+1 WHERE id=?",head.id);
       return {...head,state:"running",attempts:head.attempts + 1};
@@ -58,7 +66,7 @@ export class InboxStore {
     if (value.length > 262144) throw Error("checkpoint_capacity");
     this.sql.all("UPDATE cuse_inbox SET checkpoint=? WHERE id=? AND state='running'",value,id);
   }
-  complete(id: string, outputs: readonly string[]): void {
+  complete(id: string, outputs: readonly string[], onCommit?:()=>void): void {
     this.sql.transaction(() => {
       if (this.job(id)?.state !== "running") return; // cancellation fences a late completion
       if (outputs.length > 32) throw Error("output_capacity");
@@ -68,6 +76,7 @@ export class InboxStore {
           `${objectKey(this.route)}:${id}:${i}`,id,JSON.stringify({agent:this.route.agent,channel:this.route.channel,profile:this.route.profile,text:outputs[i]}));
       }
       this.sql.all("UPDATE cuse_inbox SET state='done',error=NULL WHERE id=?",id);
+      onCommit?.();
     });
   }
   fail(id: string, safeToRetry: boolean, now: number): void {

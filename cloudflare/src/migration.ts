@@ -13,7 +13,7 @@ export interface ExecutionPolicy {
 export interface Snapshot {
   version:1; sourceSessionId:string; route:Route;
   model:{provider:string;modelId:string}; thinkingLevel:ModelThinkingLevel;
-  instructions:string; tools:{name:string;description:string;inputSchema:Record<string,unknown>;target:"irc"|"desktop"}[];
+  instructions:string; tools:{name:string;description:string;inputSchema:Record<string,unknown>;target:"irc"|"desktop"|"host"}[];
   desktopBinding:DesktopBinding; desktopId?:string;
   policy:ExecutionPolicy;
   /** Complete raw history and source metadata; never interpreted as new work. */
@@ -26,11 +26,11 @@ export async function snapshotHash(snapshot:Snapshot):Promise<string>{return dig
 export function validateSnapshot(s:Snapshot):void {
   if(s?.version!==1 || !s.sourceSessionId)throw Error("snapshot_version");validateRoute(s.route);
   sessionKey(s.route.agent,s.route.channel);validateDesktopBinding(s.desktopBinding);
-  if(!s.model?.provider || !s.model.modelId || !["off","minimal","low","medium","high","xhigh"].includes(s.thinkingLevel))throw Error("snapshot_model");
+  if(!s.model?.provider || !s.model.modelId || !["off","minimal","low","medium","high","xhigh","max"].includes(s.thinkingLevel))throw Error("snapshot_model");
   if(s.desktopBinding.kind!=="none" && !s.desktopId)throw Error("snapshot_desktop_missing");
   if(s.desktopBinding.kind==="existing" && s.desktopBinding.desktopId!==s.desktopId)throw Error("snapshot_desktop_conflict");
   if(typeof s.instructions!=="string" || !Array.isArray(s.archive) || !Array.isArray(s.context) || !Array.isArray(s.blockers))throw Error("snapshot_history");
-  if(!Array.isArray(s.tools) || new Set(s.tools.map(t=>t.name)).size!==s.tools.length || s.tools.some(t=>!t.name || !t.inputSchema || !["irc","desktop"].includes(t.target)))throw Error("snapshot_tools");
+  if(!Array.isArray(s.tools) || new Set(s.tools.map(t=>t.name)).size!==s.tools.length || s.tools.some(t=>!t.name || !t.inputSchema || !["irc","desktop","host"].includes(t.target)))throw Error("snapshot_tools");
   for(const key of ["modelRequests","toolCalls","timeoutMs"] as const)if(!Number.isSafeInteger(s.policy?.[key]) || s.policy[key]<1)throw Error("snapshot_execution_policy");
   if(s.policy.timeoutMs>240000 || !Number.isSafeInteger(s.policy.peerTurns) || typeof s.policy.mentionRequired!=="boolean" || !Array.isArray(s.policy.peerNicks) || s.policy.peerNicks.some(n=>typeof n!=="string") || s.policy.peerTurns<0 || s.policy.peerTurns>4 || !Array.isArray(s.policy.peerNicks))throw Error("snapshot_execution_policy");
   if(s.context.some(m=>!["user","assistant","toolResult"].includes(m.role)))throw Error("unsupported_context_role");
