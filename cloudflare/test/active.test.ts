@@ -14,7 +14,7 @@ async function fixture(s?:Snapshot){
  const fence={snapshotHash:await snapshotHash(snap),generation:route.generation,after:route.after,legacyOwnerReleased:true as const,identityVerified:true as const};
  let calls=0;const lockDb=database();const ledger=new DesktopLedger(lockDb.sql);
  const automation=new Automations(new InboxStore(lockDb.sql,snap.route));
- const options={automations:automation,snapshot:snap,fence,models,gateway:{call:async()=>{calls++;return {content:[{type:'text',text:'tool result'}]};}},desktop:{acquire:async(id:string)=>ledger.acquire(id),verify:async(t:any)=>ledger.verify(t),settle:async(t:any,ok:boolean)=>ledger.settle(t,ok)},wake:async()=>{},report:()=>{}};
+ const options={automations:automation,snapshot:snap,fence,models,gateway:{call:async()=>{calls++;return {content:[{type:'text',text:'tool result'}]};}},desktop:{tryAcquire:async(id:string)=>ledger.tryAcquire(id),acquire:async(id:string)=>ledger.acquire(id),verify:async(t:any)=>ledger.verify(t),settle:async(t:any,ok:boolean)=>ledger.settle(t,ok)},wake:async()=>{},report:()=>{}};
  let active=await ActiveSession.open(await openNodeSqliteStorage(join(dir,'pi.db')),options);
  return {faux,options,automation,get active(){return active;},get calls(){return calls;},ledger,lockDb,async reopen(){await active.close();active=await ActiveSession.open(await openNodeSqliteStorage(join(dir,'pi.db')),options);},async close(){await active.close();lockDb.db.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -109,5 +109,28 @@ test('legacy goal submit reaches human review without granting another provider 
  const replies=await f.active.handle(JSON.parse(job.payload),undefined,'goal');assert.match(replies[0],/review/);assert.equal(f.faux.state.callCount,2);assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').phase,'review');
  f.automation.inbox.complete(job.id,replies,()=>f.automation.finish(job.id));await f.reopen();assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').phase,'review');assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').recoveryRequired,undefined);
  const approval=event(99);approval.data.text=',goal approve synthetic';await f.active.handle(approval);assert.equal(f.automation.legacy!.get(f.automation.channel,'synthetic').phase,'completed');
+ }finally{await f.close();}
+});
+
+test('healthy desktop contention does not poison the losing session',async()=>{
+ const s=snapshot();s.desktopBinding={kind:'existing',desktopId:'desk-one'};s.desktopId='desk-one';s.tools=[{name:'run_js',description:'existing tool',inputSchema:{type:'object',properties:{}},target:'desktop'}];
+ const f=await fixture(s);try{
+  const owner=f.ledger.acquire('other-healthy-agent');
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('Desktop busy; no action performed.')]);
+  assert.deepEqual(await f.active.handle(event()),['Desktop busy; no action performed.']);assert.equal(f.calls,0);
+  f.ledger.settle(owner,true);await f.reopen();
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('done')]);
+  assert.deepEqual(await f.active.handle(event(2)),['done']);assert.equal(f.calls,1);
+  assert.equal(f.lockDb.sql.all('SELECT state FROM cuse_desktop')[0].state,'idle');
+ }finally{await f.close();}
+});
+test('lost acquire response remains uncertain and never replays the tool',async()=>{
+ const s=snapshot();s.desktopBinding={kind:'existing',desktopId:'desk-one'};s.desktopId='desk-one';s.tools=[{name:'run_js',description:'existing tool',inputSchema:{type:'object',properties:{}},target:'desktop'}];
+ const f=await fixture(s);try{
+  let attempts=0;f.options.desktop.tryAcquire=async id=>{attempts++;f.ledger.tryAcquire(id);throw Error('lost response');};
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('must not run')]);
+  await assert.rejects(f.active.handle(event()));assert.equal(f.calls,0);assert.equal(attempts,1);
+  assert.equal(f.lockDb.sql.all('SELECT state FROM cuse_desktop')[0].state,'held');
+  await f.reopen();await assert.rejects(f.active.handle(event(2)));assert.equal(f.calls,0);assert.equal(attempts,1);assert.equal(f.faux.state.callCount,1);
  }finally{await f.close();}
 });

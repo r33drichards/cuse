@@ -13,7 +13,7 @@ import { boundedBody,digest,IntakeError,objectKey,parseEvent,validateRoute,verif
 import { InboxStore,type Sql,type Row } from "./store.ts";
 import {ActiveSession} from "./active.ts";
 import {dryRun,type Snapshot,type Fence} from "./migration.ts";
-import {DesktopLedger,type Ticket} from "./desktop-coordinator.ts";
+import {DesktopLedger,type Ticket,type AcquireResult} from "./desktop-coordinator.ts";
 import {configuredModels} from "./models.ts";
 import {gateway,type Access} from "./gateway.ts";
 import {withMcp,dispatchReply,dispatchChannelAction,readTopic,verifyJoined,readChannel} from "./mcp.ts";
@@ -310,6 +310,7 @@ export class DesktopCoordinator extends DurableObject<Env>{
   async current(initial:string){return this.lifecycle.current(initial);}
   async action(access:DesktopAccess,action:DesktopAction,id:string,confirmId?:string):Promise<string>{return this.lifecycle.action(access,action,id,confirmId,fetch,access.provision?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName('provision:'+access.provision.namespace)):undefined);}
   async acquire(operation:string):Promise<Ticket>{return this.ledger.acquire(operation);}
+  async tryAcquire(operation:string):Promise<AcquireResult>{return this.ledger.tryAcquire(operation);}
   async verify(ticket:Ticket):Promise<void>{this.ledger.verify(ticket);}
   async settle(ticket:Ticket,knownComplete:boolean):Promise<void>{this.ledger.settle(ticket,knownComplete);}
 }

@@ -1,5 +1,6 @@
 import type {Sql} from "./store.ts";
 export interface Ticket {operation:string;fence:number;}
+export type AcquireResult={status:"acquired";ticket:Ticket}|{status:"busy"};
 /** The remote desktop has no fencing-token API. Therefore locks NEVER expire or
  * transfer automatically: a timed-out/evicted owner blocks until reconciliation.
  * This avoids pretending a local lease can fence an old remote browser action. */
@@ -7,11 +8,18 @@ export class DesktopLedger {
   readonly sql:Sql;
   constructor(sql:Sql){this.sql=sql;sql.all("CREATE TABLE IF NOT EXISTS cuse_desktop (id INTEGER PRIMARY KEY CHECK(id=1),epoch INTEGER NOT NULL,operation TEXT,state TEXT NOT NULL)");sql.all("INSERT OR IGNORE INTO cuse_desktop VALUES (1,0,NULL,'idle')");}
   acquire(operation:string):Ticket{
+    const result=this.tryAcquire(operation);
+    if(result.status==='busy')throw Error("desktop_reconciliation_required");
+    return result.ticket;
+  }
+  /** Explicit contention is safe; a failed RPC is not proof acquisition failed. */
+  tryAcquire(operation:string):AcquireResult{
     if(!operation || operation.length>1024)throw Error("desktop_operation_invalid");
     return this.sql.transaction(()=>{
       const row=this.sql.all("SELECT * FROM cuse_desktop WHERE id=1")[0];
+      if(row.state==='held')return {status:'busy'};
       if(row.state!=="idle")throw Error("desktop_reconciliation_required");
-      const fence=Number(row.epoch)+1;this.sql.all("UPDATE cuse_desktop SET epoch=?,operation=?,state='held' WHERE id=1",fence,operation);return {operation,fence};
+      const fence=Number(row.epoch)+1;this.sql.all("UPDATE cuse_desktop SET epoch=?,operation=?,state='held' WHERE id=1",fence,operation);return {status:'acquired',ticket:{operation,fence}};
     });
   }
   verify(ticket:Ticket):void{
@@ -27,3 +35,5 @@ export class DesktopLedger {
   }
 }
 export interface DesktopLock {acquire(operation:string):Promise<Ticket>;verify(ticket:Ticket):Promise<void>;settle(ticket:Ticket,knownComplete:boolean):Promise<void>;}
+
+export interface DesktopToolLock extends DesktopLock {tryAcquire(operation:string):Promise<AcquireResult>;}

@@ -13,13 +13,13 @@ import type {TSchema} from "@earendil-works/pi-ai";
 import {importSnapshot,snapshotHash,type Snapshot,type Fence} from "./migration.ts";
 import {objectKey,type MessageEvent} from "./protocol.ts";
 import {modelContent} from "../../src/mcp-content.ts";
-import type {DesktopLock} from "./desktop-coordinator.ts";
+import type {DesktopToolLock} from "./desktop-coordinator.ts";
 const Intent=defineDocFamily<{started:boolean;completed:boolean},null>({family:true,kind:"cuse.remote-intent",version:1,scope:"session",initial:()=>({started:false,completed:false})});
 const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:"cuse.halt",version:1,scope:"session",initial:()=>({halted:false,pending:[]})});
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
 export interface ToolGateway {call(target:"irc"|"desktop",name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<{content:unknown[];isError?:boolean;structuredContent?:unknown}>;}
-export interface ActiveOptions {snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopLock;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
+export interface ActiveOptions {snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
 export class ActiveSession {
   readonly harness:Harness;readonly conversationId:ConversationId;readonly options:ActiveOptions;
   private running=false;
@@ -76,7 +76,16 @@ export class ActiveSession {
         options.automations?.legacy?.spendTool(options.automations.channel,authority,operation);
         let ticket;
         try{
-          ticket=t.target==="desktop"?await options.desktop!.acquire(operation):undefined;
+          if(t.target==="desktop"){
+            const result=await options.desktop!.tryAcquire(operation);
+            if(result.status==='busy'){
+              // No remote tool ran and the coordinator explicitly refused ownership.
+              // Preserve the spent tool budget, but do not poison a healthy session.
+              await api.commit(async tx=>{(await tx.doc(Intent,operation,null)).completed=true;const guard=await tx.doc(Halt,key,null);guard.pending=guard.pending.filter(id=>id!==operation);},ctx);
+              return {output:[{type:"text" as const,text:"Desktop is busy with another operation. No tool action was performed; try again later."}],details:{}};
+            }
+            ticket=result.ticket;
+          }
           if(ticket)await options.desktop!.verify(ticket);
           const result=await options.gateway.call(t.target,t.name,args as Record<string,unknown>,ctx.abortSignal);
           // An MCP error response can follow a partial side effect. Hold the lock.
