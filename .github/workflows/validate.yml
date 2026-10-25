@@ -1,7 +1,9 @@
 name: Release preparation (no deployment)
 on:
   push:
+    branches-ignore: [main]
   pull_request:
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read
