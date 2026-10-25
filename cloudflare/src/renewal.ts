@@ -10,6 +10,7 @@ export class Renewal {
     const due=renewalAt(grant,now);
     this.sql.all("INSERT INTO cuse_grant VALUES (1,?,?,0,'active') ON CONFLICT(id) DO UPDATE SET grant_json=excluded.grant_json,due=excluded.due,attempts=0,state='active'",JSON.stringify(grant),due);
   }
+  valid(now:number):boolean {const row=this.sql.all("SELECT grant_json FROM cuse_grant WHERE state='active'")[0];return !!row && Date.parse((JSON.parse(String(row.grant_json)) as Grant).refreshBefore)>now;}
   deadline():number|undefined {const row=this.sql.all("SELECT due FROM cuse_grant WHERE state='active'")[0];return row?Number(row.due):undefined;}
   async alarm(rpc:Rpc,spec:SubscriptionSpec,now:number):Promise<void> {
     const row=this.sql.all("SELECT * FROM cuse_grant WHERE state='active'")[0];

@@ -1,9 +1,9 @@
 # Staged migration to Pi Durable and WeeChat MCP events
 
-Status: stage 1 implementation for review, **not a production cutover**. The new
+Status: staged implementation and local active rehearsal for review, **not a production cutover**. The new
 `cloudflare/` entry point has no direct IRC client, native WeeChat subprocess,
 resource listener, or fallback connection. Incoming traffic is exclusively signed
-MCP Events webhooks. The prepared read/reply adapter uses authenticated MCP tools.
+MCP Events webhooks. The read/reply adapter uses authenticated MCP tools.
 The external weechat-mcp service owns its IRC connections.
 
 The deployed cuse service is not changed by this package. Its legacy entry point
@@ -27,10 +27,19 @@ not propagate into native transport disposal. This fix has not been deployed.
 - Alarm-driven bounded passive journaling with stable Pi request IDs. A crash
   between Pi commit and inbox completion safely reuses the original receipt.
   Intake/alarm work is serialized to avoid deleting a newly scheduled alarm.
-- A separately tested execution coordinator with persisted checkpoints, explicit
-  pre-effect retry classification (three attempts maximum), deadlines, persistent
-  cancellation and late-completion fencing. Interrupted arbitrary model/tool work
-  blocks for reconciliation. It is not enabled by the Worker.
+- Active Pi execution behind a reviewed snapshot hash, immutable generation and
+  explicitly armed live grant. Persisted request IDs/checkpoints resume the same
+  submission. Model/tool budgets are reserved before calls; provider retries are
+  disabled. Deadlines, durable cancellation and late-completion fencing apply.
+  Unsafe tool intents surviving restart block further generation for review.
+- Private legacy exporter, read-only dry run and resumable history importer.
+  Raw entries remain an archive; the original vendored Pi context projector
+  supplies model context. Model/thinking/instructions, exact tool names, desktop
+  bindings and peer budget survive import. Unsupported capabilities block import.
+- Durable desktop coordinator shared by desktop ID across conversation objects.
+  Remote APIs cannot honor a fencing token, so locks never expire or transfer
+  after uncertainty. Review is required before reconciliation. This excludes
+  overlapping calls, not an entire multi-call browser workflow.
 - Persistent outgoing intents: reserve before I/O, never retry an uncertain
   dispatch, preserve uncertain state through restart, and block later sends behind
   it. `dispatched` means local MCP acceptance, not delivery to IRC. IRC does not
@@ -40,14 +49,70 @@ not propagate into native transport disposal. This fix has not been deployed.
   pinned protocol `2026-07-28`. Refresh reuses exact arguments/callback, omits the
   cursor for routine renewal, and stops on changed grant identity or truncation.
   Renewal is explicitly armed only for an already-approved grant. It is not
-  auto-wired into Worker startup and no live grant has been created.
+  created on startup; once armed, renewal shares the Worker alarm with inbox work.
+  Expiry, changed grant ID or truncation stops active processing. No live grant
+  has been created.
 - Safe failure codes and aggregate state counts, without payloads, keys, headers,
   cursors or arbitrary exception strings in Worker logs.
 
-The package is intentionally **passive-only**. There is no environment flag that
-turns it into an active agent. Connecting model/tool execution requires the parity
-work below and a reviewed code change. No model provider, secret, subscription,
-Cloudflare account, paid resource, or network setting is created by the code/tests.
+Default operation remains passive. Active execution requires all of: an internal
+`prepare(snapshot,fence)` call on a **fresh generation**, an approved route access
+binding whose `enabledHash` matches the snapshot, approved model credentials,
+verified exclusive MCP identity, and `armRenewal(grant)` for an already-approved
+subscription. There are no public import/activation/admin HTTP endpoints. Internal
+RPC methods are not an authorization substitute; deployment/binding changes and
+these operator actions require the rollout review below. No credential,
+subscription, Cloudflare resource or network change is performed by local tests.
+
+Current provider adapters use existing API-key configuration for OpenAI,
+Anthropic and OpenRouter. Missing models/auth fail before import or model-setting
+mutation; no fallback model is selected. OAuth/custom catalogs need a reviewed
+credential/catalog adapter, including refresh-token ownership, before those agents
+can migrate. Do not copy auth.json or replace an OAuth model silently.
+
+Remote desktop tools use the existing `/<desktop-id>/mcp` endpoint and preserve
+the desktop ID. Native host control tools (`desktop_control`, `schedule_prompt`,
+skills and goals) are not equivalent to remote MCP tools: the exporter flags
+these, active schedules/goals and custom context projectors for adapter review.
+Only fixed-buffer `weechat_buffers` and guarded `weechat_msg` are currently
+accepted as model-facing IRC tools. Existing broader communication tools require
+explicit scoped adapters; they are never silently omitted or sent unrestricted.
+Other legacy comma commands are not yet implemented. Preserved cost/goal state is
+archived, not falsely described as an enforced active cost ledger. These are
+remaining parity gates, so this PR is not a completed live migration.
+
+## Private inventory and import rehearsal
+
+Run the exporter with an existing authorized read-only shell or consistent private
+snapshot. It reads channel state, JSONL history, durable session SQLite and the
+delivery ledger; it does not read credential files or contact services. Output
+must be outside the repository, is created mode 0600 and never overwrites a file.
+A double-read digest detects changes but does not prove a quiescent handoff.
+
+```sh
+npm run bootstrap
+node cloudflare/scripts/inventory.mjs --state /private/channels.json \
+  --session-dir /private/sessions --delivery-db /private/irc-delivery.sqlite \
+  --out /private/inventory.json --config /private/reviewed-mappings.json
+node cloudflare/scripts/import.mjs /private/snapshot.json
+node cloudflare/scripts/import.mjs /private/snapshot.json /private/rehearsal.sqlite /private/fence.json
+```
+
+The optional reviewed mapping is keyed by the existing `sessionKey(agent,channel)`
+and supplies the exact route, preserved instructions, tool schemas/targets and
+execution policy. The inventory contains `snapshots`; select one into the private
+snapshot file. Review counts, blockers and source equality before import. A fence
+contains `snapshotHash`, `generation`, `after`, `legacyOwnerReleased:true` and
+`identityVerified:true`. Those assertions require evidence; a synthetic rehearsal
+may use synthetic owners only. A changed snapshot cannot overwrite an import.
+Raw history imports in atomic 50-entry batches, advancing a receipt in the same
+transaction. Rehearsal never starts the model scheduler or uploads data.
+
+Live per-agent inventory is still blocked in the current cloud task: the connected
+Railway tools expose redacted variables and service metadata, but no production
+shell/volume reader; the execution environment has neither a mounted state volume
+nor existing CLI authentication. No replacement credentials were created. The
+private operator report is kept outside this public repository.
 
 ## Verified upstream contract
 
@@ -98,6 +163,17 @@ identity-bound send. A single shared connection cannot preserve several distinct
 dispatch but that read cannot reserve identity atomically. Do not switch the nick
 before each send: it changes a shared network identity and races other work.
 
+The upstream `container_entrypoint.py` configures one `WEECHAT_HOME`, one server
+named `docker`, one `IRC_NICK` and its channels. HTTP MCP clients connect to that
+same WeeChat process; separate HTTP connections do not create profiles. Minimal
+configuration-only solution: one independently owned external service/home and
+stable MCP principal/event database per agent identity, using exact buffer names.
+An alternative upstream change is an explicit named-server configuration list,
+per-principal buffer restrictions, and startup connection of each configured
+server. It needs tests for cross-profile reads/sends/subscriptions and atomic
+ownership; merely adding a request `profile` field would not provide isolation.
+Neither alternative has been provisioned or changed in this PR.
+
 Before active execution, either verify existing external WeeChat connections for
 each preserved identity and scope credentials/buffers to them, or review an
 upstream identity-routing capability. Creating/configuring such connections,
@@ -113,8 +189,8 @@ is needed for the verified webhook contract and none is proposed here.
    peer budgets, goals, desktop bindings, tool permissions and cost/turn caps.
 2. Make a consistent private backup/export with hashes/counts. Never include
    credentials or private conversations in a PR/log. Current vendored Pi 0.85.1
-   state is not assumed schema-compatible with Pi Durable 1.2.0. Build/test the
-   explicit importer against a sanitized export. Shadow conversations are not an
+   state is not assumed schema-compatible with Pi Durable 1.2.0. Rehearse the
+   implemented importer against a sanitized export. Shadow conversations are not an
    import or a substitute for those histories. Keep originals intact.
 3. Preserve the existing prompt framing, mention/control-channel rules, peer
    distrust and loop budgets. Upstream excludes its own nick, which may differ
@@ -124,8 +200,9 @@ is needed for the verified webhook contract and none is proposed here.
    files or spawn WeeChat, Python, shells or browsers. Reconnect the same desktop
    IDs rather than creating replacements. A durable shared-resource coordinator
    with fencing is required before two conversation objects can share a desktop;
-   existing process-local locks cannot provide cross-object exclusion. This
-   coordinator and active remote tool integration are not yet implemented.
+   existing process-local locks cannot provide cross-object exclusion. The
+   coordinator and remote tool adapter are implemented and tested locally; actual
+   agent mappings and any multi-call workflow locks still require review.
 5. Test model/provider credential validation before changing committed settings;
    no silent provider fallback. Test durable budget accounting around failed and
    repeated model/tool calls. Do not mark arbitrary remote tools replay-safe.
@@ -143,10 +220,10 @@ is needed for the verified webhook contract and none is proposed here.
    TTL and expected data disclosure. Create one test-channel grant explicitly;
    retain the returned ID/refresh deadline and arm renewal. Reconcile observed
    signature/challenge behavior and isolate route failures. Disable/unsubscribe
-   using the same exact callback and arguments after the test. Current build has
-   no active outputs even if a passive callback is configured.
+   using the same exact callback and arguments after the test. A passive callback without a prepared snapshot
+   has no active outputs. Never prepare/enable that generation during passive tests.
 3. **Parity rehearsal:** complete the private inventory/import and distributed
-   resource coordination above; test synthetic models/tools, restart at each
+   capability parity above; test synthetic models/tools, restart at each
    commit boundary, bad-model selection, cancellation and uncertain sends. Review
    actual per-agent impact, with exact model/tool budgets retained.
 4. **Explicit active cutover:** quiesce one legacy agent after approval; reconcile
@@ -182,16 +259,18 @@ From repository root, with Node 24:
 ```sh
 npm --prefix cloudflare ci --ignore-scripts
 npm --prefix cloudflare run check
+npm run bootstrap
 npm --prefix cloudflare test
 npm --prefix cloudflare run test:worker
 WRANGLER_SEND_METRICS=false npm --prefix cloudflare run dry-run
-npm run bootstrap
 npm run check
 npm test
 ```
 
 Tests use fixed synthetic signing material and fake model/tool responses. The
 workerd integration starts only a local Worker, uses a temporary persisted store,
-waits for the actual DO alarm to commit a Pi journal entry, restarts workerd and
-verifies durable duplicate rejection. No Cloudflare account is required. Logs
+waits for actual DO alarms, verifies passive and active imports, model/tool calls,
+three-part outbox drain, renewal and durable duplicate rejection after restart.
+It also terminates workerd during an unresolved tool call and verifies that neither
+the tool nor subsequent model/output work repeats. No Cloudflare account is required. Logs
 contain aggregate state counts only. Keep `.dev.vars*` and `.wrangler/` out of git.

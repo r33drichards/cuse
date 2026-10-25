@@ -27,3 +27,15 @@ test("renewal is explicitly armed, bounded and persists attempts across controll
  assert.equal(calls,3);assert.equal(r.deadline(),undefined);
  }finally{db.close();}
 });
+test('expiry, changed grant and truncated replay stop renewal and invalidate active admission',async()=>{
+ const spec:SubscriptionSpec={arguments:{channel_id:route.buffer,trigger:'message'},callback:'https://example.invalid/events/test',secret,ttlMs:100000};
+ for(const next of [{id:'different',truncated:false},{id:'sub',truncated:true}]){
+  const {db,sql}=database();try{const r=new Renewal(sql);r.arm({id:'sub',refreshBefore:new Date(100000).toISOString(),cursor:null,truncated:false},0);
+  assert.equal(r.valid(1),true);await r.alarm(async()=>({...next,refreshBefore:new Date(200000).toISOString(),cursor:null}),spec,75000);
+  assert.equal(r.valid(75000),false);assert.equal(r.deadline(),undefined);assert.equal(sql.all('SELECT state FROM cuse_grant')[0].state,'coverage-gap');
+  }finally{db.close();}
+ }
+ const {db,sql}=database();try{const r=new Renewal(sql);r.arm({id:'sub',refreshBefore:new Date(100000).toISOString(),cursor:null,truncated:false},0);let calls=0;
+ await r.alarm(async()=>{calls++;throw Error();},spec,100000);assert.equal(calls,0);assert.equal(r.valid(100000),false);
+ }finally{db.close();}
+});

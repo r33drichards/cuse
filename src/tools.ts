@@ -2,7 +2,8 @@ import type { AgentHarnessTool } from "@earendil-works/pi-agent-core";
 import type { ScheduleRequest } from "./schedule-commands.ts";
 import type { PiGoalDelegate } from "./pi-goal.ts";
 import { PublicError } from "./public-error.ts";
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import { modelContent } from "./mcp-content.ts";
+export { modelContent } from "./mcp-content.ts";
 import { type TSchema, Type } from "typebox";
 import { defineTool, type ToolDefinition } from "../core/extensions/index.ts";
 import type { DesktopMcp, RemoteResult, RemoteTool } from "./computer-use.ts";
@@ -18,21 +19,6 @@ export interface ChannelDelegate {
 export interface CommunicationMcp {
  tools(): Promise<RemoteTool[]>;
  call(name: string, args: unknown, signal?: AbortSignal): Promise<RemoteResult>;
-}
-
-/** Keep screenshots in model context; never serialize image base64 into IRC text. */
-export function modelContent(result: RemoteResult): (TextContent | ImageContent)[] {
- const content: (TextContent | ImageContent)[] = [];
- for (const value of result.content ?? []) {
-  if (typeof value !== "object" || value === null) continue;
-  const block = value as Record<string, unknown>;
-  if (block.type === "text" && typeof block.text === "string") content.push({ type: "text", text: block.text });
-  else if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") {
-   content.push({ type: "image", data: block.data, mimeType: block.mimeType });
-  } else content.push({ type: "text", text: "[Unsupported MCP content: " + String(block.type) + "]" });
- }
- if (!content.length) content.push({ type: "text", text: result.structuredContent === undefined ? "(no output)" : JSON.stringify(result.structuredContent) });
- return content;
 }
 
 const ALLOWED_TOOLS = new Set(["run_js", "get_artifact", "list_artifacts", "get_artifact_upload_url"]);
