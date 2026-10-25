@@ -330,7 +330,7 @@ for (const durable of [false, true]) {
     if (existingSession) assert.equal(await f.message(`,model ${label(current)}`), undefined);
     const before = f.bot.store.entries(), opens = f.opens, changes = [...f.changes];
     f.posted.length = 0; f.calls.length = 0; f.setAuthState(auth);
-    assert.ok(await f.message(`,model ${label(opus)}`) instanceof Error);
+    assert.equal(await f.message(`,model ${label(opus)}`), undefined, "pre-effect model validation must not fault the native transport");
     assert.equal(f.opens, opens); assert.equal(f.selected, current); assert.deepEqual(f.changes, changes);
     assert.deepEqual(f.bot.store.entries(), before);
     assert.ok(!f.calls.includes("open")); assert.ok(!f.calls.some(call => call.startsWith("set:")));
