@@ -54,14 +54,32 @@ export async function dispatchReply(client:ToolClient,route:Route,text:string,fu
   if (response.buffer!==route.buffer || (fullControl?response.dispatched!==true:response.accepted!==true)) throw Error("dispatch_uncertain");
 }
 /** Human control path: exact registered IRC command, bound to this profile/buffer. */
-export async function dispatchChannelAction(client:ToolClient,route:Route,action:'join'|'part'|'topic',text?:string):Promise<void>{
+export async function dispatchChannelAction(client:ToolClient,route:Route,action:'join'|'part'|'topic',text?:string,targetChannel?:string):Promise<void>{
  const identity=await readChannel(client,route,1) as {buffer?:{full_name?:string;localvar_nick?:string}};
  if(identity.buffer?.full_name!==route.buffer || identity.buffer.localvar_nick!==route.nick)throw Error('identity_mapping_changed');
  const manifest=result(await client.callTool({name:'weechat_command_manifest',arguments:{}})) as {schema_version?:number;commands?:Record<string,unknown>[]};
  const matches=manifest.commands?.filter(c=>c.plugin==='irc' && c.name===action)??[];const c=matches[0];
  if(manifest.schema_version!==1 || matches.length!==1 || typeof c.tool_name!=='string' || !c.tool_name.startsWith('weechat_cmd_irc_') || typeof c.revision!=='string' || !/^[a-f0-9]{64}$/.test(c.revision) || c.raw_fallback!==true)throw Error('command_unavailable');
  if(text!==undefined && (/[\x00-\x1f\x7f]/.test(text) || new TextEncoder().encode(text).length>250))throw Error('topic_invalid');
- const args=action==='topic'?`${route.channel} ${text??''}`:route.channel;
+ if(targetChannel!==undefined && (action!=='join' || !/^#[a-z0-9_.-]{1,100}$/.test(targetChannel)))throw Error('channel_target_invalid');
+ const args=action==='topic'?(text===''?`${route.channel} -delete`:`${route.channel} ${text??''}`):targetChannel??route.channel;
  const reply=result(await client.callTool({name:c.tool_name,arguments:{buffer:route.buffer,registry_revision:c.revision,syntax:'raw',params:{arguments:args}}})) as {dispatched?:boolean;buffer?:string};
  if(reply.dispatched!==true || reply.buffer!==route.buffer)throw Error('dispatch_uncertain');
+}
+
+export async function readTopic(client:ToolClient,route:Route):Promise<string>{
+ const data=await readChannel(client,route,1) as {buffer?:{full_name?:string;localvar_nick?:string;localvar_channel?:string;title?:string}};
+ if(data.buffer?.full_name!==route.buffer || data.buffer.localvar_nick!==route.nick || data.buffer.localvar_channel!==route.channel || typeof data.buffer.title!=='string')throw Error('identity_mapping_changed');
+ return data.buffer.title;
+}
+
+/** Native IRC status lines are read through the existing buffer tool. Mere buffer
+ * existence/local dispatch is not a successful JOIN. Missing/evicted evidence
+ * fails closed; no JOIN is repeated to manufacture confirmation. */
+export async function verifyJoined(client:ToolClient,route:Route,after:number):Promise<void>{
+ const data=await readChannel(client,route,500) as {buffer?:{full_name?:string;localvar_nick?:string;localvar_channel?:string};lines?:{tags:string[];date_printed?:number;date?:number}[]};
+ if(data.buffer?.full_name!==route.buffer || data.buffer.localvar_nick!==route.nick || data.buffer.localvar_channel!==route.channel || !Array.isArray(data.lines))throw Error('identity_mapping_changed');
+ const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({'[':'{',']':'}','\\':'|','^':'~'})[c]!);
+ const status=data.lines.filter(l=>Array.isArray(l.tags) && l.tags.some(t=>t==='irc_kick' || t==='irc_disconnected' || ((t==='irc_join' || t==='irc_part') && l.tags.some(n=>fold(n)===fold('nick_'+route.nick))))).at(-1);
+ if(!status?.tags.includes('irc_join') || (status.date_printed??status.date??0)*1000<after-5000)throw Error('join_confirmation_pending');
 }

@@ -21,3 +21,12 @@ test("nick mismatch and bad reply do not dispatch; failure is never retried",asy
  await assert.rejects(dispatchReply(client,route,"hello",false),/identity_mapping_changed/);assert.equal(calls,1);
  await assert.rejects(dispatchReply(client,route,"line\nbreak",false),/reply_invalid/);assert.equal(calls,1);
 });
+
+test('join confirmation requires fresh native self-join evidence, not buffer existence',async()=>{
+ const {verifyJoined}=await import('../src/mcp.ts');let lines:any[]=[];
+ const client={callTool:async()=>({content:[{type:'text',text:JSON.stringify({buffer:{full_name:route.buffer,localvar_nick:route.nick,localvar_channel:route.channel},lines})}]})};
+ await assert.rejects(verifyJoined(client,route,10000),/pending/);
+ lines=[{date_printed:10,tags:['irc_join','nick_'+route.nick]}];await verifyJoined(client,route,10000);
+ await assert.rejects(verifyJoined(client,route,20000),/pending/);
+ lines.push({date_printed:11,tags:['irc_part','nick_'+route.nick]});await assert.rejects(verifyJoined(client,route,10000),/pending/);
+});

@@ -73,7 +73,7 @@ try{
    if(chain.some(e=>e.type==='custom'))session.blockers.push('custom_context_projector_review');
    const messages=convertToLlm(await buildSessionContext(chain,undefined,undefined));
    if(JSON.stringify([...session.config.activeToolNames].sort())!==JSON.stringify(m.tools.map(t=>t.name).sort()))session.blockers.push('tool_mapping_mismatch');
-   if(m.tools.some(t=>['desktop_control','schedule_prompt','skills_list','skills_read','get_goal','create_goal','update_goal'].includes(t.name) || (t.target==='irc' && !['weechat_buffers','weechat_msg'].includes(t.name)) || (t.target==='desktop' && !['run_js','get_artifact','list_artifacts','get_artifact_upload_url'].includes(t.name))))session.blockers.push('local_or_unscoped_tool_adapter_required');
+   if(m.tools.some(t=>(t.target==='host' && !['desktop_control','schedule_prompt','get_goal','create_goal','update_goal'].includes(t.name)) || (t.target==='irc' && !['weechat_buffers','weechat_msg'].includes(t.name) && m.exclusiveProfile!==true) || (t.target==='desktop' && !['run_js','get_artifact','list_artifacts','get_artifact_upload_url','skills_list','skills_read'].includes(t.name))))session.blockers.push('local_or_unscoped_tool_adapter_required');
    if(m.route.agent!==session.agent || m.route.channel!==session.channel)session.blockers.push('route_identity_mismatch');
    const binding=session.record.desktopBinding??{kind:'agent'};
    const desktopId=binding.kind==='existing'?binding.desktopId:binding.kind==='agent'?session.agentRecord.desktopId:undefined;

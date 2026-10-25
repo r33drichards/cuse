@@ -25,7 +25,8 @@ export class ActiveSession {
   static async open(storage:Storage,options:ActiveOptions):Promise<ActiveSession>{
     const {snapshot:s,models}=options;
     // Auth/model failures happen before import/config mutation. No fallback.
-    const model=models.getModel(s.model.provider,s.model.modelId);
+    let model=models.getModel(s.model.provider,s.model.modelId);
+    if(!model){const refreshed=await models.refresh({providers:[s.model.provider],allowNetwork:true,signal:AbortSignal.timeout(s.policy.timeoutMs)});if(refreshed.errors.size)throw Error('model_catalog_unavailable');model=models.getModel(s.model.provider,s.model.modelId);}
     if(!model || !await models.getAuth(model))throw Error("model_auth_unavailable");
     if(s.tools.some(t=>t.target==="desktop") && (!options.desktop || !s.desktopId))throw Error("desktop_mapping_required");
     const registry=createRegistry();let harness!:Harness;
@@ -48,6 +49,7 @@ export class ActiveSession {
           const guard=await tx.doc(Halt,key,null);
           if(guard.halted || guard.pending.length)throw Error("session_reconciliation_required");
           const intent=await tx.doc(Intent,operation,null);const budget=await tx.doc(Budget,key,null);
+          if(options.automations && !options.automations.goals.canRun(budget.operation))throw Error("goal_revoked");
           if(intent.started)throw Error("remote_outcome_uncertain");
           if(budget.tools>=s.policy.toolCalls)throw Error("tool_budget_exhausted");
           budget.tools++;intent.started=true;guard.pending.push(operation);

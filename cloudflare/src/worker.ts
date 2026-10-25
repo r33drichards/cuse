@@ -1,4 +1,7 @@
-import {DesktopLifecycle,type DesktopAccess,type DesktopAction} from "./lifecycle.ts";
+import {ChannelProvisioner,type ChannelPlan} from './channels.ts';
+import {subscribe} from './subscriptions.ts';
+import {DurableGoalTopics} from './goal-topics.ts';
+import {DesktopLifecycle,provisionDesktop,type DesktopAccess,type DesktopAction} from "./lifecycle.ts";
 import {parseCommand,mentionText,type IrcCommand} from "../../src/commands.ts";
 import {Automations} from "./automations.ts";
 import {CredentialVault,credentialKey} from "./credentials.ts";
@@ -12,13 +15,15 @@ import {dryRun,type Snapshot,type Fence} from "./migration.ts";
 import {DesktopLedger,type Ticket} from "./desktop-coordinator.ts";
 import {configuredModels} from "./models.ts";
 import {gateway,type Access} from "./gateway.ts";
-import {withMcp,dispatchReply,dispatchChannelAction} from "./mcp.ts";
+import {withMcp,dispatchReply,dispatchChannelAction,readTopic,verifyJoined} from "./mcp.ts";
 import {Renewal} from "./renewal.ts";
 import type {Grant,SubscriptionSpec} from "./subscriptions.ts";
 import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
 export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;}
 export interface Env {
+  CHANNELS?:DurableObjectNamespace<ChannelRegistry>;
+  CHANNEL_PLANS?:string;
   SESSIONS: DurableObjectNamespace<AgentSession>;
   /** Secret binding, supplied only after explicit per-action approval. Empty by default. */
   WEBHOOK_ROUTES?: string;
@@ -35,17 +40,19 @@ export default {
     if (!/^\/events\/[A-Za-z0-9_-]{1,80}$/.test(path)) return new Response("not_found",{status:404});
     try {
       const bindings=JSON.parse(env.WEBHOOK_ROUTES ?? "{}") as Record<string,Binding>;
-      const binding=bindings[path.slice(8)];
+      const dynamic=!bindings[path.slice(8)] && env.CHANNELS?await env.CHANNELS.get(env.CHANNELS.idFromName('registry')).resolve(path.slice(8)):undefined;
+      const binding=bindings[path.slice(8)]??dynamic?.binding;
       if (!binding) return new Response("not_found",{status:404});
       validateRoute(binding.route);
       // A route-specific secret is required: sharing one lets an unsigned subscription
       // header be relabelled across identities. Fail closed on configuration reuse.
-      if (Object.values(bindings).filter(other=>other.secret===binding.secret).length!==1) throw new IntakeError(503,"shared_signing_key");
+      if (Object.values(bindings).filter(other=>other.secret===binding.secret).length>(dynamic?0:1)) throw new IntakeError(503,"shared_signing_key");
       if(Object.values(bindings).some(other=>other.route.agent!==binding.route.agent && other.route.profile===binding.route.profile))throw new IntakeError(503,"shared_agent_profile");
       const bytes=await boundedBody(request);
       const payload=await verify(request,bytes,binding.secret);
       const challenge=verification(payload);
       if (challenge !== undefined) return Response.json({challenge});
+      if(dynamic && !dynamic.active)throw new IntakeError(503,'channel_preparing');
       const event=parseEvent(payload,request,binding.route);
       const stub=env.SESSIONS.get(env.SESSIONS.idFromName(objectKey(binding.route)));
       // Only authenticated events can address/create durable objects. No public admin routes.
@@ -112,13 +119,14 @@ export class AgentSession extends DurableObject<Env> {
     if(result==="accepted" && prepared && humanControl(prepared.snapshot,event))this.sql.all("UPDATE cuse_inbox SET origin='control' WHERE id=?",event.eventId);
     if(result==="accepted" && prepared && humanControl(prepared.snapshot,event) && parseCommand(mentionText(event.data.text,prepared.snapshot.route.nick)??event.data.text)?.kind==='stop'){
       await this.cancel();
+      this.sql.all("UPDATE cuse_inbox SET state='pending',origin='control' WHERE id=?",event.eventId);
     }
     return result;
     });
   }
   private binding():Binding|undefined {
     if(!this.inbox)return;
-    return Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??"{}") as Record<string,Binding>).find(b=>objectKey(b.route)===objectKey(this.inbox!.route));
+    return Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??"{}") as Record<string,Binding>).find(b=>objectKey(b.route)===objectKey(this.inbox!.route))??JSON.parse(String(this.sql.all("SELECT value FROM cuse_manifest WHERE key='dynamic_binding'")[0]?.value??'null'))??undefined;
   }
   private prepared():{snapshot:Snapshot;fence:Fence}|undefined {
     const row=this.sql.all("SELECT value FROM cuse_manifest WHERE key='prepared'")[0];return row?JSON.parse(String(row.value)):undefined;
@@ -137,6 +145,11 @@ export class AgentSession extends DurableObject<Env> {
       return {hash:plan.hash};
     });
   }
+  async install(binding:Binding,snapshot:Snapshot,fence:Fence,grant:Grant):Promise<void>{
+    const old=this.sql.all("SELECT value FROM cuse_manifest WHERE key='dynamic_binding'")[0];const value=JSON.stringify(binding);if(old && old.value!==value)throw Error('dynamic_binding_conflict');
+    this.sql.all("INSERT OR IGNORE INTO cuse_manifest VALUES ('dynamic_binding',?)",value);
+    await this.prepare(snapshot,fence);await this.armRenewal(grant);
+  }
   /** Register an already-approved grant. Does not create a subscription. */
   async armRenewal(grant:Grant):Promise<void>{return this.enqueue(async()=>{
     const binding=this.binding();if(!binding?.subscription || !binding.access || grant.id!==binding.route.subscriptionId)throw Error("grant_binding_required");
@@ -150,6 +163,7 @@ export class AgentSession extends DurableObject<Env> {
     for(const row of ids){if(this.runner)this.runner.cancel(String(row.id));else this.inbox.cancel(String(row.id));}
     this.sql.all("UPDATE cuse_effects SET state='cancelled' WHERE state='pending'");
     this.automation().goals.fault(this.automation().channel);
+    if(this.env.CHANNELS)await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).cancel(objectKey(this.inbox.route));
     await this.active?.stop();
   }
   private async openActive():Promise<void>{
@@ -176,12 +190,16 @@ export class AgentSession extends DurableObject<Env> {
   private async desktopState():Promise<{id:string|null;paused:boolean}>{const id=this.prepared()?.snapshot.desktopId;return id?this.desktopCoordinator()!.current(id):{id:null,paused:false};}
   private async control(command:IrcCommand,id:string):Promise<string[]>{
     const binding=this.binding();if(!binding?.access)throw Error('control_binding_required');
-    if(command.kind==='sessions')return Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>).map(b=>`${b.route.agent} / ${b.route.channel}: nick ${b.route.nick}, profile ${b.route.profile}`);
+    if(command.kind==='sessions')return [...Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])].map(b=>`${b.route.agent} / ${b.route.channel}: nick ${b.route.nick}, profile ${b.route.profile}`);
+    if(command.kind==='desktop' && command.action==='ls'){
+      const bindings=[...Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];
+      return Promise.all(bindings.map(async b=>{const id=b.access?.desktop?.id;const current=id?await this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)).current(id):{id:null,paused:false};return `${b.route.agent} / ${b.route.channel}: desktop ${current.id??'none'}${current.paused?' (paused)':''}`;}));
+    }
     if(command.kind==='join' || command.kind==='part'){
-      const channels=command.kind==='join'?command.channels:[command.channel];const bindings=Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>);
+      const channels=command.kind==='join'?command.channels:[command.channel];const bindings=[...Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];
       const replies:string[]=[];
-      for(const channel of channels){const target=bindings.find(b=>b.route.agent===binding.route.agent && b.route.channel===channel);
-        if(!target){replies.push(`No approved route/identity/subscription for ${channel}; configure it before joining.`);continue;}
+      for(const channel of channels){const approved=(JSON.parse(this.env.CHANNEL_PLANS??'[]') as ChannelPlan[]).find(p=>p.controller===objectKey(binding.route) && p.binding.route.channel===channel);const target=bindings.find(b=>b.route.channel===channel && (b.route.agent===binding.route.agent || (approved && objectKey(b.route)===objectKey(approved.binding.route))));
+        if(!target){if(command.kind==='join' && this.env.CHANNELS)replies.push(await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).provision(objectKey(binding.route),channel));else replies.push(`No approved route/identity/subscription for ${channel}; configure it before joining.`);continue;}
         const stub=this.env.SESSIONS.get(this.env.SESSIONS.idFromName(objectKey(target.route)));replies.push(await (objectKey(target.route)===objectKey(binding.route)?this.membership(command.kind,id+':'+channel):stub.membership(command.kind,id+':'+channel)));
       }return replies;
     }
@@ -194,6 +212,7 @@ export class AgentSession extends DurableObject<Env> {
   /** Internal routing RPC. Never allocates identities or subscriptions implicitly. */
   async membership(action:'join'|'part',id:string):Promise<string>{
     const binding=this.binding();if(!binding?.access?.fullControl || !binding.access.exclusiveProfile || !this.prepared() || !this.renewal.valid(Date.now()))throw Error('membership_binding_required');
+    if(action==='part')await this.cancel();
     const key='membership:'+id;const old=this.sql.all('SELECT value FROM cuse_manifest WHERE key=?',key)[0];if(old){if(old.value!==action)throw Error('membership_reconciliation_required');return `${action} already dispatched.`;}
     this.sql.all('INSERT INTO cuse_manifest VALUES (?,?)',key,'uncertain');
     await withMcp(binding.access.mcp,client=>dispatchChannelAction(client,binding.route,action));
@@ -219,8 +238,9 @@ export class AgentSession extends DurableObject<Env> {
       if(due!==undefined)times.push(due);
       const canRun=!this.prepared() || (this.renewal.valid(Date.now()) && !this.effectsBlocked());
       const desktopPaused=this.prepared()?(await this.desktopState()).paused:false;
-      const schedule=canRun && this.prepared()?this.automation().deadline():undefined;if(schedule!==undefined)times.push(schedule);
-      if(canRun && (!desktopPaused || head?.origin==='control') && (head?.state==='pending' || head?.state==='running'))times.push(Math.max(Date.now()+1000,Number(head.due)));
+      const joined=this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value!=='no';
+      const schedule=canRun && joined && this.prepared()?this.automation().deadline():undefined;if(schedule!==undefined)times.push(schedule);
+      if(canRun && joined && (!desktopPaused || head?.origin==='control') && (head?.state==='pending' || head?.state==='running'))times.push(Math.max(Date.now()+1000,Number(head.due)));
       if(canRun && this.inbox && this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length)times.push(Date.now()+1000);
       if(times.length)await this.ctx.storage.setAlarm(Math.max(Date.now()+1000,Math.min(...times)));else await this.ctx.storage.deleteAlarm();
     });
@@ -235,6 +255,7 @@ export class AgentSession extends DurableObject<Env> {
         // Uncertain delivery blocks new turns too, not just the next send.
         if(this.effectsBlocked() || !this.renewal.valid(Date.now()))return;
         await this.openActive();
+        if(this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value==='no')return;
         this.automation().due(Date.now(),this.recovering);this.recovering=false;
         for(let n=0;n<25;n++){
           const before=this.sql.all("SELECT COUNT(*) AS n FROM cuse_inbox WHERE state='pending'")[0].n;
@@ -242,6 +263,11 @@ export class AgentSession extends DurableObject<Env> {
           const head=this.sql.all("SELECT origin FROM cuse_inbox WHERE state NOT IN ('done','cancelled') ORDER BY CASE WHEN origin='control' THEN 0 ELSE 1 END,position LIMIT 1")[0];
           if((await this.desktopState()).paused && head?.origin!=='control')break;
           await this.runner!.step(Date.now(),prepared.snapshot.policy.timeoutMs);
+          // Topic permissions or uncertainty never fault agent work.
+          if(binding?.access?.fullControl && binding.access.exclusiveProfile && (this.automation().goals.read(this.automation().channel) || this.sql.all("SELECT name FROM sqlite_master WHERE type='table' AND name='cuse_goal_topic'").length)){
+            const a=this.automation();const outcome=await withMcp(binding.access.mcp,client=>new DurableGoalTopics(this.sql).refresh(a.goals.topicEnabled(a.channel)?a.goals.read(a.channel):null,()=>readTopic(client,binding.route),topic=>dispatchChannelAction(client,binding.route,'topic',topic))).catch(()=>'unavailable');
+            if(outcome==='unavailable')console.error(JSON.stringify({code:'goal_topic_unavailable'}));
+          }
           for(let output=0;output<32;output++){
             if(!this.renewal.valid(Date.now()) || this.effectsBlocked() || !this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length)break;
             await this.inbox.sendOne(async payload=>this.sendReply(binding!,JSON.parse(payload).text));
@@ -267,8 +293,9 @@ export class DesktopCoordinator extends DurableObject<Env>{
   private ledger:DesktopLedger;
   private lifecycle:DesktopLifecycle;
   constructor(ctx:DurableObjectState,env:Env){super(ctx,env);this.ledger=new DesktopLedger({all:(q,...p)=>ctx.storage.sql.exec(q,...p).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)});this.lifecycle=new DesktopLifecycle(this.ledger.sql,this.ledger);}
+  async provision(access:DesktopAccess,id:string):Promise<string>{return provisionDesktop(this.ledger.sql,this.ledger,access,id);}
   async current(initial:string){return this.lifecycle.current(initial);}
-  async action(access:DesktopAccess,action:DesktopAction,id:string,confirmId?:string){return this.lifecycle.action(access,action,id,confirmId);}
+  async action(access:DesktopAccess,action:DesktopAction,id:string,confirmId?:string):Promise<string>{return this.lifecycle.action(access,action,id,confirmId,fetch,access.provision?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName('provision:'+access.provision.namespace)):undefined);}
   async acquire(operation:string):Promise<Ticket>{return this.ledger.acquire(operation);}
   async verify(ticket:Ticket):Promise<void>{this.ledger.verify(ticket);}
   async settle(ticket:Ticket,knownComplete:boolean):Promise<void>{this.ledger.settle(ticket,knownComplete);}
@@ -290,8 +317,9 @@ export class ModelAuthority extends DurableObject<Env>{
  constructor(ctx:DurableObjectState,env:Env){super(ctx,env);ctx.blockConcurrencyWhile(async()=>{
   const key=await credentialKey(env.MODEL_CREDENTIAL_KEY??'');
   this.vault=new CredentialVault({all:(q,...p)=>ctx.storage.sql.exec(q,...p).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)},key);
-  this.models=configuredModels(JSON.parse(env.MODEL_SECRETS??'{}'),JSON.parse(env.MODEL_CONFIG??'{}'),this.vault);
+  this.models=this.createModels(this.vault);
  });}
+ protected createModels(vault:CredentialVault):Models{return configuredModels(JSON.parse(this.env.MODEL_SECRETS??'{}'),JSON.parse(this.env.MODEL_CONFIG??'{}'),vault);}
  async resolve(provider:string):Promise<AuthResult|undefined>{return this.models.getAuth(provider);}
  async seed(provider:string,credential:Credential,expectedRevision:number|null):Promise<void>{await this.vault.seed(provider,credential,expectedRevision);}
 }
@@ -299,4 +327,26 @@ export class ModelAuthority extends DurableObject<Env>{
 function humanControl(s:Snapshot,e:MessageEvent):boolean{
  const fold=(v:string)=>v.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
  return s.route.agent===s.route.channel && ![s.route.nick,...s.policy.peerNicks].some(n=>fold(n)===fold(e.data.nick)) && !!parseCommand(mentionText(e.data.text,s.route.nick)??e.data.text);
+}
+
+/** Fixed registry object: no public admin endpoint. Plans are explicitly approved secret bindings. */
+export class ChannelRegistry extends DurableObject<Env>{
+ private channels:ChannelProvisioner;
+ constructor(ctx:DurableObjectState,env:Env){super(ctx,env);this.channels=new ChannelProvisioner({all:(q,...p)=>ctx.storage.sql.exec(q,...p).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)});}
+ async resolve(key:string):Promise<{binding:Binding;active:boolean}|undefined>{return this.channels.resolve(key);}
+ async list():Promise<Binding[]>{return this.channels.list();}
+ async cancel(controller:string):Promise<void>{for(const p of JSON.parse(this.env.CHANNEL_PLANS??'[]') as ChannelPlan[])if(p.controller===controller)this.channels.cancel(p.key);}
+ async provision(controller:string,channel:string):Promise<string>{
+  const plans=JSON.parse(this.env.CHANNEL_PLANS??'[]') as ChannelPlan[],plan=plans.find(p=>p.controller===controller && p.binding.route.channel===channel);
+  if(!plan)return 'No approved provisioning plan for this channel.';
+  return this.channels.provision(plan,controller,JSON.parse(this.env.WEBHOOK_ROUTES??'{}'),this.channelIO());
+ }
+ protected channelIO():import('./channels.ts').ChannelIO{return {
+   join:p=>withMcp(p.binding.access!.mcp,c=>dispatchChannelAction(c,p.bootstrap,'join',undefined,p.binding.route.channel)),
+   verify:(p,after)=>withMcp(p.binding.access!.mcp,async c=>{for(let n=0;;n++){try{await verifyJoined(c,p.binding.route,after);return;}catch(error){if(n>=19 || (error instanceof Error && error.message==='identity_mapping_changed'))throw error;await new Promise(resolve=>setTimeout(resolve,250));}}}),
+   desktop:p=>{const a=p.binding.access!.desktop;if(!a?.provision)throw Error('desktop_provision_review_required');return this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName('provision:'+a.provision.namespace)).provision(a,p.key);},
+   subscribe:p=>withMcp(p.binding.access!.mcp,(_c,rpc)=>subscribe(rpc,{...p.binding.subscription!,secret:p.binding.secret})),
+   install:(b,s,f,g)=>this.env.SESSIONS.get(this.env.SESSIONS.idFromName(objectKey(s.route))).install(b,s,f,g),
+  };
+ }
 }
