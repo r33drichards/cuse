@@ -1,3 +1,4 @@
+import {routeBindings,modelSettings} from "./agent-bindings.ts";
 import {PeerMailbox,type Peer} from './legacy/peers.ts';
 import {operate,decodeOperator} from './operator.ts';
 import {ChannelProvisioner,type ChannelPlan} from './channels.ts';
@@ -34,6 +35,7 @@ export interface Env {
   SESSIONS: DurableObjectNamespace<AgentSession>;
   /** Secret binding, supplied only after explicit per-action approval. Empty by default. */
   WEBHOOK_ROUTES?: string;
+  [key:`CUSE_AGENT_${string}`]:string|undefined;
   MODEL_SECRETS?: string;
   MODEL_CONFIG?:string;
   MODEL_CREDENTIAL_KEY?:string;
@@ -47,7 +49,7 @@ export default {
       const raw=decodeOperator(env as unknown as Record<string,unknown>);
       const candidate=raw?JSON.parse(raw).id:undefined;
       if(typeof candidate==='string' && /^[a-f0-9]{32}$/.test(candidate))id=candidate;
-      const status=await operate(raw,JSON.parse(env.WEBHOOK_ROUTES??'{}'),key=>env.SESSIONS.get(env.SESSIONS.idFromName(key)));
+      const status=await operate(raw,routeBindings(env),key=>env.SESSIONS.get(env.SESSIONS.idFromName(key)));
       if(status==='disabled' && /^[a-f0-9]{32}$/.test(env.CUSE_OPERATOR_WARMUP??''))console.log(JSON.stringify({code:'operator_ready',id:env.CUSE_OPERATOR_WARMUP}));
       if(status!=='disabled')console.log(JSON.stringify({code:'operator_'+status,id}));
     } catch {console.error(JSON.stringify({code:'operator_failed',id}));throw Error('operator_failed');}
@@ -57,7 +59,7 @@ export default {
     const path=new URL(request.url).pathname;
     if (!/^\/events\/[A-Za-z0-9_-]{1,80}$/.test(path)) return new Response("not_found",{status:404});
     try {
-      const bindings=JSON.parse(env.WEBHOOK_ROUTES ?? "{}") as Record<string,Binding>;
+      const bindings=routeBindings(env);
       const dynamic=!bindings[path.slice(8)] && env.CHANNELS?await env.CHANNELS.get(env.CHANNELS.idFromName('registry')).resolve(path.slice(8)):undefined;
       const binding=bindings[path.slice(8)]??dynamic?.binding;
       if (!binding) return new Response("not_found",{status:404});
@@ -147,7 +149,7 @@ export class AgentSession extends DurableObject<Env> {
   }
   private binding():Binding|undefined {
     if(!this.inbox)return;
-    return Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??"{}") as Record<string,Binding>).find(b=>objectKey(b.route)===objectKey(this.inbox!.route))??JSON.parse(String(this.sql.all("SELECT value FROM cuse_manifest WHERE key='dynamic_binding'")[0]?.value??'null'))??undefined;
+    return Object.values(routeBindings(this.env)).find(b=>objectKey(b.route)===objectKey(this.inbox!.route))??JSON.parse(String(this.sql.all("SELECT value FROM cuse_manifest WHERE key='dynamic_binding'")[0]?.value??'null'))??undefined;
   }
   private prepared():{snapshot:Snapshot;fence:Fence}|undefined {
     const row=this.sql.all("SELECT value FROM cuse_manifest WHERE key='prepared'")[0];return row?JSON.parse(String(row.value)):undefined;
@@ -222,7 +224,7 @@ export class AgentSession extends DurableObject<Env> {
   protected createPeers(snapshot:Snapshot,access:Access):PeerMailbox|undefined {
     if(!snapshot.compatibility?.peers)return;
     const peers=snapshot.compatibility.peers;
-    const bindingFor=(peer:Peer)=>{const matches=Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>).filter(b=>b.route.channel===peer.channel && b.route.agent===peer.channel && b.route.nick===peer.nick);if(matches.length!==1)throw Error('peer_route_unverified');return matches[0];};
+    const bindingFor=(peer:Peer)=>{const matches=Object.values(routeBindings(this.env)).filter(b=>b.route.channel===peer.channel && b.route.agent===peer.channel && b.route.nick===peer.nick);if(matches.length!==1)throw Error('peer_route_unverified');return matches[0];};
     for(const peer of peers)bindingFor(peer);
     return new PeerMailbox(this.sql,snapshot.route,peers,{
       busy:async peer=>{const b=bindingFor(peer);const data=await withMcp(access.mcp,client=>readChannel(client,{...snapshot.route,channel:peer.channel,buffer:peer.buffer},1)) as {buffer?:{full_name?:string;localvar_nick?:string;localvar_channel?:string}};if(data.buffer?.full_name!==peer.buffer || data.buffer.localvar_nick!==snapshot.route.nick || data.buffer.localvar_channel!==peer.channel)throw Error('peer_membership_unverified');return this.env.SESSIONS.get(this.env.SESSIONS.idFromName(objectKey(b.route))).peerBusy();},
@@ -232,20 +234,20 @@ export class AgentSession extends DurableObject<Env> {
   protected createModels(){
     const profile=this.binding()?.access?.authProfile;
     const authority=profile?this.env.MODEL_AUTHORITY.get(this.env.MODEL_AUTHORITY.idFromName(profile)):undefined;
-    return configuredModels(JSON.parse(this.env.MODEL_SECRETS??"{}"),JSON.parse(this.env.MODEL_CONFIG??"{}"),undefined,authority?provider=>authority.resolve(provider):undefined);
+    const settings=modelSettings(this.env,this.inbox?.route);return configuredModels(settings.secrets,settings.config,undefined,authority?provider=>authority.resolve(provider):undefined);
   }
   protected createGateway(snapshot:Snapshot,access:Access){return gateway(snapshot,access,snapshot.desktopId?()=>this.desktopState():undefined);}
   private desktopCoordinator(){const id=this.prepared()?.snapshot.desktopId;return id?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)):undefined;}
   private async desktopState():Promise<{id:string|null;paused:boolean}>{const id=this.prepared()?.snapshot.desktopId;return id?this.desktopCoordinator()!.current(id):{id:null,paused:false};}
   private async control(command:IrcCommand,id:string):Promise<string[]>{
     const binding=this.binding();if(!binding?.access)throw Error('control_binding_required');
-    if(command.kind==='sessions')return [...Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])].map(b=>`${b.route.agent} / ${b.route.channel}: nick ${b.route.nick}, profile ${b.route.profile}`);
+    if(command.kind==='sessions')return [...Object.values(routeBindings(this.env)),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])].map(b=>`${b.route.agent} / ${b.route.channel}: nick ${b.route.nick}, profile ${b.route.profile}`);
     if(command.kind==='desktop' && command.action==='ls'){
-      const bindings=[...Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];
+      const bindings=[...Object.values(routeBindings(this.env)),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];
       return Promise.all(bindings.map(async b=>{const id=b.access?.desktop?.id;const current=id?await this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)).current(id):{id:null,paused:false};return `${b.route.agent} / ${b.route.channel}: desktop ${current.id??'none'}${current.paused?' (paused)':''}`;}));
     }
     if(command.kind==='join' || command.kind==='part'){
-      const channels=command.kind==='join'?command.channels:[command.channel];const bindings=[...Object.values(JSON.parse(this.env.WEBHOOK_ROUTES??'{}') as Record<string,Binding>),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];
+      const channels=command.kind==='join'?command.channels:[command.channel];const bindings=[...Object.values(routeBindings(this.env)),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];
       const replies:string[]=[];
       for(const channel of channels){const approved=(JSON.parse(this.env.CHANNEL_PLANS??'[]') as ChannelPlan[]).find(p=>p.controller===objectKey(binding.route) && p.binding.route.channel===channel);const target=bindings.find(b=>b.route.channel===channel && (b.route.agent===binding.route.agent || (approved && objectKey(b.route)===objectKey(approved.binding.route))));
         if(!target){if(command.kind==='join' && this.env.CHANNELS)replies.push(await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).provision(objectKey(binding.route),channel));else replies.push(`No approved route/identity/subscription for ${channel}; configure it before joining.`);continue;}
@@ -306,23 +308,19 @@ export class AgentSession extends DurableObject<Env> {
         await this.openActive();
         if(this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value==='no')return;
         this.automation().due(Date.now(),this.recovering);this.recovering=false;
-        for(let n=0;n<25;n++){
-          const before=this.sql.all("SELECT COUNT(*) AS n FROM cuse_inbox WHERE state='pending'")[0].n;
-          if(!this.renewal.valid(Date.now()))break;
-          const head=this.sql.all("SELECT origin FROM cuse_inbox WHERE state NOT IN ('done','cancelled') ORDER BY CASE WHEN origin='control' THEN 0 ELSE 1 END,position LIMIT 1")[0];
-          if((await this.desktopState()).paused && head?.origin!=='control')break;
-          await this.runner!.step(Date.now(),prepared.snapshot.policy.timeoutMs);
-          // Topic permissions or uncertainty never fault agent work.
-          if(binding?.access?.fullControl && binding.access.exclusiveProfile && (this.automation().goals.read(this.automation().channel) || this.sql.all("SELECT name FROM sqlite_master WHERE type='table' AND name='cuse_goal_topic'").length)){
-            const a=this.automation();const outcome=await withMcp(binding.access.mcp,client=>new DurableGoalTopics(this.sql).refresh(a.goals.topicEnabled(a.channel)?a.goals.read(a.channel):null,()=>readTopic(client,binding.route),topic=>dispatchChannelAction(client,binding.route,'topic',topic))).catch(()=>'unavailable');
-            if(outcome==='unavailable')console.error(JSON.stringify({code:'goal_topic_unavailable'}));
-          }
-          for(let output=0;output<32;output++){
-            if(!this.renewal.valid(Date.now()) || this.effectsBlocked() || !this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length)break;
-            await this.inbox.sendOne(async payload=>this.sendReply(binding!,JSON.parse(payload).text));
-          }
-          if(this.sql.all("SELECT 1 FROM cuse_effects WHERE state='uncertain' LIMIT 1").length)break;
-          const after=this.sql.all("SELECT COUNT(*) AS n FROM cuse_inbox WHERE state='pending'")[0].n;if(before===after)break;
+        // A reply opens an MCP session and makes several external requests.
+        // Drain one persisted effect per alarm, separately from model execution,
+        // so long command/model replies cannot exhaust the Free invocation quota.
+        if(this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length){
+          await this.inbox.sendOne(async payload=>this.sendReply(binding!,JSON.parse(payload).text));return;
+        }
+        const head=this.sql.all("SELECT origin FROM cuse_inbox WHERE state NOT IN ('done','cancelled') ORDER BY CASE WHEN origin='control' THEN 0 ELSE 1 END,position LIMIT 1")[0];
+        if((await this.desktopState()).paused && head?.origin!=='control')return;
+        await this.runner!.step(Date.now(),prepared.snapshot.policy.timeoutMs);
+        // Topic permissions or uncertainty never fault agent work.
+        if(binding?.access?.fullControl && binding.access.exclusiveProfile && (this.automation().goals.read(this.automation().channel) || this.sql.all("SELECT name FROM sqlite_master WHERE type='table' AND name='cuse_goal_topic'").length)){
+          const a=this.automation();const outcome=await withMcp(binding.access.mcp,client=>new DurableGoalTopics(this.sql).refresh(a.goals.topicEnabled(a.channel)?a.goals.read(a.channel):null,()=>readTopic(client,binding.route),topic=>dispatchChannelAction(client,binding.route,'topic',topic))).catch(()=>'unavailable');
+          if(outcome==='unavailable')console.error(JSON.stringify({code:'goal_topic_unavailable'}));
         }
       }else{
         await this.openJournal();
@@ -389,7 +387,7 @@ export class ChannelRegistry extends DurableObject<Env>{
  async provision(controller:string,channel:string):Promise<string>{
   const plans=JSON.parse(this.env.CHANNEL_PLANS??'[]') as ChannelPlan[],plan=plans.find(p=>p.controller===controller && p.binding.route.channel===channel);
   if(!plan)return 'No approved provisioning plan for this channel.';
-  return this.channels.provision(plan,controller,JSON.parse(this.env.WEBHOOK_ROUTES??'{}'),this.channelIO());
+  return this.channels.provision(plan,controller,routeBindings(this.env),this.channelIO());
  }
  protected channelIO():import('./channels.ts').ChannelIO{return {
    join:p=>withMcp(p.binding.access!.mcp,c=>dispatchChannelAction(c,p.bootstrap,'join',undefined,p.binding.route.channel)),

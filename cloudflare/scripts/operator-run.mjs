@@ -3,12 +3,13 @@
 import {gunzipSync,gzipSync} from 'node:zlib';
 import {randomBytes} from 'node:crypto';
 import {spawn} from 'node:child_process';
+import {operatorRuntime} from './operator-runtime.mjs';
 import {operatorResult} from './operator-tail.mjs';
 const worker='cuse-durable-shadow';
 const mode=process.argv[2];
 const account=process.env.CLOUDFLARE_ACCOUNT_ID,token=process.env.CLOUDFLARE_API_TOKEN;
 const base=`https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts/${worker}`;
-const names=['MODEL_SECRETS','MODEL_CONFIG','WEBHOOK_ROUTES'];
+
 let phase='validate',httpStatus;
 async function api(path,method='GET',body){
   phase=method+' '+path;
@@ -45,9 +46,9 @@ try{
     const encoded=(process.env.CUSE_OPERATOR_PACKAGE??'')+(process.env.CUSE_OPERATOR_PACKAGE_2??'');if(!encoded || encoded.length>96000)throw Error('operator_package_invalid');
     const p=JSON.parse(gunzipSync(Buffer.from(encoded,'base64'),{maxOutputLength:500000}).toString('utf8'));
     if(p.worker!==worker || !Number.isSafeInteger(p.approvedUntil) || p.approvedUntil<=Date.now() || p.approvedUntil>Date.now()+7200000
-      || !p.runtime || Object.keys(p.runtime).some(n=>!names.includes(n)) || names.some(n=>typeof p.runtime[n]!=='string' || Buffer.byteLength(p.runtime[n])>5000))throw Error('operator_package_invalid');
-    const bindings=JSON.parse(p.runtime.WEBHOOK_ROUTES);
-    if(!Object.keys(bindings).length || Object.values(bindings).some(b=>b.activationPending!==true))throw Error('operator_delivery_gate_required');
+      )throw Error('operator_package_invalid');
+    const runtime=operatorRuntime(p.runtime),bindings=runtime.bindings;
+    if(mode==='stage' && runtime.additional){const existing=await api('/secrets');if(existing.some(s=>runtime.names.includes(s.name)))throw Error('agent_binding_exists');}
     let request;
     if(mode==='activate'){
       const {operate}=await import('../src/operator.ts');
@@ -58,7 +59,7 @@ try{
     // exceed the producer's bounded webhook retry window.
     if(mode==='stage')await api('/schedules','PUT',[]);
     await remove();
-    for(const name of names)await put(name,p.runtime[name]);
+    for(const name of runtime.names)await put(name,p.runtime[name]);
     if(mode==='stage'){
       const id=randomBytes(16).toString('hex');await put('CUSE_OPERATOR_WARMUP',id);
       const observer=observe(id,'ready');let ready=false;
@@ -78,8 +79,7 @@ try{
       try{
         await observer.completion;
         // Publish intake only after the exact generation has initialized and armed successfully.
-        for(const binding of Object.values(bindings))delete binding.activationPending;
-        await put('WEBHOOK_ROUTES',JSON.stringify(bindings));
+        for(const [name,value] of Object.entries(runtime.enable(request.routeKey)))await put(name,value);
         console.log('Reviewed generation initialized; existing grant armed; signed event delivery enabled.');
       }finally{observer.stop();await api('/schedules','PUT',[]);await remove();}
     }

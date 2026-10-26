@@ -16,7 +16,7 @@ test('private staging installs only reviewed secrets, refuses other schedules an
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cuse-operator-script-'));
  try{
   const preload=path.join(dir,'fetch.mjs'),record=path.join(dir,'calls.jsonl');
-  for(const name of ['operator-run.mjs','operator-tail.mjs'])fs.copyFileSync(path.join(root,'cloudflare/scripts',name),path.join(dir,name));
+  for(const name of ['operator-run.mjs','operator-tail.mjs','operator-runtime.mjs'])fs.copyFileSync(path.join(root,'cloudflare/scripts',name),path.join(dir,name));
   fs.writeFileSync(preload,`import {EventEmitter} from 'node:events';import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';let child,warmup;cp.spawn=(command,args)=>{if(args.includes('--sampling-rate'))throw Error('operator tail must receive all nonce logs without sampling');child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();child.kill=()=>{};return child;};syncBuiltinESMExports();import {appendFileSync} from 'node:fs';globalThis.fetch=async(url,init)=>{const u=new URL(url);const p=u.pathname;const body=init.body?JSON.parse(init.body):undefined;if(body?.name==='CUSE_OPERATOR_WARMUP')warmup=body.text;if(p.endsWith('/schedules')&&init.method==='PUT'&&Array.isArray(body)&&body.length)queueMicrotask(()=>child.stdout.emit('data',Buffer.from(JSON.stringify({logs:[{message:[JSON.stringify({id:warmup,code:process.env.TEST_WARMUP_FAIL==='true'?'operator_failed':'operator_ready'})]}]}))));appendFileSync(process.env.TEST_CALLS,JSON.stringify({path:p,method:init.method,...(p.endsWith('/schedules')&&init.method==='PUT'?{crons:body.map(r=>r.cron)}:{})})+'\\n');if(p.endsWith('/schedules')&&init.method==='GET')return Response.json({success:true,result:process.env.TEST_SCHEDULE==='other'?[{cron:'0 0 * * *'}]:[]});if(init.method==='DELETE')return Response.json({}, {status:404});if(process.env.TEST_FAIL==='true'&&init.method==='PUT'&&p.endsWith('/secrets'))return Response.json({success:false,errors:[{message:'synthetic-private-canary'}]},{status:403});return Response.json({success:true,result:[]});};`);
   const runtime={MODEL_SECRETS:'{"OPENROUTER_API_KEY":"synthetic-private-canary"}',MODEL_CONFIG:'{}',WEBHOOK_ROUTES:JSON.stringify({test:{activationPending:true}})};
   const pack=gzipSync(JSON.stringify({worker:'cuse-durable-shadow',approvedUntil:Date.now()+3600000,runtime})).toString('base64');
@@ -42,3 +42,15 @@ test('operator confirmation requires completion and ID in the same structured lo
  assert.equal(operatorResult(event([{id,code:'operator_failed'}]),id),'failed');
  assert.equal(operatorResult(event([{id,code:'operator_ready'}]),id),'ready');
 });
+
+ test('additional-agent packages only change their own encrypted binding and gate',async()=>{
+ const {operatorRuntime}=await import('../../cloudflare/scripts/operator-runtime.mjs');
+ const entry={binding:{activationPending:true,route:{agent:'#cuse2'}},modelConfig:{},modelSecrets:{TOKEN:'synthetic'}};
+ const runtime={CUSE_AGENT_CUSE2:JSON.stringify(entry)},r=operatorRuntime(runtime);
+ assert.deepEqual(r.names,['CUSE_AGENT_CUSE2']);assert.equal(r.bindings.cuse2.activationPending,true);
+ assert.throws(()=>r.enable('wrong'),/route_mismatch/);
+ const enabled=r.enable('cuse2');assert.deepEqual(Object.keys(enabled),['CUSE_AGENT_CUSE2']);assert.equal(JSON.parse(enabled.CUSE_AGENT_CUSE2).binding.activationPending,undefined);
+ assert.equal(JSON.parse(runtime.CUSE_AGENT_CUSE2).binding.activationPending,true);
+ assert.throws(()=>operatorRuntime({...runtime,WEBHOOK_ROUTES:'{}'}),/package_invalid/);
+ assert.throws(()=>operatorRuntime({UNREVIEWED:'{}'}),/package_invalid/);
+ });

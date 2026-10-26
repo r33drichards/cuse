@@ -114,3 +114,9 @@ the expired request also fails closed. Existing unrelated cron schedules cause a
 failure before writes. On any failure, retain the legacy ownership fence, inspect
 aggregate state, and do not replay uncertain effects. Rollback requires first
 fencing the new owner before restoring the legacy service and its retained data.
+
+### Adding another agent
+
+Keep the original runtime secrets in place. Each additional agent uses a separate encrypted `CUSE_AGENT_<NAME>` binding (uppercase letters, digits and underscores; at most 48 characters). Its lowercase name is the webhook route key, such as `CUSE_AGENT_CUSE2` for `/events/cuse2`. The JSON value contains `binding`, `modelConfig`, and `modelSecrets`. Model configuration and authentication are selected only for that exact agent generation; each agent requires a separate native MCP profile and signing key.
+
+The private operator package may contain exactly one such binding instead of the original three runtime secrets. Staging refuses an already installed binding name, leaves existing live agents unchanged, and holds only the new route. Activation initializes the reviewed generation and opens only that binding. The temporary cron and operator request are removed afterwards. Never use an original-agent package to add an agent or overwrite live route secrets.

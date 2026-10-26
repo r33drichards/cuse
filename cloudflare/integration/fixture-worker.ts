@@ -12,10 +12,12 @@ import type {ToolGateway} from '../src/active.ts';
 export {DesktopCoordinator};
 interface TestEnv extends Env {TEST_SNAPSHOT:string;TEST_FENCE:string;TEST_LEGACY?:string;}
 export class TestAgentSession extends AgentSession {
+  private sendsThisAlarm=0;
+  override async alarm():Promise<void>{this.sendsThisAlarm=0;return super.alarm();}
   async operatorStats(){return {receipts:this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM cuse_manifest WHERE key LIKE 'operator:%'").toArray()[0].n,grant:this.ctx.storage.sql.exec('SELECT attempts,due FROM cuse_grant').toArray()};}
   private count(kind:string){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_calls VALUES (?)',kind);}
   protected createModels(){
-    const faux=fauxProvider({models:[{id:'chosen'}]});
+    const faux=fauxProvider({models:(this.env as any).TEST_MANY_MODELS==='true'?Array.from({length:20},(_,n)=>({id:n?'synthetic-'+n:'chosen'})):[{id:'chosen'}]});
     if((this.env as any).TEST_LEGACY_GOAL==='true'){
       faux.setResponses([()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('goal_update',{action:'task',id:'objective',state:'done',evidence:[{kind:'inspection',ref:'synthetic evidence',result:'pass'}]})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('goal_update',{action:'submit'})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('must not run after review');}]);const models=createModels();models.setProvider(faux.provider);return models;
     }
@@ -29,7 +31,7 @@ export class TestAgentSession extends AgentSession {
   }
   protected createPeers(snapshot:Snapshot,access:Access){if((this.env as any).TEST_LEGACY!=='true')return super.createPeers(snapshot,access);return new PeerMailbox(this.sql,snapshot.route,snapshot.compatibility!.peers!,{busy:async()=>false,send:async()=>{this.count('peer-send');}});}
   protected createGateway():ToolGateway{return {call:async()=>{this.count('tool');if((this.env as TestEnv & {TEST_HOLD_TOOL?:string}).TEST_HOLD_TOOL==='true')await new Promise(()=>{});return {content:[{type:'text',text:'synthetic result'}]};}};}
-  protected async sendReply(_binding:Binding,_text:string):Promise<void>{this.count('send');}
+  protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
   protected async renew(binding:Binding,method:string,params:Record<string,unknown>):Promise<unknown>{
     if(method!=='events/subscribe' || params.cursor!==undefined)throw Error('wrong_renewal');
     this.count('renew');return {id:binding.route.subscriptionId,refreshBefore:new Date(Date.now()+3600000).toISOString(),cursor:null,truncated:false};
