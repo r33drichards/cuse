@@ -1,3 +1,4 @@
+import {ExecutionYield} from './execution-slice.ts';
 import { InboxStore, type Job } from "./store.ts";
 /** Adapter must explicitly distinguish a failure BEFORE all model/tool side effects.
  * Ordinary throws (including tool timeout) are blocked for reconciliation. */
@@ -23,7 +24,7 @@ export class Runner {
       const timeout = new Promise<never>((_,reject) => { timer=setTimeout(() => { abort.abort(); reject(Error("execution_timeout")); },timeoutMs); });
       const outputs = await Promise.race([this.executor.run(job,value=>this.store.checkpoint(job.id,value),abort.signal),timeout]);
       this.store.complete(job.id,outputs,()=>this.executor.completed?.(job));
-    } catch (error) { this.store.fail(job.id,error instanceof BeforeEffectsError,now); if(this.store.job(job.id)?.state==="blocked")this.executor.failed?.(job); }
+    } catch (error) { if(error instanceof ExecutionYield){this.store.defer(job.id,now);return;}this.store.fail(job.id,error instanceof BeforeEffectsError,now); if(this.store.job(job.id)?.state==="blocked")this.executor.failed?.(job); }
     finally { clearTimeout(timer); this.active=undefined; }
   }
   cancel(id: string): void {

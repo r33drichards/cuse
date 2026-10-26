@@ -128,3 +128,14 @@ Browser login runs privately outside the Worker using the pinned Pi OpenAI Codex
 One request can include additional explicitly named active or staged agents sharing the same credential owner. For a staged migration, `preserveWarmedSchedule` may reuse only the known inert operator warmup schedule; final activation removes it. Otherwise the temporary authentication cron and request are removed after seeding. No public login, callback, or credential-import endpoint is added to the Worker, and credentials never go through IRC. After authentication, select `openai-codex/gpt-6.1-sol` with the ordinary model command.
 
 Codex SSE requests use the pinned SDK's usual zstd encoding. Workers' native zstd API throws on the full tool-catalog request, so a pinned, precompiled WASM encoder handles the SDK's uncompressed fallback at the same compression level. It requires no runtime WASM compilation, filesystem access, or network download. The adapter bounds input at 2 MiB, preserves authentication and session headers, rejects redirects, and sends each request once. It changes neither the model endpoint nor the credential owner.
+
+
+### Turn continuation and native recovery behavior
+
+The Worker retains pi-durable and shares the native desktop MCP client, viewer formatting, and ambiguous-dispatch guidance. An uncertain remote action keeps its intent and desktop fence; it cannot be dispatched again. The model can still explain the failure and answer later prompts. Read-only desktop status remains available.
+
+Ordinary Worker turns allow 64 model requests and 256 tool calls, replacing the cutover snapshot's eight-request allowance. Goal token budgets and delegation restrictions remain enforced. Reaching the model limit produces a retained IRC notice rather than silently holding later messages.
+
+Native `beforeRequest` and pre-intent `beforeTool` hooks divide execution into conservative slices (30 request-cost units, 150 seconds between dispatch boundaries). At a yield, the host closes the harness before dispatch, retains the engine checkpoint, and defers the same inbox item to another alarm. It submits the same request ID after reopening; it does not inject a new user prompt or replay completed tools. A model request reserves two units and a tool reserves six; this leaves room for MCP initialization and control traffic. This reservation is a scheduling allowance, not a measurement of arbitrary downstream retries. A single slow or failing remote call can still time out and require reconciliation.
+
+Restart recovery resumes only inbox records explicitly marked `engine: pi-durable` with their matching request ID. Legacy/unmarked interrupted records and uncertain outgoing IRC sends stay held. The original archived conversations, paused goals, and interrupted operations are never implicitly resumed.
