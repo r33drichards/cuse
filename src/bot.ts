@@ -1,3 +1,4 @@
+import {desktopStatusLine} from './desktop-presentation.ts';
 import { type DesktopBinding, type DesktopPolicy } from "./desktop-binding.ts";
 import { sessionKey, sessionAddress, isSessionKey } from "./session-key.ts";
 /**
@@ -972,7 +973,7 @@ export class IrcPiBot implements ChannelDelegate {
             }
             if (action === "status") {
                 const desktop = await this.#desktopService().get(record.desktopId);
-                this.say(room, `desktop ${desktop.id}: ${desktop.state}${record.desktopPaused ? " (queue paused; ,desktop start to resume)" : ""} — ${this.#desktopService().viewer(desktop.id)}`);
+                this.say(room, desktopStatusLine(desktop.id,desktop.state,!!record.desktopPaused,this.#desktopService().viewer(desktop.id)));
                 return;
             }
             if (this.#explicitResourceReferences(record.desktopId)) { this.say(room, publicError(new PublicError("desktopShared"))); return; }

@@ -1,3 +1,4 @@
+import {desktopViewerUrl} from './desktop-presentation.ts';
 import { PublicError } from "./public-error.ts";
 import { createHash } from "node:crypto";
 import { McpSkills, SKILLS_EXTENSION, SkillError, boundedSkillResponse } from "./mcp-skills.ts";
@@ -80,7 +81,7 @@ export class ComputerUseClient {
  name(room: string): string {
   return this.prefix + createHash("sha256").update(room.toLowerCase()).digest("hex").slice(0, 16);
  }
- viewer(id: string): string { return this.app + "/sessions/" + encodeURIComponent(id); }
+ viewer(id: string): string { return desktopViewerUrl(id,this.app); }
  async request(path: string, init: RequestInit = {}, timeoutMs = 30_000): Promise<Response> {
   const response = await this.fetch(this.base + path, {
    ...init, redirect: "error",
