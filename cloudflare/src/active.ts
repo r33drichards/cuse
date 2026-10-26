@@ -117,7 +117,7 @@ export class ActiveSession {
           const a=options.automations,turn=attempt.operation+":model:"+attempt.number;
           const legacyGoal=a?.legacy?.spendModel(a.channel,attempt.operation)??false;
           if(a){if(!a.goals.canRun(attempt.operation))throw Error("goal_revoked");a.goals.beginTurn(a.channel,turn,Date.now(),attempt.operation);}
-          for await(const event of models.streamSimple(model,input,legacyGoal?{...opts,maxTokens:Math.min(opts?.maxTokens??4096,4096),maxRetries:0,timeoutMs:Math.min(s.policy.timeoutMs,240000),transport:'sse'}:opts)){
+          for await(const event of models.streamSimple(model,input,legacyGoal?{...opts,maxTokens:Math.min(opts?.maxTokens??4096,4096),maxRetries:0,timeoutMs:Math.min(s.policy.timeoutMs,240000),transport:'sse'}:model.api==='openai-codex-responses'?{...opts,transport:'sse',maxRetries:0,timeoutMs:s.policy.timeoutMs}:opts)){
             if(a && (event.type==="done" || event.type==="error"))a.goals.endTurn(a.channel,turn,(event.type==="done"?event.message:event.error).usage);
             stream.push(event);
           }

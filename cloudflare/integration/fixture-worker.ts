@@ -45,6 +45,7 @@ export default {async fetch(request:Request,env:TestEnv){
     case '/test/operate':await ingress.scheduled({} as ScheduledController,env);return Response.json({completed:true});
     case '/test/operator-stats':return Response.json(await stub.operatorStats());
     case '/test/dynamic/stats':{const route=(await env.CHANNELS!.get(env.CHANNELS!.idFromName('registry')).list())[0]?.route;if(!route)return Response.json({});return Response.json(await (env.SESSIONS.get(env.SESSIONS.idFromName(objectKey(route))) as unknown as DurableObjectStub<TestAgentSession>).stats());}
+    case '/test/auth/receipt':return Response.json(await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).receiptStats());
     case '/test/auth/seed':await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).seed('openai-codex',{type:'oauth',access:'synthetic-expired',refresh:'synthetic-refresh',expires:0},null);return Response.json({seeded:true});
     case '/test/auth/verify':return Response.json(await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).verify());
     case '/test/skills':return Response.json(await exerciseSkills(s));

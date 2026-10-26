@@ -1,5 +1,6 @@
 import type {Credential,CredentialStore,CredentialInfo} from '@earendil-works/pi-ai';
 import type {Sql} from './store.ts';
+import {digest} from './protocol.ts';
 /** One shared authority per existing credential owner. Encrypted at rest;
  * reserve-before-refresh prevents replaying a rotating refresh after eviction. */
 export class CredentialVault implements CredentialStore {
@@ -27,6 +28,21 @@ export class CredentialVault implements CredentialStore {
   if(!provider || !['api_key','oauth'].includes(credential.type))throw Error('credential_invalid');
   if(credential.type==='oauth' && (!credential.access || typeof credential.refresh!=='string' || !Number.isFinite(credential.expires)))throw Error('credential_invalid');
   const cipher=await this.seal(credential);this.sql.all("INSERT INTO cuse_credentials VALUES (?,?,'ready',1) ON CONFLICT(provider) DO UPDATE SET cipher=excluded.cipher,state='ready',revision=cuse_credentials.revision+1",provider,cipher);
+ });}
+ /** Store the encrypted credential and its replay receipt in one transaction. */
+ async seedReviewed(id:string,provider:string,credential:Credential,expectedRevision:number|null):Promise<void>{return this.lock(provider,async()=>{
+  if(!/^[a-f0-9]{32}$/.test(id) || !provider || credential.type!=='oauth' || !credential.access || !credential.refresh || !Number.isFinite(credential.expires))throw Error('credential_invalid');
+  this.sql.all('CREATE TABLE IF NOT EXISTS cuse_auth_receipts(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL)');
+  const fingerprint=await digest(new TextEncoder().encode(JSON.stringify({provider,credential,expectedRevision})));
+  const old=this.sql.all('SELECT fingerprint FROM cuse_auth_receipts WHERE id=?',id)[0];
+  if(old){if(old.fingerprint!==fingerprint)throw Error('credential_receipt_conflict');return;}
+  const cipher=await this.seal(credential);
+  this.sql.transaction(()=>{
+   const row=this.sql.all('SELECT revision FROM cuse_credentials WHERE provider=?',provider)[0];
+   if((row?.revision??null)!==expectedRevision)throw Error('credential_revision_conflict');
+   this.sql.all("INSERT INTO cuse_credentials VALUES (?,?,'ready',1) ON CONFLICT(provider) DO UPDATE SET cipher=excluded.cipher,state='ready',revision=cuse_credentials.revision+1",provider,cipher);
+   this.sql.all('INSERT INTO cuse_auth_receipts VALUES (?,?)',id,fingerprint);
+  });
  });}
 }
 export async function credentialKey(base64:string):Promise<CryptoKey>{const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));if(bytes.length!==32)throw Error('credential_key_required');return crypto.subtle.importKey('raw',bytes,'AES-GCM',false,['encrypt','decrypt']);}

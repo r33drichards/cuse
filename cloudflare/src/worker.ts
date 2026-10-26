@@ -1,4 +1,5 @@
-import {routeBindings,modelSettings} from "./agent-bindings.ts";
+import {operateModelAuth} from './model-auth-operator.ts';
+import {routeBindings,modelSettings,authProfile} from "./agent-bindings.ts";
 import {PeerMailbox,type Peer} from './legacy/peers.ts';
 import {operate,decodeOperator} from './operator.ts';
 import {ChannelProvisioner,type ChannelPlan} from './channels.ts';
@@ -36,6 +37,7 @@ export interface Env {
   /** Secret binding, supplied only after explicit per-action approval. Empty by default. */
   WEBHOOK_ROUTES?: string;
   [key:`CUSE_AGENT_${string}`]:string|undefined;
+  [key:`CUSE_AUTH_${string}`]:string|undefined;
   MODEL_SECRETS?: string;
   MODEL_CONFIG?:string;
   MODEL_CREDENTIAL_KEY?:string;
@@ -49,7 +51,7 @@ export default {
       const raw=decodeOperator(env as unknown as Record<string,unknown>);
       const candidate=raw?JSON.parse(raw).id:undefined;
       if(typeof candidate==='string' && /^[a-f0-9]{32}$/.test(candidate))id=candidate;
-      const status=await operate(raw,routeBindings(env),key=>env.SESSIONS.get(env.SESSIONS.idFromName(key)));
+      const status=raw && JSON.parse(raw).kind==='model-auth'?await operateModelAuth(raw,routeBindings(env),profile=>env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName(profile)),Date.now(),agent=>authProfile(env,agent)):await operate(raw,routeBindings(env),key=>env.SESSIONS.get(env.SESSIONS.idFromName(key)));
       if(status==='disabled' && /^[a-f0-9]{32}$/.test(env.CUSE_OPERATOR_WARMUP??''))console.log(JSON.stringify({code:'operator_ready',id:env.CUSE_OPERATOR_WARMUP}));
       if(status!=='disabled')console.log(JSON.stringify({code:'operator_'+status,id}));
     } catch {console.error(JSON.stringify({code:'operator_failed',id}));throw Error('operator_failed');}
@@ -232,7 +234,7 @@ export class AgentSession extends DurableObject<Env> {
     });
   }
   protected createModels(){
-    const profile=this.binding()?.access?.authProfile;
+    const profile=this.binding()?.access?.authProfile??(this.inbox?authProfile(this.env,this.inbox.route.agent):undefined);
     const authority=profile?this.env.MODEL_AUTHORITY.get(this.env.MODEL_AUTHORITY.idFromName(profile)):undefined;
     const settings=modelSettings(this.env,this.inbox?.route);return configuredModels(settings.secrets,settings.config,undefined,authority?provider=>authority.resolve(provider):undefined);
   }
@@ -370,6 +372,8 @@ export class ModelAuthority extends DurableObject<Env>{
  protected createModels(vault:CredentialVault):Models{return configuredModels(JSON.parse(this.env.MODEL_SECRETS??'{}'),JSON.parse(this.env.MODEL_CONFIG??'{}'),vault);}
  async resolve(provider:string):Promise<AuthResult|undefined>{return this.models.getAuth(provider);}
  async seed(provider:string,credential:Credential,expectedRevision:number|null):Promise<void>{await this.vault.seed(provider,credential,expectedRevision);}
+ async seedReviewed(id:string,provider:string,credential:Credential,expectedRevision:number|null):Promise<void>{await this.vault.seedReviewed(id,provider,credential,expectedRevision);}
+
 }
 
 function humanControl(s:Snapshot,e:MessageEvent):boolean{
