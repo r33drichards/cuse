@@ -9,7 +9,7 @@ import {route,secret,signed,event} from "../test/helpers.ts";
 test("local workerd accepts authenticated events, runs Pi journal alarm and preserves duplicate receipt on restart",{timeout:60000},async()=>{
  const dir=mkdtempSync(join(tmpdir(),"cuse-workerd-"));
  const start=()=>unstable_dev("src/worker.ts",{config:"wrangler.jsonc",local:true,ip:"127.0.0.1",port:0,inspectorPort:0,persist:true,persistTo:dir,logLevel:"error",
-  vars:{WEBHOOK_ROUTES:JSON.stringify({test:{route,secret}})},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,forceLocal:true,watch:false}});
+  vars:{CUSE_OWNER_NICK:'human',WEBHOOK_ROUTES:JSON.stringify({test:{route,secret}})},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,forceLocal:true,watch:false}});
  let app=await start();
  const post=async(request:Request)=>app.fetch("/events/test",{method:"POST",headers:Object.fromEntries(request.headers),body:await request.text()});
  try {

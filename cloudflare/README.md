@@ -121,11 +121,25 @@ Keep the original runtime secrets in place. Each additional agent uses a separat
 
 The private operator package may contain exactly one such binding instead of the original three runtime secrets. Staging refuses an already installed binding name, leaves existing live agents unchanged, and holds only the new route. Activation initializes the reviewed generation and opens only that binding. The temporary cron and operator request are removed afterwards. Never use an original-agent package to add an agent or overwrite live route secrets.
 
-### ChatGPT subscription authentication
+### Single owner, channel sessions, and ChatGPT sign-in
 
-Browser login runs privately outside the Worker using the pinned Pi OpenAI Codex provider. The protected, manual `authenticate-cloudflare.yml` workflow accepts an expiring `CUSE_AUTH_PACKAGE`; it requires a successful deployment of current main. It installs a fresh encryption key only when no key exists, seeds the OAuth credential through the internal shared `ModelAuthority`, then enables only the explicitly reviewed agents through separate `CUSE_AUTH_<NAME>` bindings. Tokens are encrypted in SQLite and refresh through the shared authority; an interrupted refresh remains held for reconciliation. A credential and its replay receipt commit atomically, so later cron invocations cannot reset a rotated token.
+The deployment has one owner (`CUSE_OWNER_NICK` on the trusted IRC network) and one encrypted credential authority (`CUSE_OWNER_PROFILE`). `CUSE_PUBLIC_URL` is its HTTPS origin. Each IRC channel retains its own AgentSession Durable Object, conversation, desktop, goal, schedules, model choice, and recovery records. The separate WeeChat MCP profiles and webhook signing keys identify channel transports; they are not separate user accounts. Non-owner human messages are ignored. Explicitly configured peer agents retain their existing limited peer behavior and cannot run owner commands.
 
-One request can include additional explicitly named active or staged agents sharing the same credential owner. For a staged migration, `preserveWarmedSchedule` may reuse only the known inert operator warmup schedule; final activation removes it. Otherwise the temporary authentication cron and request are removed after seeding. No public login, callback, or credential-import endpoint is added to the Worker, and credentials never go through IRC. After authentication, select `openai-codex/gpt-6.1-sol` with the ordinary model command.
+In either home channel:
+
+1. Send `,login` or `,login openai`.
+2. Open the expiring browser link and choose **Continue with ChatGPT**.
+3. After authorization, copy the final `http://127.0.0.1:1455/auth/callback?...` URL from the browser address bar into the private form on the Cuse sign-in page. Never send that URL in IRC. The browser may show a failed loopback connection; this is Pi's manual remote-login fallback, because a Worker cannot listen on the user's computer.
+4. Send the short `,login confirm <code>` shown by the browser in either channel. This installs the owner credential shared by both sessions.
+5. In each channel, use `,model openai/gpt-6.1-sol`. Model selection stays local to that channel.
+
+`,login status` reports connection metadata; `,login cancel` discards a pending flow without deleting installed credentials. These are host commands, so login does not require a functioning model token and can bypass an older blocked model turn. Uncertain IRC sends still require reconciliation and are never repeated automatically.
+
+The fetch-only Worker adapter follows pinned Pi AI 1.2.0's `openai` Sign in with ChatGPT protocol: dynamic public-client registration, a stable installation ID, PKCE S256, state, nonce, direct-token scope, the issued client ID, the public `api.openai.com/v1/responses` endpoint, and refresh with the same resource/client ID. There is no client secret. The pending verifier and credentials are AES-GCM encrypted. Browser forms are origin checked, non-cacheable and framed out, with a no-referrer policy. Callback exchange is reserved before dispatch and never retried after uncertainty. A browser authorization must be confirmed by the configured IRC owner before installation, because an IRC link can be seen by other channel participants.
+
+The shared `CredentialVault` implements Pi's credential-store contract. Expired tokens refresh once under a serialized lease, persisting the rotated token encrypted. Interrupted refreshes remain held for reconciliation or an explicit new login. Credential installation and its receipt commit atomically; a retried confirmation cannot replace a newer rotated token. No login cron, temporary deployment token, auth package, or operator request is needed.
+
+The former protected `authenticate-cloudflare.yml` operator workflow and `openai-codex` provider remain available for rollback. `openai-codex` is Pi's legacy provider; its tokens are not treated as native `openai` credentials. The native owner resolver requires the issued client ID and direct-token scope and never falls back to an API key. Legacy compression below applies only to that legacy endpoint.
 
 Codex SSE requests use the pinned SDK's usual zstd encoding. Workers' native zstd API throws on the full tool-catalog request, so a pinned, precompiled WASM encoder handles the SDK's uncompressed fallback at the same compression level. It requires no runtime WASM compilation, filesystem access, or network download. The adapter bounds input at 2 MiB, preserves authentication and session headers, rejects redirects, and sends each request once. It changes neither the model endpoint nor the credential owner.
 

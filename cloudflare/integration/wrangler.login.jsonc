@@ -1,0 +1,5 @@
+{
+ "compatibility_flags":["nodejs_compat"],"name":"cuse-login-test","main":"login-fixture.ts","compatibility_date":"2026-09-23",
+ "durable_objects":{"bindings":[{"name":"SESSIONS","class_name":"LoginSession"},{"name":"MODEL_AUTHORITY","class_name":"LoginAuthority"},{"name":"DESKTOPS","class_name":"DesktopCoordinator"},{"name":"CHANNELS","class_name":"ChannelRegistry"}]},
+ "migrations":[{"tag":"login1","new_sqlite_classes":["LoginSession","LoginAuthority","DesktopCoordinator","ChannelRegistry"]}]
+}

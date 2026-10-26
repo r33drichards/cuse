@@ -20,6 +20,7 @@ import { parseScheduleCommand, SCHEDULE_USAGE, type ScheduleRequest } from "./sc
 import { parseSessionCommand, SESSION_COMMANDS, type SessionCommandAction } from "./session-commands.ts";
 
 export type ControlCommand =
+ | {kind:"login";action:"start"|"status"|"cancel"|"confirm";code?:string}
  | { kind: "goal"; args: string }
  | { kind: "schedule"; request: ScheduleRequest }
  | { kind: "toggle-mention" }
@@ -35,6 +36,7 @@ export type IrcCommand = ControlCommand | SessionCommandAction;
 export const COMMAND_PREFIX = ",";
 
 const CONTROL_COMMANDS = [
+ {usage:"login [openai|status|cancel|confirm <code>]",description:"connect the owner’s ChatGPT subscription in a private browser flow; shared auth, separate channel sessions"},
  { usage: "goal [--tokens 50k] <objective> | status | pause | resume | clear | topic on/off", description: "pursue one persistent Pi Goal; optional token budget is a soft stopping threshold" },
  { usage: "schedule …", description: "schedule durable prompts: list, every, once, cron, pause, resume, delete; timezone defaults to UTC" },
  { usage: "toggle mention", description: "toggle requiring a mention in this channel; saved across restarts" },
@@ -93,6 +95,12 @@ export function parseCommand(line: string): IrcCommand | undefined {
 	const session = parseSessionCommand(name!, argument);
 	if (session) return session;
 	switch (name!.toLowerCase()) {
+        case "login": {
+            if(!argument || argument.toLowerCase()==='openai')return {kind:'login',action:'start'};
+            if(argument==='status'||argument==='cancel')return {kind:'login',action:argument};
+            const confirm=/^confirm ([a-f0-9]{12})$/.exec(argument);if(confirm)return {kind:'login',action:'confirm',code:confirm[1]};
+            return {kind:'error',message:'Usage: ,login [openai|status|cancel|confirm <code>]. Never paste callback URLs or tokens in IRC.'};
+        }
 		case "goal": return { kind: "goal", args: argument };
         case "schedule": {
 			const request = parseScheduleCommand(argument);
