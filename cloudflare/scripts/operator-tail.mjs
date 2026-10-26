@@ -14,7 +14,7 @@ export function operatorResult(text,id){
       const event=JSON.parse(text.slice(start,i+1));
       for(const log of event.logs??[])for(const message of log.message??[]){
         if(typeof message!=='string')continue;
-        try{const row=JSON.parse(message);if(row.id===id && ['operator_completed','operator_failed'].includes(row.code))return row.code.slice(9);}catch{}
+        try{const row=JSON.parse(message);if(row.id===id && ['operator_completed','operator_failed','operator_ready'].includes(row.code))return row.code.slice(9);}catch{}
       }
     }catch{}
     start=-1;

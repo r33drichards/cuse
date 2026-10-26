@@ -85,7 +85,11 @@ session inventories. Delete these temporary GitHub secrets after the operation.
 
 `stage` installs runtime bindings with normal event delivery held at HTTP 503;
 signed callback verification challenges still work. It creates no subscription
-and starts no conversation. Before `activate`, fence the legacy owner, verify
+and starts no conversation. It enables an inert cron and waits for a log carrying
+a fresh warmup nonce before succeeding. Keep the legacy owner active during
+this wait: cron changes can take up to 15 minutes to propagate, longer than the
+producer's bounded retry window. Activation preserves that warmed schedule.
+Before `activate`, fence the legacy owner, verify
 that the dedicated MCP profile owns the exact nick and buffer, and obtain the
 reviewed existing subscription grant. Include `operator` in the package with
 version 1, a fresh 32-character hexadecimal `id`, `routeKey`, complete `snapshot`,
@@ -104,7 +108,8 @@ and does not reset renewal deadlines. Only a structured completion log matching
 the request ID releases the delivery hold. No model prompt runs during setup.
 
 The workflow removes the cron and request secrets after activation, including on
-failure. A forced cancellation may interrupt cleanup: run `cleanup` explicitly;
+failure. Successful staging leaves its inert cron ready for handoff; run
+`cleanup` if abandoning the cutover. A forced cancellation may interrupt cleanup: run `cleanup` explicitly;
 the expired request also fails closed. Existing unrelated cron schedules cause a
 failure before writes. On any failure, retain the legacy ownership fence, inspect
 aggregate state, and do not replay uncertain effects. Rollback requires first
