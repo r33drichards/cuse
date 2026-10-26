@@ -26,6 +26,7 @@ export interface Binding {route: Route; secret: string; access?:Access; subscrip
 export interface Env {
   /** Expiring private request; scheduled operator execution is explicitly enabled externally. */
   CUSE_OPERATOR_REQUEST?:string;
+  CUSE_OPERATOR_WARMUP?:string;
   CUSE_OPERATOR_PARTS?:string;
   [key:`CUSE_OPERATOR_PART_${number}`]:string|undefined;
   CHANNELS?:DurableObjectNamespace<ChannelRegistry>;
@@ -47,6 +48,7 @@ export default {
       const candidate=raw?JSON.parse(raw).id:undefined;
       if(typeof candidate==='string' && /^[a-f0-9]{32}$/.test(candidate))id=candidate;
       const status=await operate(raw,JSON.parse(env.WEBHOOK_ROUTES??'{}'),key=>env.SESSIONS.get(env.SESSIONS.idFromName(key)));
+      if(status==='disabled' && /^[a-f0-9]{32}$/.test(env.CUSE_OPERATOR_WARMUP??''))console.log(JSON.stringify({code:'operator_ready',id:env.CUSE_OPERATOR_WARMUP}));
       if(status!=='disabled')console.log(JSON.stringify({code:'operator_'+status,id}));
     } catch {console.error(JSON.stringify({code:'operator_failed',id}));throw Error('operator_failed');}
   },

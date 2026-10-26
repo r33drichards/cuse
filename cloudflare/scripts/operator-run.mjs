@@ -1,6 +1,7 @@
 /** Explicit private operation; use only from the protected manual workflow.
  * Package values never appear in arguments, output, artifacts or public files. */
 import {gunzipSync,gzipSync} from 'node:zlib';
+import {randomBytes} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {operatorResult} from './operator-tail.mjs';
 const worker='cuse-durable-shadow';
@@ -10,20 +11,31 @@ const base=`https://api.cloudflare.com/client/v4/accounts/${account}/workers/scr
 const names=['MODEL_SECRETS','MODEL_CONFIG','WEBHOOK_ROUTES'];
 async function api(path,method='GET',body){
   const response=await fetch(base+path,{method,redirect:'error',signal:AbortSignal.timeout(30000),headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
-  if(/^\/secrets\/CUSE_OPERATOR_(?:REQUEST|PARTS|PART_\d+)$/.test(path) && method==='DELETE' && response.status===404)return;
+  if(/^\/secrets\/CUSE_OPERATOR_(?:REQUEST|WARMUP|PARTS|PART_\d+)$/.test(path) && method==='DELETE' && response.status===404)return;
   const data=await response.json();if(!response.ok || !data.success)throw Error('cloudflare_operation_failed');return data.result;
 }
 const put=(name,text)=>api('/secrets','PUT',{name,type:'secret_text',text});
 async function remove(){
   const existing=await api('/secrets');
   if(!Array.isArray(existing))throw Error('operator_secret_inventory_invalid');
-  for(const secret of existing)if(/^CUSE_OPERATOR_(?:REQUEST|PARTS|PART_(?:[0-9]|[12][0-9]|3[01]))$/.test(secret.name))await api('/secrets/'+secret.name,'DELETE');
+  for(const secret of existing)if(/^CUSE_OPERATOR_(?:REQUEST|WARMUP|PARTS|PART_(?:[0-9]|[12][0-9]|3[01]))$/.test(secret.name))await api('/secrets/'+secret.name,'DELETE');
 }
 async function schedules(){const result=await api('/schedules');const rows=Array.isArray(result)?result:result.schedules;if(!Array.isArray(rows) || rows.some(r=>r.cron!=='* * * * *'))throw Error('unreviewed_existing_schedule');return rows;}
 let tail;
+function observe(id,expected){
+  tail=spawn('./node_modules/.bin/wrangler',['tail',worker,'--format','json','--sampling-rate','1'],{stdio:['ignore','pipe','pipe'],env:{...process.env,WRANGLER_SEND_METRICS:'false'}});
+  let timer,output='';
+  const completion=new Promise((resolve,reject)=>{
+    timer=setTimeout(()=>reject(Error('operator_confirmation_timeout')),1200000);
+    tail.on('error',()=>reject(Error('operator_tail_failed')));tail.on('exit',()=>reject(Error('operator_tail_closed')));
+    tail.stdout.on('data',chunk=>{output=(output+chunk.toString()).slice(-262144);const result=operatorResult(output,id);if(result===expected)resolve();else if(result==='failed')reject(Error('operator_failed'));});
+  });completion.catch(()=>{});
+  return {completion,stop(){clearTimeout(timer);tail.kill();}};
+}
 try{
   if(!['stage','activate','cleanup'].includes(mode) || !/^[a-f0-9]{32}$/.test(account??'') || !token)throw Error('operator_environment_invalid');
-  await schedules();
+  const existingSchedules=await schedules();
+  if(mode==='activate' && existingSchedules.length!==1)throw Error('operator_warmup_required');
   if(mode==='cleanup'){
     await api('/schedules','PUT',[]);await remove();console.log('Private operator schedule and request removed.');
   }else{
@@ -39,10 +51,19 @@ try{
       request={...p.operator,expiresAt:Math.min(Date.now()+1800000,p.approvedUntil)};
       if(await operate(JSON.stringify(request),bindings,()=>({activateReviewed:async()=>{}}))!=='completed')throw Error('operator_review_required');
     }
-    // Stop a previous temporary operator before changing its request or runtime bindings.
-    await api('/schedules','PUT',[]);await remove();
+    // Keep the warmed schedule during handoff; restarting cron propagation can
+    // exceed the producer's bounded webhook retry window.
+    if(mode==='stage')await api('/schedules','PUT',[]);
+    await remove();
     for(const name of names)await put(name,p.runtime[name]);
-    if(mode==='stage'){console.log('Runtime bindings installed with signed event delivery held. No subscription or activation performed.');}
+    if(mode==='stage'){
+      const id=randomBytes(16).toString('hex');await put('CUSE_OPERATOR_WARMUP',id);
+      const observer=observe(id,'ready');let ready=false;
+      try{
+        await api('/schedules','PUT',[{cron:'* * * * *'}]);await observer.completion;ready=true;
+        console.log('Runtime bindings held; inert operator cron confirmed. No subscription or activation performed.');
+      }finally{observer.stop();if(!ready){await api('/schedules','PUT',[]);await remove();}}
+    }
     else{
       const encodedRequest=gzipSync(JSON.stringify(request)).toString('base64');
       const parts=encodedRequest.match(/.{1,4800}/g);
@@ -50,22 +71,14 @@ try{
       for(let i=0;i<parts.length;i++)await put('CUSE_OPERATOR_PART_'+i,parts[i]);
       // Publish the count last, after all immutable chunks have arrived.
       await put('CUSE_OPERATOR_PARTS',String(parts.length));
-      tail=spawn('./node_modules/.bin/wrangler',['tail',worker,'--format','json','--sampling-rate','1'],{stdio:['ignore','pipe','pipe'],env:{...process.env,WRANGLER_SEND_METRICS:'false'}});
-      let timer;let output='';
-      const completion=new Promise((resolve,reject)=>{
-        timer=setTimeout(()=>reject(Error('operator_confirmation_timeout')),1200000);
-        tail.on('error',()=>reject(Error('operator_tail_failed')));tail.on('exit',()=>reject(Error('operator_tail_closed')));
-        tail.stdout.on('data',chunk=>{output=(output+chunk.toString()).slice(-262144);const result=operatorResult(output,request.id);if(result==='completed')resolve();else if(result==='failed')reject(Error('operator_failed'));});
-        // Prevent a connection error from becoming an unhandled rejection while scheduling.
-      });completion.catch(()=>{});
+      const observer=observe(request.id,'completed');
       try{
-        await api('/schedules','PUT',[{cron:'* * * * *'}]);
-        await completion;
+        await observer.completion;
         // Publish intake only after the exact generation has initialized and armed successfully.
         for(const binding of Object.values(bindings))delete binding.activationPending;
         await put('WEBHOOK_ROUTES',JSON.stringify(bindings));
         console.log('Reviewed generation initialized; existing grant armed; signed event delivery enabled.');
-      }finally{clearTimeout(timer);tail.kill();await api('/schedules','PUT',[]);await remove();}
+      }finally{observer.stop();await api('/schedules','PUT',[]);await remove();}
     }
   }
 }catch{

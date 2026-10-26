@@ -10,10 +10,13 @@ test('private operator initializes once across restart, holds signed delivery, a
  const grant={id:route.subscriptionId,refreshBefore:new Date(Date.now()+3600000).toISOString(),cursor:null,truncated:false};
  const request={version:1,id:'b'.repeat(32),expiresAt:Date.now()+600000,routeKey:'test',snapshot,fence,grant};
  const binding={route:snapshot.route,secret,access:{mcp:{endpoint:'https://example.invalid/mcp',bearer:'synthetic'},fullControl:false,enabledHash:fence.snapshotHash},subscription:{arguments:{channel_id:route.buffer,trigger:'message'},callback:'https://example.invalid/events/test',ttlMs:3600000}};
- const start=(pending=true)=>unstable_dev('integration/fixture-worker.ts',{config:'integration/wrangler.test.jsonc',local:true,ip:'127.0.0.1',port:0,inspectorPort:0,persist:true,persistTo:dir,logLevel:'error',vars:{TEST_SIMPLE:'true',WEBHOOK_ROUTES:JSON.stringify({test:{...binding,activationPending:pending}}),TEST_SNAPSHOT:JSON.stringify(snapshot),TEST_FENCE:JSON.stringify(fence),CUSE_OPERATOR_PARTS:'1',CUSE_OPERATOR_PART_0:gzipSync(JSON.stringify(request)).toString('base64')},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,forceLocal:true,watch:false}});
- let app=await start();
+ const start=(pending=true,warmup=false)=>unstable_dev('integration/fixture-worker.ts',{config:'integration/wrangler.test.jsonc',local:true,ip:'127.0.0.1',port:0,inspectorPort:0,persist:true,persistTo:dir,logLevel:'error',vars:{TEST_SIMPLE:'true',WEBHOOK_ROUTES:JSON.stringify({test:{...binding,activationPending:pending}}),TEST_SNAPSHOT:JSON.stringify(snapshot),TEST_FENCE:JSON.stringify(fence),...(warmup?{CUSE_OPERATOR_WARMUP:request.id}:{CUSE_OPERATOR_PARTS:'1',CUSE_OPERATOR_PART_0:gzipSync(JSON.stringify(request)).toString('base64')})},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,forceLocal:true,watch:false}});
+ let app=await start(true,true);
  const post=async(value:unknown=event())=>{const r=signed(value);return app.fetch('/events/test',{method:'POST',headers:Object.fromEntries(r.headers),body:await r.text()});};
  try{
+  assert.equal((await app.fetch('/test/operate')).status,200);
+  assert.equal(((await (await app.fetch('/test/operator-stats')).json()) as any).receipts,0,'warming cannot initialize an agent');
+  await app.stop();app=await start();
   assert.equal((await app.fetch('/operator',{method:'POST'})).status,404);
   assert.equal((await post()).status,503);
   const challenge=await post({type:'verification',challenge:'synthetic'});assert.equal(challenge.status,200);assert.deepEqual(await challenge.json(),{challenge:'synthetic'});
