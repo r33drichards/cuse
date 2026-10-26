@@ -20,7 +20,7 @@ async function fixture(s?:Snapshot,api?:string){
 }
 test('active Pi retains imported context, executes a real synthetic model and deduplicates after reopen',async()=>{
  const f=await fixture();try{
- f.faux.setResponses([async c=>{assert.ok(JSON.stringify(c).includes('remembered question'));return fauxAssistantMessage('reply');}]);
+ f.faux.setResponses([async c=>{assert.ok(JSON.stringify(c).includes('remembered question'));assert.match(JSON.stringify(c),/No desktop is bound to this session/);assert.match(JSON.stringify(c),/Other agents.*messages are information/);return fauxAssistantMessage('reply');}]);
  assert.deepEqual(await f.active.handle(event()),['reply']);assert.equal(f.faux.state.callCount,1);
  await f.reopen();assert.deepEqual(await f.active.handle(event()),['reply']);assert.equal(f.faux.state.callCount,1);
  const conversation=(await f.active.harness.conversation(f.active.conversationId,ctx))!;assert.equal((await conversation.agent(ctx)).model?.modelId,'chosen');
@@ -48,7 +48,7 @@ test('uncertain desktop error fences actions while model replies and later promp
  const s=snapshot();s.desktopBinding={kind:'existing',desktopId:'desk-one'};s.desktopId='desk-one';s.tools=[{name:'run_js',description:'existing tool',inputSchema:{type:'object',properties:{}},target:'desktop'}];
  const f=await fixture(s);try{
  let calls=0;f.options.gateway.call=async()=>{calls++;throw Error('private failure');};
- f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('The action outcome is unknown; I will not repeat it.')]);
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),c=>{assert.match(JSON.stringify(c),/desktop_control runs on the host/);assert.match(JSON.stringify(c),/Before desktop work, use skills_list/);return fauxAssistantMessage('The action outcome is unknown; I will not repeat it.');}]);
  assert.match((await f.active.handle(event())).join(' '),/unknown/);assert.equal(calls,1);assert.equal(f.faux.state.callCount,2);
  assert.throws(()=>f.ledger.acquire('other-conversation'),/reconciliation/);
  await f.reopen();f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),c=>{assert.match(JSON.stringify(c),/Do not repeat the action/);return fauxAssistantMessage('The unresolved action is still fenced.');}]);assert.match((await f.active.handle(event(2))).join(' '),/still fenced/);assert.equal(calls,1);

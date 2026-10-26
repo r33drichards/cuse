@@ -1,3 +1,4 @@
+import {sessionRuntimeGuidance} from "../../src/session-guidance.ts";
 import {ExecutionSlice,ExecutionYield} from './execution-slice.ts';
 import {ambiguousToolOutcome} from '../../src/tool-recovery.ts';
 import {formatGoal} from './legacy/goal-types.ts';
@@ -9,7 +10,7 @@ import {hostCall} from "./host-tools.ts";
 import type {Automations} from "./automations.ts";
 import {BACKGROUND_CONTEXT as context} from "@earendil-works/chord/context";
 import type {Models} from "@earendil-works/pi-ai/models";
-import {Harness,createRegistry,defineExtension,defineTool,defineDocFamily,AssistantEntry,hook,GenerationTask,ToolTask,type Storage,type ToolRegistration,type ConversationId} from "@earendil-works/pi-durable";
+import {Harness,createRegistry,defineExtension,defineTool,defineDocFamily,AssistantEntry,section,hook,GenerationTask,ToolTask,type Storage,type ToolRegistration,type ConversationId} from "@earendil-works/pi-durable";
 import {createAssistantMessageEventStream} from "@earendil-works/pi-ai/utils/event-stream";
 import type {TSchema} from "@earendil-works/pi-ai";
 import {importSnapshot,snapshotHash,type Snapshot,type Fence} from "./migration.ts";
@@ -115,7 +116,7 @@ export class ActiveSession {
         }
       }}));
     const slice=options.slice?new ExecutionSlice(options.slice.capacity,options.slice.durationMs):undefined;
-    const extension=defineExtension({name:"cuse",tools,hooks:options.slice?[
+    const extension=defineExtension({name:"cuse",tools,sections:[section("cuse-runtime",()=>{const g=sessionRuntimeGuidance(s.route.agent,s.route.channel,!!s.desktopId);return [g.identity,...g.runtime].join("\n\n");})],hooks:options.slice?[
       hook(GenerationTask,{beforeRequest:async(_request,_api,ctx)=>{await slice?.admit(2,ctx.abortSignal);return undefined;}}),
       hook(ToolTask,{beforeTool:async(_call,_api,ctx)=>{await slice?.admit(6,ctx.abortSignal);return undefined;}}),
     ]:[]});registry.install(extension);
