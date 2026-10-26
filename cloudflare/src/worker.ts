@@ -1,3 +1,4 @@
+import {ChatGPTLogin} from './chatgpt-login.ts';
 import {desktopViewerUrl} from '../../src/desktop-presentation.ts';
 import {workerCodexFetch} from './codex-encoding.worker.ts';
 import {operateModelAuth} from './model-auth-operator.ts';
@@ -28,6 +29,10 @@ import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
 export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;activationPending?:boolean;}
 export interface Env {
+  /** One trusted IRC owner; channels are sessions, never user identities. */
+  CUSE_OWNER_NICK?:string;
+  CUSE_OWNER_PROFILE?:string;
+  CUSE_PUBLIC_URL?:string;
   /** Expiring private request; scheduled operator execution is explicitly enabled externally. */
   CUSE_OPERATOR_REQUEST?:string;
   CUSE_OPERATOR_WARMUP?:string;
@@ -59,6 +64,11 @@ export default {
     } catch {console.error(JSON.stringify({code:'operator_failed',id}));throw Error('operator_failed');}
   },
   async fetch(request: Request,env: Env): Promise<Response> {
+    const loginPath=/^\/login\/([a-f0-9]{64})$/.exec(new URL(request.url).pathname);
+    if(loginPath && env.CUSE_OWNER_PROFILE && env.CUSE_OWNER_NICK){
+      try {return await env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName(env.CUSE_OWNER_PROFILE)).loginHttp(request,loginPath[1]);}
+      catch{return new Response('sign_in_unavailable',{status:503,headers:{'Cache-Control':'no-store'}});}
+    }
     if (request.method !== "POST") return new Response("not_found",{status:404});
     const path=new URL(request.url).pathname;
     if (!/^\/events\/[A-Za-z0-9_-]{1,80}$/.test(path)) return new Response("not_found",{status:404});
@@ -140,11 +150,13 @@ export class AgentSession extends DurableObject<Env> {
     // Persist the recovery wake BEFORE acknowledging. A spurious alarm is safe;
     // a successful ACK without an alarm would strand an accepted event.
     await this.ctx.storage.setAlarm(Date.now()+1000);
+    const owner=this.env.CUSE_OWNER_NICK;
+    if(owner && event.data.nick.toLowerCase()!==owner.toLowerCase() && !this.prepared()?.snapshot.policy.peerNicks.some(n=>n.toLowerCase()===event.data.nick.toLowerCase()))return 'ignored';
     const result=this.inbox.accept(event,hash);
     if(this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value==='no' && result==='accepted')this.inbox.cancel(event.eventId);
     const prepared=this.prepared();
-    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event))this.sql.all("UPDATE cuse_inbox SET origin='control' WHERE id=?",event.eventId);
-    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event) && parseCommand(mentionText(event.data.text,prepared.snapshot.route.nick)??event.data.text)?.kind==='stop'){
+    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event,this.env.CUSE_OWNER_NICK))this.sql.all("UPDATE cuse_inbox SET origin='control' WHERE id=?",event.eventId);
+    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event,this.env.CUSE_OWNER_NICK) && parseCommand(mentionText(event.data.text,prepared.snapshot.route.nick)??event.data.text)?.kind==='stop'){
       await this.cancel();
       this.sql.all("UPDATE cuse_inbox SET state='pending',origin='control' WHERE id=?",event.eventId);
     }
@@ -218,7 +230,7 @@ export class AgentSession extends DurableObject<Env> {
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
       ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
       slice:{capacity:30,durationMs:150000},turnLimits:{models:64,tools:256},
-      modelFetch:workerCodexFetch,wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
+      allowUnauthenticatedCommands:!!this.env.CUSE_OWNER_PROFILE,modelFetch:workerCodexFetch,wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
     this.runner=new Runner(this.inbox!,{completed:job=>this.automation().finish(job.id),failed:job=>this.automation().fault(job.id),run:async(job,checkpoint,signal)=>{
       checkpoint(JSON.stringify({engine:"pi-durable",requestId:job.id,conversation:this.active!.conversationId}));
@@ -237,10 +249,42 @@ export class AgentSession extends DurableObject<Env> {
       send:(peer,text)=>withMcp(access.mcp,client=>dispatchReply(client,{...snapshot.route,channel:peer.channel,buffer:peer.buffer},text,access.fullControl)),
     });
   }
+  private ownerAuthority(){
+    if(!this.env.CUSE_OWNER_PROFILE || !this.env.CUSE_OWNER_NICK || !/^[a-z0-9][a-z0-9._-]{0,99}$/.test(this.env.CUSE_OWNER_PROFILE))throw Error('owner_configuration_required');
+    return this.env.MODEL_AUTHORITY.get(this.env.MODEL_AUTHORITY.idFromName(this.env.CUSE_OWNER_PROFILE));
+  }
+  private pendingLogin(){
+    const binding=this.binding();if(!binding)return;
+    const rows=this.sql.all("SELECT id,payload FROM cuse_inbox WHERE origin='control' AND state='pending' AND due<=? AND instr(lower(json_extract(payload,'$.data.text')),',login')>0 ORDER BY position LIMIT 128",Date.now());
+    const head=rows.find(row=>{const e=JSON.parse(String(row.payload)) as MessageEvent;return parseCommand(mentionText(e.data.text,binding.route.nick)??e.data.text)?.kind==='login';});
+    if(!head)return;
+    const event=JSON.parse(String(head.payload)) as MessageEvent;
+    const command=parseCommand(mentionText(event.data.text,binding.route.nick)??event.data.text);if(command?.kind!=='login')return;
+    return {head,event,command};
+  }
+  /** Login is a host control, usable even when model authentication is broken. */
+  private async loginControl():Promise<boolean>{
+    const pending=this.pendingLogin();if(!pending)return false;
+    const {head,event:e,command:c}=pending;
+    const job=this.inbox!.claimControl(String(head.id),Date.now());if(!job)return false;
+    this.inbox!.checkpoint(job.id,JSON.stringify({engine:"pi-durable",requestId:job.id,control:"login"}));
+    let reply:string;
+    if(!this.env.CUSE_OWNER_NICK || e.data.nick.toLowerCase()!==this.env.CUSE_OWNER_NICK.toLowerCase())reply='Only the configured Cuse owner can manage sign-in.';
+    else try{
+      const authority=this.ownerAuthority();
+      if(c.action==='start'){
+        const base=new URL(this.env.CUSE_PUBLIC_URL??'');if(base.protocol!=='https:'||base.username||base.password||base.search||base.hash||base.pathname!=='/')throw Error('owner_configuration_required');
+        const ticket=await authority.loginStart(job.id);reply=`Sign in with ChatGPT: ${base.origin}/login/${ticket} — expires in 20 minutes. Complete the private browser form; never paste its callback URL in IRC. This connects your owner account for all channels.`;
+      }else if(c.action==='cancel'){await authority.loginCancel(job.id);reply='Pending sign-in cancelled. Installed credentials unchanged.';}
+      else if(c.action==='status')reply=await authority.loginStatus();
+      else reply=await authority.loginConfirm(c.code!,job.id)?'Signed in with ChatGPT for your Cuse account. In each channel, use ,model openai/gpt-6.1-sol to select it.':'Confirmation invalid or expired; installed credentials unchanged.';
+    }catch(error){reply=error instanceof Error && error.message==='chatgpt_login_pending'?'A sign-in is already pending. Finish it or use ,login cancel.':'Sign-in unavailable. Check owner configuration or start a new ,login after cancelling the pending attempt.';}
+    this.inbox!.complete(job.id,[reply]);return true;
+  }
   protected createModels(){
     const profile=this.binding()?.access?.authProfile??(this.inbox?authProfile(this.env,this.inbox.route.agent):undefined);
     const authority=profile?this.env.MODEL_AUTHORITY.get(this.env.MODEL_AUTHORITY.idFromName(profile)):undefined;
-    const settings=modelSettings(this.env,this.inbox?.route);return configuredModels(settings.secrets,settings.config,undefined,authority?provider=>authority.resolve(provider):undefined);
+    const settings=modelSettings(this.env,this.inbox?.route);return configuredModels(settings.secrets,settings.config,undefined,(authority||this.env.CUSE_OWNER_PROFILE)?provider=>provider==='openai' && this.env.CUSE_OWNER_PROFILE?this.ownerAuthority().resolveOpenAI():authority?.resolve(provider)??Promise.resolve(undefined):undefined);
   }
   protected createGateway(snapshot:Snapshot,access:Access){return gateway(snapshot,access,snapshot.desktopId?()=>this.desktopState():undefined);}
   private desktopCoordinator(){const id=this.prepared()?.snapshot.desktopId;return id?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)):undefined;}
@@ -298,6 +342,7 @@ export class AgentSession extends DurableObject<Env> {
       const joined=this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value!=='no';
       const schedule=canRun && joined && this.prepared()?this.automation().deadline():undefined;if(schedule!==undefined)times.push(schedule);
       if(canRun && joined && (!desktopPaused || head?.origin==='control') && (head?.state==='pending' || head?.state==='running'))times.push(Math.max(Date.now()+1000,Number(head.due)));
+      if(canRun && joined && this.pendingLogin())times.push(Date.now()+1000);
       if(canRun && this.inbox && this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length)times.push(Date.now()+1000);
       if(times.length)await this.ctx.storage.setAlarm(Math.max(Date.now()+1000,Math.min(...times)));else await this.ctx.storage.deleteAlarm();
     });
@@ -311,6 +356,11 @@ export class AgentSession extends DurableObject<Env> {
       if(prepared){
         // Uncertain delivery blocks new turns too, not just the next send.
         if(this.effectsBlocked() || !this.renewal.valid(Date.now()))return;
+        // Sending a host-control receipt and signing in must work without a model token.
+        if(this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length){
+          await this.inbox.sendOne(async payload=>this.sendReply(binding!,JSON.parse(payload).text));return;
+        }
+        if(await this.loginControl())return;
         await this.openActive();
         if(this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value==='no')return;
         this.automation().due(Date.now(),this.recovering);this.recovering=false;
@@ -365,23 +415,36 @@ function isStop(snapshot:Snapshot,event:MessageEvent):boolean{
   return (mention?event.data.text.slice(mention[0].length):event.data.text).trim()===",stop";
 }
 
-/** Shared private credential owner. No public HTTP route and no automatic login/seed. */
+/** Single credential owner. Expiring browser handoff requires owner confirmation;
+ * vault import and credential resolution remain internal RPCs. */
 export class ModelAuthority extends DurableObject<Env>{
- private vault!:CredentialVault;private models!:Models;
+ private vault!:CredentialVault;private models!:Models;private login!:ChatGPTLogin;
  constructor(ctx:DurableObjectState,env:Env){super(ctx,env);ctx.blockConcurrencyWhile(async()=>{
   const key=await credentialKey(env.MODEL_CREDENTIAL_KEY??'');
   this.vault=new CredentialVault({all:(q,...p)=>ctx.storage.sql.exec(q,...p).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)},key);
   this.models=this.createModels(this.vault);
+  this.login=this.createLogin(this.vault,key);
  });}
+ protected createLogin(vault:CredentialVault,key:CryptoKey):ChatGPTLogin{return new ChatGPTLogin(this.ctx.storage,key,{revision:()=>{const row=this.ctx.storage.sql.exec("SELECT revision FROM cuse_credentials WHERE provider='openai'").toArray()[0];return row?Number(row.revision):null;},install:(id,c,revision)=>vault.seedReviewed(id,'openai',c,revision)});}
  protected createModels(vault:CredentialVault):Models{return configuredModels(JSON.parse(this.env.MODEL_SECRETS??'{}'),JSON.parse(this.env.MODEL_CONFIG??'{}'),vault);}
+ async loginStart(requestId:string):Promise<string>{return this.login.start(requestId);}
+ async loginCancel(requestId:string):Promise<void>{await this.login.cancel(requestId);}
+ async loginStatus():Promise<string>{return `${await this.login.status()} OpenAI credential: ${(await this.vault.list()).some(c=>c.providerId==='openai')?'connected':'not connected'}.`;}
+ async loginConfirm(code:string,requestId:string):Promise<boolean>{return this.login.confirm(code,requestId);}
+ async loginHttp(request:Request,ticket:string):Promise<Response>{return this.login.http(request,ticket);}
+ async resolveOpenAI():Promise<AuthResult|undefined>{
+  const c=await this.vault.read('openai');if(c?.type!=='oauth'||typeof c.clientId!=='string'||!Array.isArray(c.scopes)||!c.scopes.includes('chatgpt.tokens.use.direct'))return;
+  return this.models.getAuth('openai');
+ }
  async resolve(provider:string):Promise<AuthResult|undefined>{return this.models.getAuth(provider);}
  async seed(provider:string,credential:Credential,expectedRevision:number|null):Promise<void>{await this.vault.seed(provider,credential,expectedRevision);}
  async seedReviewed(id:string,provider:string,credential:Credential,expectedRevision:number|null):Promise<void>{await this.vault.seedReviewed(id,provider,credential,expectedRevision);}
 
 }
 
-function humanControl(s:Snapshot,e:MessageEvent):boolean{
+function humanControl(s:Snapshot,e:MessageEvent,owner?:string):boolean{
  const fold=(v:string)=>v.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
+ if(owner)return fold(owner)===fold(e.data.nick) && !!parseCommand(mentionText(e.data.text,s.route.nick)??e.data.text);
  return s.route.agent===s.route.channel && ![s.route.nick,...s.policy.peerNicks].some(n=>fold(n)===fold(e.data.nick)) && !!parseCommand(mentionText(e.data.text,s.route.nick)??e.data.text);
 }
 

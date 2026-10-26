@@ -7,6 +7,7 @@ The cuse IRC agent and its complete vendored Pi runtime live together on `main`.
 - [`test/`](test/): cuse regression and packaging tests.
 - [Stop current work](docs/stop-command.md): `,stop` interrupts current/queued work and pauses the goal, retaining history and desktop.
 - [Clear conversation context](docs/context-reset.md): `,clear` in durable mode retains history, desktop, files and schedules.
+- [Cloudflare owner sign-in](cloudflare/README.md#single-owner-channel-sessions-and-chatgpt-sign-in): `,login` connects one ChatGPT account; each IRC channel keeps its own session and model choice.
 - [Agent/channel session design](docs/agent-channel-sessions.md): target model, implementation boundaries, migration and pinned baseline audit.
 - [`vendor/README.md`](vendor/README.md): upstream revision and vendor update notes; upstream licenses are preserved.
 

@@ -64,6 +64,12 @@ export class InboxStore {
       return {...head,state:"running",attempts:head.attempts + 1};
     });
   }
+  /** Host-only login may repair credentials while an older model turn is blocked.
+   * Caller must validate the parsed command; normal agent work still uses claim(). */
+  claimControl(id:string,now:number):Job|undefined{return this.sql.transaction(()=>{
+    const job=this.job(id);if(!job||job.origin!=='control'||job.state!=='pending'||Number(job.due)>now)return;
+    this.sql.all("UPDATE cuse_inbox SET state='running',attempts=attempts+1 WHERE id=?",id);return {...job,state:'running',attempts:job.attempts+1};
+  });}
   defer(id:string,now=Date.now()):void {this.sql.all("UPDATE cuse_inbox SET state='pending',due=?,error=NULL WHERE id=? AND state='running'",now+1000,id);}
   checkpoint(id: string, value: string): void {
     if (value.length > 262144) throw Error("checkpoint_capacity");

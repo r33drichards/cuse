@@ -1,9 +1,11 @@
+import {refreshChatGPT} from './chatgpt-login.ts';
 import {noRedirectFetch} from "./http.ts";
 import type {OAuthAuth,OAuthCredential} from '@earendil-works/pi-ai';
 /** Fetch-only refresh port of pinned pi-ai 1.2.0 auth/oauth/{openai-codex,
  * anthropic,openrouter}. MIT. CLI login/callback servers stay outside Workers.
  * No new grants, account-policy mutations, or automatic refresh retries. */
 export function workerOAuth(provider:string,fetcher:typeof fetch=fetch):OAuthAuth|undefined{
+ if(provider==='openai')return {name:'OpenAI (ChatGPT subscription)',isSubscription:true,loginLabel:'Sign in with ChatGPT',login:async()=>{throw Error('use_login_command');},toAuth:async c=>({apiKey:c.access}),refresh:(c,signal)=>refreshChatGPT(c,signal,fetcher)};
  if(!['openai-codex','anthropic','openrouter'].includes(provider))return;
  return {name:provider,isSubscription:provider!=='openrouter',login:async()=>{throw Error('interactive_login_external_only');},toAuth:async c=>({apiKey:c.access}),refresh:async(c,signal)=>{
   if(provider==='openrouter')return c;
