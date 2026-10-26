@@ -84,3 +84,17 @@ export async function verifyJoined(client:ToolClient,route:Route,after:number):P
  const status=data.lines.filter(l=>Array.isArray(l.tags) && l.tags.some(t=>t==='irc_kick' || t==='irc_disconnected' || ((t==='irc_join' || t==='irc_part') && l.tags.some(n=>fold(n)===fold('nick_'+route.nick))))).at(-1);
  if(!status?.tags.includes('irc_join') || (status.date_printed??status.date??0)*1000<after-5000)throw Error('join_confirmation_pending');
 }
+
+/** Read another channel only through the same exclusively owned IRC profile. */
+export async function readIrcBuffer(client:ToolClient,route:Route,args:Record<string,unknown>,exclusive:boolean):Promise<unknown>{
+  const buffer=args.buffer===undefined?route.buffer:String(args.buffer);
+  const prefix=route.buffer.slice(0,route.buffer.indexOf('.',4)+1);
+  if(buffer!==route.buffer && (!exclusive || !buffer.startsWith(prefix) || !/^[#&][^\s]+$/.test(buffer.slice(prefix.length))))throw Error('cross_identity_buffer');
+  const validate=(data:unknown,expected:string)=>{
+    const value=data as {buffer?:{full_name?:string;localvar_nick?:string;localvar_channel?:string;localvar_type?:string}};
+    if(value?.buffer?.full_name!==expected || value.buffer.localvar_nick!==route.nick || value.buffer.localvar_type!=='channel' || value.buffer.localvar_channel!==expected.slice(prefix.length))throw Error('identity_mapping_changed');
+    return data;
+  };
+  if(buffer!==route.buffer)validate(await readChannel(client,route,1),route.buffer);
+  return validate(await readChannel(client,{...route,buffer},args.limit===undefined?100:Number(args.limit),args.cursor===undefined?undefined:String(args.cursor)),buffer);
+}

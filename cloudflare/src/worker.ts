@@ -271,7 +271,7 @@ export class AgentSession extends DurableObject<Env> {
     if(command?.kind!=='recover-read')return false;
     const job=this.inbox!.claimControl(String(row.id),Date.now());if(!job)return false;
     this.inbox!.checkpoint(job.id,JSON.stringify({engine:'pi-durable',requestId:job.id,control:'recover-read'}));
-    let reply='Read recovery refused; the task must be a terminal, recognized read-only browser probe with exactly matching recovery locks.';
+    let reply='Read recovery refused; the task must be a terminal, recognized read-only operation with an exactly matching recovery guard.';
     if(event.data.nick.toLowerCase()===this.env.CUSE_OWNER_NICK.toLowerCase())try{await this.openActive();reply=await this.active!.recoverRead(command.task);}catch{console.error(JSON.stringify({code:'read_recovery_refused'}));}
     this.inbox!.complete(job.id,[reply]);return true;
   }
