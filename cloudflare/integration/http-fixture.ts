@@ -1,0 +1,2 @@
+import {noRedirectFetch} from "../src/http.ts";
+export default {async fetch(request:Request){const target=new URL(request.url).searchParams.get("target")!;try{const response=await noRedirectFetch(target,{method:"POST",headers:{Authorization:"Bearer synthetic"},body:"synthetic-body"});return Response.json({status:response.status,body:await response.text()});}catch{return Response.json({rejected:true},{status:502});}}};

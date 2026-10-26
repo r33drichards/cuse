@@ -1,3 +1,4 @@
+import {noRedirectFetch} from "./http.ts";
 import {McpSkills,SKILLS_EXTENSION,SkillError,boundedSkillResponse} from '../../src/mcp-skills.ts';
 import {z} from 'zod';
 import type {DesktopAccess} from './lifecycle.ts';
@@ -32,7 +33,7 @@ export function gateway(snapshot:Snapshot,access:Access,currentDesktop?:()=>Prom
   const base=new URL(access.desktop.baseUrl);if(base.protocol!=='https:' || base.username || base.password)throw Error('desktop_configuration');
   const url=new URL(base.toString().replace(/\/$/,'')+'/'+encodeURIComponent(current.id)+'/mcp');
   const client=new Client({name:'cuse-durable',version:'1'},{capabilities:{extensions:{[SKILLS_EXTENSION]:{}}}});
-  const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:'Bearer '+access.desktop.bearer},redirect:'error'},onInsufficientScope:'throw',fetch:async(input,init)=>{const response=await fetcher(input,init);if(typeof init?.body==='string' && /\"method\":\"(?:skills\/|resources\/read)/.test(init.body)){const body=await boundedSkillResponse(response);return new Response(body,{status:response.status,headers:response.headers});}return response;}});
+  const transport=new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:'Bearer '+access.desktop.bearer},redirect:'manual'},onInsufficientScope:'throw',fetch:async(input,init)=>{const response=await noRedirectFetch(input,init,fetcher);if(typeof init?.body==='string' && /\"method\":\"(?:skills\/|resources\/read)/.test(init.body)){const body=await boundedSkillResponse(response);return new Response(body,{status:response.status,headers:response.headers});}return response;}});
   try{await client.connect(transport,{timeout:10000});
    if(name==='skills_list' || name==='skills_read'){
     const caps=client.getServerCapabilities();if(!caps?.resources || !caps.extensions?.[SKILLS_EXTENSION])throw new SkillError('unavailable');
