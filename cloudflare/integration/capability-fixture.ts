@@ -12,6 +12,7 @@ export class TestModelAuthority extends ModelAuthority {
    return Response.json({access_token:token,refresh_token:'synthetic-rotated',expires_in:3600});
   });
  }
+ async receiptStats(){const rows=this.ctx.storage.sql.exec('SELECT state,revision,cipher FROM cuse_credentials').toArray();return {receipts:this.ctx.storage.sql.exec('SELECT COUNT(*) AS n FROM cuse_auth_receipts').one().n,states:rows.map(r=>({state:r.state,revision:r.revision})),encrypted:!JSON.stringify(rows).includes('synthetic-access'),hasAuth:!!(await this.resolve('openai-codex'))?.auth.apiKey};}
  async verify(){const results=await Promise.all([this.resolve('openai-codex'),this.resolve('openai-codex')]);const count=this.ctx.storage.sql.exec('SELECT COUNT(*) AS n FROM test_refresh').one().n;const rows=this.ctx.storage.sql.exec('SELECT cipher FROM cuse_credentials').toArray();return {same:results[0]?.auth.apiKey===results[1]?.auth.apiKey,hasAuth:!!results[0]?.auth.apiKey,refreshes:count,encrypted:!JSON.stringify(rows).includes('synthetic-rotated')};}
 }
 export async function exerciseSkills(snapshot:Snapshot){

@@ -1,0 +1,41 @@
+name: Configure reviewed ChatGPT authentication
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: cloudflare-cuse-durable-shadow-main
+  cancel-in-progress: false
+jobs:
+  operate:
+    if: github.ref == 'refs/heads/main'
+    environment: cloudflare-shadow
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require current main and a successful deployment of that exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$head_sha" = "$GITHUB_SHA"
+          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-cloudflare.yml/runs?head_sha=$GITHUB_SHA&status=success&per_page=10" --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main" and .conclusion == "success")] | length')
+          test "$count" -gt 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: cloudflare
+      - name: Seed reviewed encrypted ChatGPT credential
+        working-directory: cloudflare
+        env:
+          CUSE_AUTH_PACKAGE: ${{ secrets.CUSE_AUTH_PACKAGE }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: node scripts/authenticate-run.mjs
