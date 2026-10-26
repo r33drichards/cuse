@@ -15,7 +15,7 @@ async function fixture(s?:Snapshot,api?:string){
  const fence={snapshotHash:await snapshotHash(snap),generation:route.generation,after:route.after,legacyOwnerReleased:true as const,identityVerified:true as const};
  let calls=0;const lockDb=database();const ledger=new DesktopLedger(lockDb.sql);
  const automation=new Automations(new InboxStore(lockDb.sql,snap.route));
- const options={automations:automation,snapshot:snap,fence,models,gateway:{call:async()=>{calls++;return {content:[{type:'text',text:'tool result'}]};}},desktop:{tryAcquire:async(id:string)=>ledger.tryAcquire(id),acquire:async(id:string)=>ledger.acquire(id),verify:async(t:any)=>ledger.verify(t),settle:async(t:any,ok:boolean)=>ledger.settle(t,ok)},wake:async()=>{},report:()=>{}};
+ const options={automations:automation,snapshot:snap,fence,models,gateway:{call:async(_target?:string,_name?:string)=>{calls++;return {content:[{type:'text',text:'tool result'}]};}},desktop:{tryAcquire:async(id:string)=>ledger.tryAcquire(id),acquire:async(id:string)=>ledger.acquire(id),verify:async(t:any)=>ledger.verify(t),settle:async(t:any,ok:boolean)=>ledger.settle(t,ok)},wake:async()=>{},report:()=>{}};
  let active=await ActiveSession.open(await openNodeSqliteStorage(join(dir,'pi.db')),options);
  return {faux,options,automation,get active(){return active;},get calls(){return calls;},ledger,lockDb,async reopen(){await active.close();active=await ActiveSession.open(await openNodeSqliteStorage(join(dir,'pi.db')),options);},async close(){await active.close();lockDb.db.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -195,5 +195,40 @@ test('native pre-intent hooks checkpoint long turns across slices without repeat
   }
   assert.ok(slices>1);assert.equal(f.calls,12);assert.equal(f.faux.state.callCount,13);
   await f.reopen();assert.deepEqual(await f.active.handle(event()),['All twelve steps completed.']);assert.equal(f.calls,12);assert.equal(f.faux.state.callCount,13);
+ }finally{await f.close();}
+});
+
+test('failed IRC inspection does not fence later writes after reopen',async()=>{
+ const s=snapshot();s.tools=['weechat_buffers','weechat_msg'].map(name=>({name,description:name,inputSchema:{type:'object',properties:{}},target:'irc' as const}));
+ const f=await fixture(s);try{
+ let writes=0;f.options.gateway.call=async(_target?:string,name?:string)=>{if(name==='weechat_buffers')throw Error('private transport detail');writes++;return {content:[{type:'text',text:'dispatched'}]};};
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('weechat_buffers',{})],{stopReason:'toolUse'}),c=>{assert.match(JSON.stringify(c),/Read unavailable/);assert.doesNotMatch(JSON.stringify(c),/private transport detail/);return fauxAssistantMessage('Read failed.');}]);
+ await f.active.handle(event());await f.reopen();
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('weechat_msg',{})],{stopReason:'toolUse'}),fauxAssistantMessage('done')]);
+ assert.deepEqual(await f.active.handle(event(2)),['done']);assert.equal(writes,1);
+ }finally{await f.close();}
+});
+
+test('IRC inspection remains available without releasing an uncertain write',async()=>{
+ const s=snapshot();s.tools=['weechat_buffers','weechat_msg'].map(name=>({name,description:name,inputSchema:{type:'object',properties:{}},target:'irc' as const}));
+ const f=await fixture(s);try{
+ let reads=0,writes=0;f.options.gateway.call=async(_target?:string,name?:string)=>{if(name==='weechat_msg'){writes++;throw Error('unknown');}reads++;return {content:[{type:'text',text:'channel inspected'}]};};
+ const turn=(name:string)=>[fauxAssistantMessage([fauxToolCall(name,{})],{stopReason:'toolUse'}),fauxAssistantMessage('done')];
+ f.faux.setResponses(turn('weechat_msg'));await f.active.handle(event());await f.reopen();
+ f.faux.setResponses(turn('weechat_buffers'));await f.active.handle(event(2));assert.equal(reads,1);
+ f.faux.setResponses(turn('weechat_msg'));await f.active.handle(event(3));assert.equal(writes,1);
+ }finally{await f.close();}
+});
+
+test('legacy held IRC read recovers exact operation without a desktop lock and is idempotent',async()=>{
+ const {defineDocFamily}=await import('@earendil-works/pi-durable');const {objectKey}=await import('../src/protocol.ts');
+ const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:'cuse.halt',version:1,scope:'session',initial:()=>({halted:false,pending:[]})});
+ const s=snapshot();s.tools=[{name:'weechat_buffers',description:'read',inputSchema:{type:'object',properties:{}},target:'irc'}];
+ const f=await fixture(s);try{
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('weechat_buffers',{})],{stopReason:'toolUse'}),fauxAssistantMessage('done')]);await f.active.handle(event());
+ const id=await f.active.harness.commit(async tx=>{const tasks=await tx.scanTasks({conversationId:f.active.conversationId,kind:'pi.tool'},10);const id=Number(tasks.items[0].id);const g=await tx.doc(Halt,objectKey(s.route),null);g.halted=true;g.pending=[objectKey(s.route)+':'+id];return id;},ctx);
+ await assert.rejects(f.active.recoverRead(id+999),/terminal/);
+ assert.match(await f.active.recoverRead(id),/recovered; no action replayed/);
+ assert.match(await f.active.recoverRead(id),/already recorded/);
  }finally{await f.close();}
 });

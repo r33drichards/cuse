@@ -2,7 +2,7 @@ import {noRedirectFetch} from "./http.ts";
 import {SkillError} from '../../src/mcp-skills.ts';
 import {ComputerUseClient,DesktopMcp} from '../../src/computer-use.ts';
 import type {DesktopAccess} from './lifecycle.ts';
-import {withMcp,readChannel,dispatchReply,type McpAccess} from './mcp.ts';
+import {withMcp,readChannel,readIrcBuffer,dispatchReply,type McpAccess} from './mcp.ts';
 import type {Snapshot} from './migration.ts';
 import type {ToolGateway} from './active.ts';
 export interface Access {mcp:McpAccess;fullControl:boolean;enabledHash?:string;authProfile?:string;exclusiveProfile?:boolean;desktop?:DesktopAccess;}
@@ -17,12 +17,11 @@ export function gateway(snapshot:Snapshot,access:Access,currentDesktop?:()=>Prom
  return {async call(target,name,args,signal){
   const configured=snapshot.tools.find(t=>t.name===name && t.target===target);if(!configured)throw Error('tool_not_configured');
   if(target==='irc')return withMcp(access.mcp,async client=>{
-    if(args.buffer!==undefined && args.buffer!==snapshot.route.buffer)throw Error('cross_identity_buffer');
     if(name==='weechat_buffers'){
-      const data=await readChannel(client,snapshot.route,args.limit===undefined?100:Number(args.limit),args.cursor===undefined?undefined:String(args.cursor)) as {buffer?:{localvar_nick?:string;full_name?:string}};
-      if(data?.buffer?.localvar_nick!==snapshot.route.nick || data.buffer.full_name!==snapshot.route.buffer)throw Error('identity_mapping_changed');
+      const data=await readIrcBuffer(client,snapshot.route,args,!!(access.fullControl && access.exclusiveProfile));
       return {content:[{type:'text',text:JSON.stringify(data)}]};
     }
+    if(args.buffer!==undefined && args.buffer!==snapshot.route.buffer)throw Error('cross_identity_buffer');
     if(name!=='weechat_msg'){if(!access.fullControl || !access.exclusiveProfile)throw Error('irc_tool_adapter_required');const identity=await readChannel(client,snapshot.route,1) as {buffer?:{localvar_nick?:string}};if(identity.buffer?.localvar_nick!==snapshot.route.nick)throw Error('identity_mapping_changed');const r=await client.callTool({name,arguments:args},{signal,timeout:snapshot.policy.timeoutMs});return {content:r.content??[],isError:r.isError,structuredContent:r.structuredContent};}
     if(typeof args.arguments!=='string')throw Error('irc_tool_adapter_required');
     await dispatchReply(client,snapshot.route,args.arguments,access.fullControl);

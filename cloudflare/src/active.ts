@@ -1,4 +1,4 @@
-import {readOnlyBrowserProbe} from './read-recovery.ts';
+import {readOnlyBrowserProbe,isReadOnlyRemoteTool} from './read-recovery.ts';
 import {sessionRuntimeGuidance} from "../../src/session-guidance.ts";
 import {ModelFailure,responseMetadata} from './provider-response.ts';
 import {ExecutionSlice,ExecutionYield} from './execution-slice.ts';
@@ -22,7 +22,7 @@ import type {DesktopToolLock} from "./desktop-coordinator.ts";
 const Intent=defineDocFamily<{started:boolean;completed:boolean},null>({family:true,kind:"cuse.remote-intent",version:1,scope:"session",initial:()=>({started:false,completed:false})});
 const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:"cuse.halt",version:1,scope:"session",initial:()=>({halted:false,pending:[]})});
 function failureCategory(message:string):string{return /Unable to load site|<html/i.test(message)?'upstream_rejected':/429|rate.?limit/i.test(message)?'rate_limited':/401|403|unauthorized|invalid.*token/i.test(message)?'authentication':/timeout|timed out/i.test(message)?'timeout':'unavailable';}
-const blockedToolNotice='This tool was not dispatched. An earlier remote operation still requires recovery; this is not a failure of the requested tool. Read-only desktop status remains available.';
+const blockedToolNotice='This tool was not dispatched. An earlier remote operation still requires recovery; this is not a failure of the requested tool. Read-only channel inspection, skill resources, and desktop status remain available.';
 const ReadRecovery=defineDocFamily<{done:boolean},null>({family:true,kind:'cuse.read-recovery',version:1,scope:'session',initial:()=>({done:false})});
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
@@ -51,7 +51,7 @@ export class ActiveSession {
     let peerInput:PeerInput|undefined;
     const registry=createRegistry();let harness!:Harness;
     const key=objectKey(s.route);
-    const tools:ToolRegistration[]=s.tools.map(t=>defineTool({name:t.name,description:t.description,parameters:(legacySchema(t.name)??t.inputSchema) as TSchema,replay:t.target==="host"?"safe":"unsafe",executionMode:"sequential",
+    const tools:ToolRegistration[]=s.tools.map(t=>defineTool({name:t.name,description:t.description,parameters:(legacySchema(t.name)??t.inputSchema) as TSchema,replay:t.target==="host" || isReadOnlyRemoteTool(t.target,t.name)?"safe":"unsafe",executionMode:"sequential",
       async execute(args,api,ctx){
         const operation=`${key}:${api.taskId}`;
         if(t.target==="host"){
@@ -73,6 +73,24 @@ export class ActiveSession {
           }else value=hostCall(options.automations,t.name,args as Record<string,unknown>,operation,authority.operation,authority.origin);
           }catch(error){if(error instanceof Error && error.message==='peer_send_uncertain'){await harness.commit(async tx=>{(await tx.doc(Halt,key,null)).halted=true;},context);options.report('peer_send_uncertain');}throw error;}
           await options.wake(Date.now()+1000);return {output:[{type:"text" as const,text:JSON.stringify(value)}],details:{}};
+        }
+        if(isReadOnlyRemoteTool(t.target,t.name)){
+          const authority=await api.commit(async tx=>{
+            const intent=await tx.doc(Intent,operation,null),budget=await tx.doc(Budget,key,null);
+            if(options.automations && !options.automations.goals.canRun(budget.operation))throw Error('goal_revoked');
+            if(!intent.started){if(budget.tools>=(options.turnLimits?.tools??s.policy.toolCalls))throw Error('tool_budget_exhausted');budget.tools++;intent.started=true;}
+            return budget.operation;
+          },ctx);
+          options.automations?.legacy?.spendTool(options.automations.channel,authority,operation);
+          try{
+            const result=await options.gateway.call(t.target,t.name,args as Record<string,unknown>,ctx.abortSignal);
+            if(result.isError)throw Error('read_unavailable');
+            await api.commit(async tx=>{(await tx.doc(Intent,operation,null)).completed=true;},ctx);
+            return {output:modelContent(result),details:{}};
+          }catch{
+            options.report('remote_read_unavailable');
+            return {output:[{type:'text' as const,text:'Read unavailable. No action was dispatched by this read. You may retry the read; any existing action recovery requirement remains in effect.'}],details:{}};
+          }
         }
         const admitted=await api.commit(async tx=>{
           const guard=await tx.doc(Halt,key,null);
@@ -241,28 +259,33 @@ export class ActiveSession {
   async recoverRead(taskId:number):Promise<string>{
     const operation=objectKey(this.options.snapshot.route)+':'+taskId;
     const completed=await this.harness.commit(async tx=>{
-      if((await tx.doc(ReadRecovery,operation,null)).done)return true;
+      if((await tx.doc(ReadRecovery,operation,null)).done)return {done:true,desktop:false};
       const task=await tx.task(taskId as never);
       if(!task || task.conversationId!==this.conversationId || task.kind!=='pi.tool' || task.state.status!=='terminal')throw Error('read_recovery_task_not_terminal');
       const input=task.input as {assistant?:number;callId?:string};
       const entry=input.assistant?await tx.entry(AssistantEntry,input.assistant as never):undefined;
       const content=entry?.model?.[0]?.content;
       const call=Array.isArray(content)?content.find(p=>p.type==='toolCall' && p.id===input.callId):undefined;
-      if(!call || call.type!=='toolCall' || call.name!=='run_js' || !readOnlyBrowserProbe((call.arguments as Record<string,unknown>).code))throw Error('read_recovery_probe_not_recognized');
+      if(!call || call.type!=='toolCall')throw Error('read_recovery_probe_not_recognized');
+      const tool=this.options.snapshot.tools.find(t=>t.name===call.name);
+      const typedRead=tool && isReadOnlyRemoteTool(tool.target,tool.name);
+      if(!typedRead && !(call.name==='run_js' && readOnlyBrowserProbe((call.arguments as Record<string,unknown>).code)))throw Error('read_recovery_probe_not_recognized');
       const g=await tx.doc(Halt,objectKey(this.options.snapshot.route),null);
       if(g.pending.length!==1 || g.pending[0]!==operation)throw Error('read_recovery_guard_mismatch');
-      return false;
+      return {done:false,desktop:tool?.target!=='irc'};
     },context);
-    if(completed)return 'Read recovery already recorded; nothing replayed.';
-    if(!this.options.desktop?.reconcileRead)throw Error('read_recovery_desktop_required');
-    await this.options.desktop.reconcileRead(operation);
+    if(completed.done)return 'Read recovery already recorded; nothing replayed.';
+    if(completed.desktop){
+      if(!this.options.desktop?.reconcileRead)throw Error('read_recovery_desktop_required');
+      await this.options.desktop.reconcileRead(operation);
+    }
     await this.harness.commit(async tx=>{
       const g=await tx.doc(Halt,objectKey(this.options.snapshot.route),null);
       if(g.pending.length!==1 || g.pending[0]!==operation)throw Error('read_recovery_guard_changed');
       (await tx.doc(Intent,operation,null)).completed=true;
       g.pending=[];g.halted=false;(await tx.doc(ReadRecovery,operation,null)).done=true;
     },context);
-    return 'Reviewed read-only browser probe recovered; no action replayed. Desktop tools are available.';
+    return 'Reviewed read-only operation recovered; no action replayed. Tools are available.';
   }
   async stop():Promise<void>{await (await this.harness.conversation(this.conversationId,context))!.abort(context,{background:true});}
   async close():Promise<void>{this.closed=true;await this.harness.close(context);}

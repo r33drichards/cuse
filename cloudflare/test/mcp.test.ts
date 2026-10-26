@@ -30,3 +30,15 @@ test('join confirmation requires fresh native self-join evidence, not buffer exi
  await assert.rejects(verifyJoined(client,route,20000),/pending/);
  lines.push({date_printed:11,tags:['irc_part','nick_'+route.nick]});await assert.rejects(verifyJoined(client,route,10000),/pending/);
 });
+
+test('exclusive profile may inspect another channel but cannot cross server or identity',async()=>{
+ const {readIrcBuffer}=await import('../src/mcp.ts');const calls:any[]=[];
+ const prefix=route.buffer.slice(0,route.buffer.lastIndexOf('.')+1),other=prefix+'#other';
+ let wrong=false;
+ const client={callTool:async(req:any)=>{calls.push(req);const b=req.arguments.buffer;return json({buffer:{full_name:b,localvar_nick:wrong?'other':route.nick,localvar_channel:b.slice(prefix.length),localvar_type:'channel'}});}};
+ await readIrcBuffer(client,route,{buffer:other,limit:5,arguments:'/quit'},true);
+ assert.equal(calls.length,2);assert.deepEqual(calls[1].arguments,{buffer:other,limit:5});
+ await assert.rejects(readIrcBuffer(client,route,{buffer:other},false),/cross_identity/);
+ await assert.rejects(readIrcBuffer(client,route,{buffer:'irc.another.#other'},true),/cross_identity/);
+ wrong=true;await assert.rejects(readIrcBuffer(client,route,{buffer:other},true),/identity_mapping/);
+});
