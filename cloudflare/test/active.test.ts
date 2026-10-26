@@ -65,6 +65,15 @@ test('failed read-only skill discovery releases ownership and allows later turns
  assert.deepEqual(await f.active.handle(event(2)),['Next turn works.']);
  }finally{await f.close();}
 });
+test('provider rejection reports a bounded notice and does not block a later prompt or replay completed tools',async()=>{
+ const s=snapshot();s.tools=[{name:'read',description:'read',inputSchema:{type:'object',properties:{}},target:'irc'}];
+ const f=await fixture(s);try{
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('read',{})],{stopReason:'toolUse'}),()=>{throw Error('<html>Unable to load site private-upstream-details');}]);
+ const notice=await f.active.handle(event());assert.match(notice[0],/Model request failed \(upstream_rejected\)/);assert.ok(!notice[0].includes('private-upstream'));assert.equal(f.calls,1);
+ await f.reopen();assert.deepEqual(await f.active.handle(event()),notice);assert.equal(f.calls,1);
+ f.faux.setResponses([fauxAssistantMessage('Recovered.')]);assert.deepEqual(await f.active.handle(event(2)),['Recovered.']);assert.equal(f.calls,1);
+ }finally{await f.close();}
+});
 test('import dry run is read-only, cutover and content conflicts fail closed',async()=>{
  const s=snapshot();const plan=await dryRun(s);const j=await ShadowJournal.open(await openNodeSqliteStorage(':memory:'));
  try{const fence={snapshotHash:plan.hash,generation:route.generation,after:route.after,legacyOwnerReleased:true as const,identityVerified:true as const};
