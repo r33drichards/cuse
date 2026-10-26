@@ -28,3 +28,14 @@ test('desktop provisioning enforces legacy quota and profile before deletion wit
   assert.equal(service.current('old').id,'old');assert.doesNotThrow(()=>ledger.acquire('another'));
  }finally{db.close();other.db.close();}
 });
+
+test('desktop status preserves native viewer link and pause guidance',async()=>{
+ const {db,sql}=database();try{
+  const service=new DesktopLifecycle(sql,new DesktopLedger(sql));
+  const access={id:'desk',baseUrl:'https://example.invalid',bearer:'synthetic',appUrl:'https://viewer.example.invalid'};
+  const f:typeof fetch=async()=>Response.json({id:'desk',state:'running'});
+  assert.equal(await service.action(access,'status','status',undefined,f),'desktop desk: running — https://viewer.example.invalid/sessions/desk');
+  assert.match(await service.action(access,'stop','stop',undefined,f),/https:\/\/viewer.example.invalid\/sessions\/desk/);
+  assert.match(await service.action(access,'status','paused-status',undefined,f),/queue paused; ,desktop start to resume/);
+ }finally{db.close();}
+});

@@ -1,9 +1,10 @@
+import {desktopViewerUrl,desktopStatusLine} from '../../src/desktop-presentation.ts';
 import {noRedirectFetch} from "./http.ts";
 import {ComputerUseClient} from '../../src/computer-use.ts';
 import type {DesktopLock} from './desktop-coordinator.ts';
 import type {Sql} from './store.ts';
 import {DesktopLedger} from './desktop-coordinator.ts';
-export interface DesktopAccess {baseUrl:string;bearer:string;id:string;allowDestroy?:boolean;provision?:{namespace:string;room:string;maxDesktops?:number;size:string;mcpProfile?:string};}
+export interface DesktopAccess {appUrl?:string;baseUrl:string;bearer:string;id:string;allowDestroy?:boolean;provision?:{namespace:string;room:string;maxDesktops?:number;size:string;mcpProfile?:string};}
 export type DesktopAction='status'|'start'|'stop'|'sleep'|'wake'|'delete'|'recreate';
 /** Shared by all conversations using the original desktop ID, including after replacement. */
 export class DesktopLifecycle {
@@ -26,7 +27,7 @@ export class DesktopLifecycle {
    if(init.method==='DELETE')return {};
    const body=await response.json() as Record<string,unknown>;return body;
   };
-  if(action==='status'){if(!id)return 'No desktop is bound.';const d=await request('/v1/sessions/'+encodeURIComponent(id));return `Desktop ${id}: ${String(d.status??d.state??'unknown')}; queue ${binding.paused?'paused':'active'}`;}
+  if(action==='status'){if(!id)return 'No desktop is bound.';const d=await request('/v1/sessions/'+encodeURIComponent(id));return desktopStatusLine(id,String(d.status??d.state??'unknown'),binding.paused,desktopViewerUrl(id,access.appUrl));}
   const ticket=this.ledger.acquire(requestId);let provisionTicket:Awaited<ReturnType<DesktopLock['acquire']>>|undefined;let mutation=false;
   this.sql.all("INSERT INTO cuse_lifecycle VALUES (?,?,'sending',NULL)",requestId,fingerprint);
   try{
@@ -54,7 +55,8 @@ export class DesktopLifecycle {
     else await request(path+'/'+action,{method:'POST',body:'{}'});
     this.sql.all('UPDATE cuse_desktop_binding SET paused=? WHERE id=1',action==='stop'?1:0);
    }
-   const result=`Desktop ${action} completed; current ID: ${this.current(access.id).id??'none'}.`;
+   const resultingId=this.current(access.id).id;
+   const result=`Desktop ${action} completed; current ID: ${resultingId??'none'}.${resultingId?' — '+desktopViewerUrl(resultingId,access.appUrl):''}`;
    this.sql.transaction(()=>{this.sql.all("UPDATE cuse_lifecycle SET state='done',result=? WHERE id=?",result,requestId);});
    if(provisionTicket)await provisionLock!.settle(provisionTicket,true);this.ledger.settle(ticket,true);return result;
   }catch{if(provisionTicket)await provisionLock!.settle(provisionTicket,!mutation);this.ledger.settle(ticket,!mutation);this.sql.all("UPDATE cuse_lifecycle SET state=?,result=? WHERE id=?",mutation?'uncertain':'done',mutation?null:'Desktop request rejected before mutation; check policy, profile and quota.',requestId);if(!mutation)return 'Desktop request rejected before mutation; check policy, profile and quota.';throw Error('desktop_operation_uncertain');}
