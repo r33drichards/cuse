@@ -155,8 +155,8 @@ export class AgentSession extends DurableObject<Env> {
     const result=this.inbox.accept(event,hash);
     if(this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value==='no' && result==='accepted')this.inbox.cancel(event.eventId);
     const prepared=this.prepared();
-    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event))this.sql.all("UPDATE cuse_inbox SET origin='control' WHERE id=?",event.eventId);
-    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event) && parseCommand(mentionText(event.data.text,prepared.snapshot.route.nick)??event.data.text)?.kind==='stop'){
+    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event,this.env.CUSE_OWNER_NICK))this.sql.all("UPDATE cuse_inbox SET origin='control' WHERE id=?",event.eventId);
+    if(result==="accepted" && prepared && humanControl(prepared.snapshot,event,this.env.CUSE_OWNER_NICK) && parseCommand(mentionText(event.data.text,prepared.snapshot.route.nick)??event.data.text)?.kind==='stop'){
       await this.cancel();
       this.sql.all("UPDATE cuse_inbox SET state='pending',origin='control' WHERE id=?",event.eventId);
     }
@@ -442,8 +442,9 @@ export class ModelAuthority extends DurableObject<Env>{
 
 }
 
-function humanControl(s:Snapshot,e:MessageEvent):boolean{
+function humanControl(s:Snapshot,e:MessageEvent,owner?:string):boolean{
  const fold=(v:string)=>v.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
+ if(owner)return fold(owner)===fold(e.data.nick) && !!parseCommand(mentionText(e.data.text,s.route.nick)??e.data.text);
  return s.route.agent===s.route.channel && ![s.route.nick,...s.policy.peerNicks].some(n=>fold(n)===fold(e.data.nick)) && !!parseCommand(mentionText(e.data.text,s.route.nick)??e.data.text);
 }
 

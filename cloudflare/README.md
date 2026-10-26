@@ -125,7 +125,7 @@ The private operator package may contain exactly one such binding instead of the
 
 The deployment has one owner (`CUSE_OWNER_NICK` on the trusted IRC network) and one encrypted credential authority (`CUSE_OWNER_PROFILE`). `CUSE_PUBLIC_URL` is its HTTPS origin. Each IRC channel retains its own AgentSession Durable Object, conversation, desktop, goal, schedules, model choice, and recovery records. The separate WeeChat MCP profiles and webhook signing keys identify channel transports; they are not separate user accounts. Non-owner human messages are ignored. Explicitly configured peer agents retain their existing limited peer behavior and cannot run owner commands.
 
-In either home channel:
+In either channel:
 
 1. Send `,login` or `,login openai`.
 2. Open the expiring browser link and choose **Continue with ChatGPT**.
