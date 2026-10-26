@@ -9,7 +9,7 @@ async function setup(){
  let now=Date.now();const fetcher=(async(input,init)=>{assert.equal(String(input),CHATGPT_TOKEN_URL);requests.push(new URLSearchParams(String(init?.body)));return Response.json(grant);}) as typeof fetch;
  const target={revision:()=>sql.all("SELECT revision FROM cuse_credentials WHERE provider='openai'")[0]?.revision as number??null,install:(id:string,c:any,revision:number|null)=>vault.seedReviewed(id,'openai',c,revision)};
  const reopen=()=>new ChatGPTLogin(storage,key,target,fetcher,()=>now);const flow=reopen();
- const page=async(ticket:string)=>{const html=await (await flow.http(new Request('https://cuse.invalid/login/'+ticket),ticket)).text();const auth=new URL(html.match(/href="([^"]+)"/)![1].replace(/&amp;/g,'&'));return {html,auth};};
+ const page=async(ticket:string)=>{const response=await flow.http(new Request('https://cuse.invalid/login/'+ticket),ticket);assert.equal(response.headers.get('Referrer-Policy'),'same-origin');const html=await response.text();const auth=new URL(html.match(/href="([^"]+)"/)![1].replace(/&amp;/g,'&'));return {html,auth};};
  const post=async(flow:ChatGPTLogin,ticket:string,callback:string,origin='https://cuse.invalid')=>flow.http(new Request('https://cuse.invalid/login/'+ticket,{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({callback})}),ticket);
  const callback=(auth:URL)=>`${CHATGPT_REDIRECT}?${new URLSearchParams({code:'synthetic-one-use-code',state:auth.searchParams.get('state')!,client_id:'issued-dynamic-client'})}`;
  return {db,sql,vault,kv,requests,flow,reopen,page,post,callback,advance:()=>{now+=1200001;}};
@@ -32,7 +32,7 @@ test('native grant uses PKCE and issued client; private encrypted pending creden
 });
 test('callback rejects wrong state, origin, redirect, oversized input and expired ticket without exchange',async()=>{
  const t=await setup();try{const ticket=await t.flow.start('evt');const {auth}=await t.page(ticket),callback=t.callback(auth);
-  assert.equal((await t.post(t.flow,ticket,callback,'https://attacker.invalid')).status,403);
+  assert.equal((await t.post(t.flow,ticket,callback,'https://attacker.invalid')).status,403);assert.equal((await t.post(t.flow,ticket,callback,'null')).status,403);
   for(const bad of [callback.replace('state=','state=wrong'),callback.replace('127.0.0.1','evil.invalid'),callback.replace('/auth/callback','/other'),'x'.repeat(17000)])assert.equal((await t.post(t.flow,ticket,bad)).status,400);
   assert.equal(t.requests.length,0);t.advance();assert.equal((await t.post(t.flow,ticket,callback)).status,410);
  }finally{t.db.close();}
