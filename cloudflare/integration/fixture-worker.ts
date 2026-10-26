@@ -23,7 +23,16 @@ export class TestAgentSession extends AgentSession {
     }
     if((this.env as TestEnv & {TEST_LEGACY?:string}).TEST_LEGACY==='true'){
       const calls=[['goal_status',{}],['agent_list',{}],['agent_ask',{channel:'#other',question:'synthetic question'}],['irc_send',{channel:'#other',text:'synthetic notice'}],['goal_update',{action:'submit'}],['desktop_control',{action:'status'}],...['run_js','get_artifact','get_artifact_upload_url','list_artifacts'].map(name=>[name,{}])];
-      faux.setResponses([()=>{this.count('model');return fauxAssistantMessage(calls.map(([name,args])=>fauxToolCall(name as string,args as any)),{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('compatibility reply');}]);const models=createModels();models.setProvider(faux.provider);return models;
+      faux.setResponses(Array.from({length:30},()=>()=>{
+        this.count('model');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_model_round(id TEXT PRIMARY KEY,n INTEGER)');
+        const id=String(this.ctx.storage.sql.exec("SELECT id FROM cuse_inbox WHERE state IN ('pending','running') ORDER BY position LIMIT 1").toArray()[0]?.id);
+        this.ctx.storage.sql.exec('INSERT INTO test_model_round VALUES (?,1) ON CONFLICT(id) DO UPDATE SET n=n+1',id);
+        const n=Number(this.ctx.storage.sql.exec('SELECT n FROM test_model_round WHERE id=?',id).toArray()[0].n);
+        return n===1?fauxAssistantMessage(calls.map(([name,args])=>fauxToolCall(name as string,args as any)),{stopReason:'toolUse'}):fauxAssistantMessage('compatibility reply');
+      }));const models=createModels();models.setProvider(faux.provider);return models;
+    }
+    if((this.env as any).TEST_LONG_TURN==='true'){
+      faux.setResponses(Array.from({length:30},()=>()=>{this.count('model');const n=Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM test_calls WHERE kind='model'").toArray()[0].n);return n<=12?fauxAssistantMessage([fauxToolCall('run_js',{step:n})],{stopReason:'toolUse'}):fauxAssistantMessage('Twelve steps completed.');}));const models=createModels();models.setProvider(faux.provider);return models;
     }
     if((this.env as TestEnv & {TEST_SIMPLE?:string}).TEST_SIMPLE==='true'){faux.setResponses(Array.from({length:20},()=>()=>{this.count('model');return fauxAssistantMessage('scheduled reply');}));const models=createModels();models.setProvider(faux.provider);return models;}
     faux.setResponses([()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('synthetic reply '.repeat(60));}]);

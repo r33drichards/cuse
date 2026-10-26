@@ -1,3 +1,4 @@
+import {ExecutionYield} from '../src/execution-slice.ts';
 import test from "node:test";
 import assert from "node:assert/strict";
 import {mkdtempSync,rmSync} from "node:fs";
@@ -60,5 +61,27 @@ test("parallel drain calls cannot duplicate outgoing side effects",async()=>{
  const {db,sql}=database();try{
  const s=new InboxStore(sql,route);s.accept(event(),"one");s.claim(0);s.complete(event().eventId,["one"]);let sends=0;
  await Promise.all([s.sendOne(async()=>{sends++;}),s.sendOne(async()=>{sends++;})]);assert.equal(sends,1);
+ }finally{db.close();}
+});
+
+test('restart resumes only marked durable submissions and never resends uncertain outgoing messages',()=>{
+ const {db,sql}=database();try{
+  const s=new InboxStore(sql,route);s.accept(event(),'one');s.claim(0);
+  s.checkpoint(event().eventId,JSON.stringify({engine:'pi-durable',requestId:event().eventId,conversation:1}));
+  s.recover();assert.equal(s.job(event().eventId)?.state,'pending');
+  assert.equal(s.claim(0)?.id,event().eventId);
+  s.complete(event().eventId,['retained reply']);sql.all("UPDATE cuse_effects SET state='sending'");s.recover();
+  assert.equal(sql.all('SELECT state FROM cuse_effects')[0].state,'uncertain');
+ }finally{db.close();}
+});
+
+
+test('cooperative yield retains head ordering and cancellation fences a late yield',async()=>{
+ const {db,sql}=database();try{
+  const s=new InboxStore(sql,route);s.accept(event(),'one');s.accept(event(2),'two');let faults=0;
+  const r=new Runner(s,{run:async()=>{throw new ExecutionYield();},failed:()=>{faults++;}});
+  await r.step(0);assert.equal(s.job(event().eventId)?.state,'pending');assert.equal(s.claim(999),undefined);assert.equal(s.claim(1000)?.id,event().eventId);assert.equal(faults,0);
+  s.cancel(event().eventId);let release!:()=>void;const cancelled=new Runner(s,{run:async()=>{await new Promise<void>(resolve=>{release=resolve;});throw new ExecutionYield();}});
+  const pending=cancelled.step(2000);cancelled.cancel(event(2).eventId);release();await pending;assert.equal(s.job(event(2).eventId)?.state,'cancelled');
  }finally{db.close();}
 });

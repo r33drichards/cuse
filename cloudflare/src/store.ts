@@ -46,9 +46,11 @@ export class InboxStore {
     const payload:MessageEvent={eventId:id,name:"message.created",timestamp:new Date(now).toISOString(),cursor:"internal",data:{channel_id:this.route.buffer,message_id:id,nick:origin,text:body}};
     this.sql.all("INSERT OR IGNORE INTO cuse_inbox(id,digest,payload,state,origin) VALUES (?,?,?,'pending',?)",id,id,JSON.stringify(payload),origin);
   }
-  /** Interrupted tool/model work may already have external effects. Never replay automatically. */
+  /** Resume only the durable engine submission; its tool receipts fence uncertain dispatches.
+   * Legacy/unmarked executions remain blocked for explicit reconciliation. */
   recover(): void {
     this.sql.transaction(() => {
+      this.sql.all("UPDATE cuse_inbox SET state='pending',error='resume_durable_submission' WHERE state='running' AND json_valid(checkpoint) AND json_extract(checkpoint,'$.engine')='pi-durable' AND json_extract(checkpoint,'$.requestId')=id");
       this.sql.all("UPDATE cuse_inbox SET state='blocked',error='interrupted' WHERE state='running'");
       this.sql.all("UPDATE cuse_effects SET state='uncertain',error='interrupted' WHERE state='sending'");
     });
@@ -62,6 +64,7 @@ export class InboxStore {
       return {...head,state:"running",attempts:head.attempts + 1};
     });
   }
+  defer(id:string,now=Date.now()):void {this.sql.all("UPDATE cuse_inbox SET state='pending',due=?,error=NULL WHERE id=? AND state='running'",now+1000,id);}
   checkpoint(id: string, value: string): void {
     if (value.length > 262144) throw Error("checkpoint_capacity");
     this.sql.all("UPDATE cuse_inbox SET checkpoint=? WHERE id=? AND state='running'",value,id);

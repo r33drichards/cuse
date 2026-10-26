@@ -1,3 +1,4 @@
+import {desktopViewerUrl} from '../../src/desktop-presentation.ts';
 import {workerCodexFetch} from './codex-encoding.worker.ts';
 import {operateModelAuth} from './model-auth-operator.ts';
 import {routeBindings,modelSettings,authProfile} from "./agent-bindings.ts";
@@ -209,16 +210,18 @@ export class AgentSession extends DurableObject<Env> {
     await this.active?.stop();
   }
   private async openActive():Promise<void>{
+    if(this.active?.closed)this.active=undefined;
     if(this.active)return;
     const prepared=this.prepared(),binding=this.binding();
     if(!prepared || !binding?.access || binding.access.enabledHash!==prepared.fence.snapshotHash)throw Error("activation_review_required");
     const desktop=prepared.snapshot.desktopId?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(prepared.snapshot.desktopId)):undefined;
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
       ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
+      slice:{capacity:30,durationMs:150000},turnLimits:{models:64,tools:256},
       modelFetch:workerCodexFetch,wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
     this.runner=new Runner(this.inbox!,{completed:job=>this.automation().finish(job.id),failed:job=>this.automation().fault(job.id),run:async(job,checkpoint,signal)=>{
-      checkpoint(JSON.stringify({requestId:job.id,conversation:this.active!.conversationId}));
+      checkpoint(JSON.stringify({engine:"pi-durable",requestId:job.id,conversation:this.active!.conversationId}));
       return this.active!.handle(JSON.parse(job.payload),signal,job.origin);
     }});
   }
@@ -247,7 +250,7 @@ export class AgentSession extends DurableObject<Env> {
     if(command.kind==='sessions')return [...Object.values(routeBindings(this.env)),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])].map(b=>`${b.route.agent} / ${b.route.channel}: nick ${b.route.nick}, profile ${b.route.profile}`);
     if(command.kind==='desktop' && command.action==='ls'){
       const bindings=[...Object.values(routeBindings(this.env)),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];
-      return Promise.all(bindings.map(async b=>{const id=b.access?.desktop?.id;const current=id?await this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)).current(id):{id:null,paused:false};return `${b.route.agent} / ${b.route.channel}: desktop ${current.id??'none'}${current.paused?' (paused)':''}`;}));
+      return Promise.all(bindings.map(async b=>{const id=b.access?.desktop?.id;const current=id?await this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)).current(id):{id:null,paused:false};return `${b.route.agent} / ${b.route.channel}: desktop ${current.id??'none'}${current.paused?' (paused)':''}${current.id?' — '+desktopViewerUrl(current.id,b.access?.desktop?.appUrl):''}`;}));
     }
     if(command.kind==='join' || command.kind==='part'){
       const channels=command.kind==='join'?command.channels:[command.channel];const bindings=[...Object.values(routeBindings(this.env)),...(this.env.CHANNELS?await this.env.CHANNELS.get(this.env.CHANNELS.idFromName('registry')).list():[])];

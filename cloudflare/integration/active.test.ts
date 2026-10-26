@@ -23,9 +23,9 @@ test('actual workerd imports, waits for approved grant, runs model/tool, drains 
  await app.stop();app=await start(true);
  assert.equal((await post(2)).status,202);await waitFor(s=>s.calls.some((r:any)=>r.kind==='tool' && r.n===2));
  await app.stop();app=await start();
- const blocked=await waitFor(s=>s.inbox.some((r:any)=>r.state==='blocked'));
+ const blocked=await waitFor(s=>s.inbox.every((r:any)=>r.state==='done') && s.effects.some((r:any)=>r.state==='dispatched' && r.n===6));
  assert.equal(blocked.calls.find((r:any)=>r.kind==='tool').n,2,'crash during remote tool must not reissue it');
- assert.equal(blocked.calls.find((r:any)=>r.kind==='model').n,3,'uncertain remote effect blocks further model generation');
- assert.equal(blocked.calls.find((r:any)=>r.kind==='send').n,3);
+ assert.ok(blocked.calls.find((r:any)=>r.kind==='model').n>3,'agent can explain interrupted work without repeating its action');
+ assert.equal(blocked.calls.find((r:any)=>r.kind==='send').n,6);
  }finally{await app.stop();rmSync(dir,{recursive:true,force:true});}
 });

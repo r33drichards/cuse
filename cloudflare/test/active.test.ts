@@ -44,14 +44,16 @@ test('remote tools run once through persisted intent and shared desktop ownershi
  assert.equal(f.lockDb.sql.all('SELECT state FROM cuse_desktop')[0].state,'idle');
  }finally{await f.close();}
 });
-test('uncertain desktop error holds ownership and prevents model/tool retries',async()=>{
+test('uncertain desktop error fences actions while model replies and later prompts remain available',async()=>{
  const s=snapshot();s.desktopBinding={kind:'existing',desktopId:'desk-one'};s.desktopId='desk-one';s.tools=[{name:'run_js',description:'existing tool',inputSchema:{type:'object',properties:{}},target:'desktop'}];
  const f=await fixture(s);try{
  let calls=0;f.options.gateway.call=async()=>{calls++;throw Error('private failure');};
- f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('must not run')]);
- await assert.rejects(f.active.handle(event()));assert.equal(calls,1);assert.equal(f.faux.state.callCount,1);
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('The action outcome is unknown; I will not repeat it.')]);
+ assert.match((await f.active.handle(event())).join(' '),/unknown/);assert.equal(calls,1);assert.equal(f.faux.state.callCount,2);
  assert.throws(()=>f.ledger.acquire('other-conversation'),/reconciliation/);
- await f.reopen();await assert.rejects(f.active.handle(event(2)));assert.equal(calls,1);
+ await f.reopen();f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),c=>{assert.match(JSON.stringify(c),/Do not repeat the action/);return fauxAssistantMessage('The unresolved action is still fenced.');}]);assert.match((await f.active.handle(event(2))).join(' '),/still fenced/);assert.equal(calls,1);
+ f.faux.setResponses([fauxAssistantMessage('I can still answer a new question.')]);assert.deepEqual(await f.active.handle(event(3)),['I can still answer a new question.']);assert.equal(calls,1);
+ assert.throws(()=>f.ledger.acquire('still-uncertain'),/reconciliation/);
  }finally{await f.close();}
 });
 test('failed read-only skill discovery releases ownership and allows later turns after restart',async()=>{
@@ -97,8 +99,8 @@ test('model and tool budgets are durable pre-call limits, not advisory hooks',as
  const s=snapshot();s.policy.modelRequests=1;s.tools=[{name:'read',description:'read',inputSchema:{type:'object',properties:{}},target:'irc'}];
  const f=await fixture(s);try{
   f.faux.setResponses([fauxAssistantMessage([fauxToolCall('read',{})],{stopReason:'toolUse'}),fauxAssistantMessage('over budget')]);
-  await assert.rejects(f.active.handle(event()));assert.equal(f.faux.state.callCount,1);assert.equal(f.calls,1);
-  await f.reopen();await assert.rejects(f.active.handle(event()));assert.equal(f.faux.state.callCount,1);
+  assert.match((await f.active.handle(event())).join(" "),/Turn limit reached/);assert.equal(f.faux.state.callCount,1);assert.equal(f.calls,1);
+  await f.reopen();assert.match((await f.active.handle(event())).join(" "),/Turn limit reached/);assert.equal(f.faux.state.callCount,1);
  }finally{await f.close();}
  const t=snapshot();t.policy.toolCalls=1;t.tools=s.tools;const g=await fixture(t);try{
   g.faux.setResponses([fauxAssistantMessage([fauxToolCall('read',{}),fauxToolCall('read',{})],{stopReason:'toolUse'}),fauxAssistantMessage('one tool allowed')]);
@@ -155,9 +157,23 @@ test('lost acquire response remains uncertain and never replays the tool',async(
  const s=snapshot();s.desktopBinding={kind:'existing',desktopId:'desk-one'};s.desktopId='desk-one';s.tools=[{name:'run_js',description:'existing tool',inputSchema:{type:'object',properties:{}},target:'desktop'}];
  const f=await fixture(s);try{
   let attempts=0;f.options.desktop.tryAcquire=async id=>{attempts++;f.ledger.tryAcquire(id);throw Error('lost response');};
-  f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('must not run')]);
-  await assert.rejects(f.active.handle(event()));assert.equal(f.calls,0);assert.equal(attempts,1);
+  f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('Ownership is uncertain; no tool was dispatched.')]);
+  assert.match((await f.active.handle(event())).join(' '),/uncertain/);assert.equal(f.calls,0);assert.equal(attempts,1);
   assert.equal(f.lockDb.sql.all('SELECT state FROM cuse_desktop')[0].state,'held');
-  await f.reopen();await assert.rejects(f.active.handle(event(2)));assert.equal(f.calls,0);assert.equal(attempts,1);assert.equal(f.faux.state.callCount,1);
+  await f.reopen();f.faux.setResponses([fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'}),fauxAssistantMessage('Still fenced.')]);await f.active.handle(event(2));assert.equal(f.calls,0);assert.equal(attempts,1);assert.equal(f.faux.state.callCount,4);
+ }finally{await f.close();}
+});
+
+test('native pre-intent hooks checkpoint long turns across slices without repeating or skipping tools',async()=>{
+ const s=snapshot();s.policy.modelRequests=1;s.policy.toolCalls=1;s.tools=[{name:'read',description:'read',inputSchema:{type:'object',properties:{}},target:'irc'}];
+ const f=await fixture(s);try{
+  (f.options as any).slice={capacity:10,durationMs:60000};(f.options as any).turnLimits={models:64,tools:256};await f.reopen();
+  f.faux.setResponses([...Array.from({length:12},()=>fauxAssistantMessage([fauxToolCall('read',{})],{stopReason:'toolUse'})),fauxAssistantMessage('All twelve steps completed.')]);
+  let slices=0;for(;;){
+   try{assert.deepEqual(await f.active.handle(event()),['All twelve steps completed.']);break;}
+   catch(error){assert.equal((error as Error).constructor.name,'ExecutionYield');assert.ok(f.active.closed);assert.ok(++slices<20);await f.reopen();}
+  }
+  assert.ok(slices>1);assert.equal(f.calls,12);assert.equal(f.faux.state.callCount,13);
+  await f.reopen();assert.deepEqual(await f.active.handle(event()),['All twelve steps completed.']);assert.equal(f.calls,12);assert.equal(f.faux.state.callCount,13);
  }finally{await f.close();}
 });

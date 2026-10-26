@@ -53,8 +53,7 @@ import { createPiGoalTools } from "./pi-goal-tools.ts";
 import type { GoalTurnSnapshot, PiGoalDelegate } from "./pi-goal.ts";
 import { budgetLimitPrompt, continuationPrompt } from "./pi-goal-prompts.ts";
 
-const ambiguous =
-	"The previous process stopped after dispatching this tool. Its outcome is unknown. Do not repeat the action; inspect the affected service or ask the user before retrying.";
+import { ambiguousToolOutcome as ambiguous } from "./tool-recovery.ts";
 const textOf = (content: unknown): string =>
 	typeof content === "string"
 		? content
