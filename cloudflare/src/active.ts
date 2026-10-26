@@ -24,7 +24,7 @@ function failureCategory(message:string):string{return /Unable to load site|<htm
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
 export interface ToolGateway {call(target:"irc"|"desktop",name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<{content:unknown[];isError?:boolean;structuredContent?:unknown}>;}
-export interface ActiveOptions {allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
+export interface ActiveOptions {allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;modelFetchFor?:(api:string)=>typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
 export class ActiveSession {
   readonly harness:Harness;readonly conversationId:ConversationId;readonly options:ActiveOptions;
   private running=false;
@@ -138,7 +138,7 @@ export class ActiveSession {
           const a=options.automations,turn=attempt.operation+":model:"+attempt.number;
           const legacyGoal=a?.legacy?.spendModel(a.channel,attempt.operation)??false;
           if(a){if(!a.goals.canRun(attempt.operation))throw Error("goal_revoked");a.goals.beginTurn(a.channel,turn,Date.now(),attempt.operation);}
-          const providerOptions=(model.api==='openai-codex-responses'||model.api==='openai-responses')?{...opts,fetch:options.modelFetch??opts?.fetch,transport:'sse' as const,maxRetries:0,timeoutMs:s.policy.timeoutMs,onResponse:async(response:import('@earendil-works/pi-ai').ProviderResponse,currentModel:typeof model)=>{
+          const providerOptions=(model.api==='openai-codex-responses'||model.api==='openai-responses')?{...opts,fetch:options.modelFetchFor?.(model.api)??(model.api==='openai-codex-responses'?options.modelFetch??opts?.fetch:opts?.fetch),transport:'sse' as const,maxRetries:0,timeoutMs:s.policy.timeoutMs,onResponse:async(response:import('@earendil-works/pi-ai').ProviderResponse,currentModel:typeof model)=>{
             try{const http=responseMetadata(response);if(http)await harness.commit(async tx=>{(await tx.doc(ModelFailure,attempt.operation,null)).http=http;},context);}
             catch{options.report('model_response_metadata_unavailable');}
             await opts?.onResponse?.(response,currentModel);
