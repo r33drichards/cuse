@@ -10,7 +10,7 @@ test('owner recovers only a terminal read probe and real desktop fence, then nex
   const initial=await(await app.fetch('/test/recovery-stats')).json() as any;const task=initial.tasks[0].id;
   await post(101,',recover read '+task,'stranger');await post(102,',recover read 999999');await wait(2);
   let state=await(await app.fetch('/test/recovery-stats')).json() as any;assert.match(state.replies.at(-1).text,/refused/);
-  await post(103,',recover read '+task);await wait(3);state=await(await app.fetch('/test/recovery-stats')).json() as any;assert.match(state.replies.at(-1).text,/recovered; no action replayed/);
+  await post(103,',RECOVER read '+task);await wait(3);state=await(await app.fetch('/test/recovery-stats')).json() as any;assert.match(state.replies.at(-1).text,/recovered; no action replayed/);
   await post(104,',recover read '+task);await wait(4);state=await(await app.fetch('/test/recovery-stats')).json() as any;assert.match(state.replies.at(-1).text,/already recorded/);
   await post(105,'continue tool test');const done=await wait(5);assert.equal(done.calls.find((r:any)=>r.kind==='tool').n,2,'one failed read plus one new tool, never repeated old read');
  }finally{await app.stop();rmSync(dir,{recursive:true,force:true});}

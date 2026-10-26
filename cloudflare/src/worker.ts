@@ -265,11 +265,12 @@ export class AgentSession extends DurableObject<Env> {
   }
   private async recoverReadControl():Promise<boolean>{
     const binding=this.binding();if(!binding || !this.env.CUSE_OWNER_NICK)return false;
-    const row=this.sql.all("SELECT id,payload FROM cuse_inbox WHERE origin='control' AND state='pending' AND due<=? AND instr(json_extract(payload,'$.data.text'),',recover')>0 ORDER BY position LIMIT 1",Date.now())[0];if(!row)return false;
+    const row=this.sql.all("SELECT id,payload FROM cuse_inbox WHERE origin='control' AND state='pending' AND due<=? AND instr(lower(json_extract(payload,'$.data.text')),',recover')>0 ORDER BY position LIMIT 1",Date.now())[0];if(!row)return false;
     const event=JSON.parse(String(row.payload)) as MessageEvent;
     const command=parseCommand(mentionText(event.data.text,binding.route.nick)??event.data.text);
     if(command?.kind!=='recover-read')return false;
     const job=this.inbox!.claimControl(String(row.id),Date.now());if(!job)return false;
+    this.inbox!.checkpoint(job.id,JSON.stringify({engine:'pi-durable',requestId:job.id,control:'recover-read'}));
     let reply='Read recovery refused; the task must be a terminal, recognized read-only browser probe with exactly matching recovery locks.';
     if(event.data.nick.toLowerCase()===this.env.CUSE_OWNER_NICK.toLowerCase())try{await this.openActive();reply=await this.active!.recoverRead(command.task);}catch{console.error(JSON.stringify({code:'read_recovery_refused'}));}
     this.inbox!.complete(job.id,[reply]);return true;

@@ -13,6 +13,7 @@ export async function command(runtime:CommandRuntime,text:string,requestId:strin
  const old=await harness.commit(async tx=>{const d=await tx.doc(Command,requestId,null);return {done:d.done,result:[...d.result],started:d.started,task:d.task};},ctx);if(old.done)return [...old.result];
  const finish=async(result:string[])=>{await harness.commit(async tx=>{const d=await tx.doc(Command,requestId,null);d.done=true;d.result=result;},ctx);return result;};
  const set=async(change:Parameters<typeof configure>[2],reply:string)=>harness.commit(async tx=>{const d=await tx.doc(Command,requestId,null);if(!d.done){await configure(tx,id,change);d.done=true;d.result=[reply];}return [...d.result];},ctx);
+ if(c.kind==='recover-read')return finish(['Read recovery requires the configured owner host control.']);
  if(c.kind==='error')return finish([c.message]);
  if(c.kind==='help')return finish([...HELP_LINES]);
  if(c.kind==='fork')return finish(['Snapshot fork is unavailable until the backend API is validated. No child was created.']);
