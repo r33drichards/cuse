@@ -15,6 +15,25 @@ Tests use synthetic credentials/model/tool responses and local workerd only.
 Main-branch Worker deployment uses the reviewed workflow below. Secret and
 subscription configuration and live cutover still require separate review.
 
+## Partial-output checkpoint interval
+
+`CUSE_PARTIAL_SAVE_INTERVAL_MS` is an optional non-secret Worker variable. It
+sets Pi Durable's `progress.partialIntervalMs` when an active session opens.
+The default is **1000 ms** (previously Pi's 100 ms default). Set it in Worker
+variables or local `.dev.vars`, for example `CUSE_PARTIAL_SAVE_INTERVAL_MS=2000`.
+Only decimal integers from **1 to 60000** are accepted; empty, fractional,
+non-finite and out-of-range values fail session opening with a clear error.
+Changing it requires the Worker/session to reopen; it does not mutate history.
+
+This coalesces streamed partial-output snapshots, not every storage write.
+Final responses, cancellation/error handling and tool intent/result durability
+continue through Pi's existing paths without waiting for the interval. Pending
+partial text is not force-flushed on cancellation; Pi retains its existing
+terminal-state and recovery behavior. Abrupt
+process loss can lose the latest uncheckpointed partial text (a larger interval
+increases that window); this is not a guarantee of a periodic write when idle,
+nor a change to tool replay policy. Actual total write savings depend on load.
+
 ## GitHub Actions deployment on main
 
 `.github/workflows/deploy-cloudflare.yml` runs on pushes to `main` (including

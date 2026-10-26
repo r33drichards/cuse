@@ -1,3 +1,4 @@
+import {partialSaveIntervalMs} from './progress.ts';
 import {readOnlyBrowserProbe,isReadOnlyRemoteTool} from './read-recovery.ts';
 import {sessionRuntimeGuidance} from "../../src/session-guidance.ts";
 import {ModelFailure,responseMetadata} from './provider-response.ts';
@@ -27,7 +28,7 @@ const ReadRecovery=defineDocFamily<{done:boolean},null>({family:true,kind:'cuse.
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
 export interface ToolGateway {call(target:"irc"|"desktop",name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<{content:unknown[];isError?:boolean;structuredContent?:unknown}>;}
-export interface ActiveOptions {allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;modelFetchFor?:(api:string)=>typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
+export interface ActiveOptions {partialSaveIntervalMs?:number;allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;modelFetchFor?:(api:string)=>typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
 export class ActiveSession {
   readonly harness:Harness;readonly conversationId:ConversationId;readonly options:ActiveOptions;
   private running=false;
@@ -37,6 +38,7 @@ export class ActiveSession {
   readonly tools:ToolRegistration[];
   private constructor(harness:Harness,id:ConversationId,options:ActiveOptions,tools:ToolRegistration[]){this.harness=harness;this.conversationId=id;this.options=options;this.tools=tools;}
   static async open(storage:Storage,options:ActiveOptions):Promise<ActiveSession>{
+    const interval=partialSaveIntervalMs(options.partialSaveIntervalMs);
     const {snapshot:s,models}=options;
     // Validate the reviewed model before import. Owner host commands can repair
     // missing credentials; actual model requests still require provider auth.
@@ -181,7 +183,7 @@ export class ActiveSession {
       })();return stream;
     };
     const guardedModels=new Proxy(models,{get(target,property){if(property==="streamSimple")return streamSimple;const value=Reflect.get(target,property,target);return typeof value==="function"?value.bind(target):value;}});
-    harness=await Harness.open(storage,{models:guardedModels,registry,settings:{extensions:[extension],documentRetentionMs:0,contextRetentionMs:0,toolExecution:"sequential",retry:{enabled:false,maxRetries:0},stream:{maxRetries:0,timeoutMs:s.policy.timeoutMs},compaction:{enabled:false}},onReport:()=>options.report("harness_failure")},context);
+    harness=await Harness.open(storage,{models:guardedModels,registry,settings:{progress:{partialIntervalMs:interval},extensions:[extension],documentRetentionMs:0,contextRetentionMs:0,toolExecution:"sequential",retry:{enabled:false,maxRetries:0},stream:{maxRetries:0,timeoutMs:s.policy.timeoutMs},compaction:{enabled:false}},onReport:()=>options.report("harness_failure")},context);
     try{
       const id=await importSnapshot(harness,s,options.fence);
       options.automations?.restoreControls(s.retainedState,await snapshotHash(s));

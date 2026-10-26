@@ -1,3 +1,4 @@
+import {partialSaveIntervalMs} from './progress.ts';
 import {modelRequestFetch} from './model-fetch.ts';
 import {ChatGPTLogin} from './chatgpt-login.ts';
 import {desktopViewerUrl} from '../../src/desktop-presentation.ts';
@@ -30,6 +31,8 @@ import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
 export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;activationPending?:boolean;}
 export interface Env {
+  /** In-flight model checkpoint interval, milliseconds; defaults to 1000. */
+  CUSE_PARTIAL_SAVE_INTERVAL_MS?:string;
   /** One trusted IRC owner; channels are sessions, never user identities. */
   CUSE_OWNER_NICK?:string;
   CUSE_OWNER_PROFILE?:string;
@@ -227,9 +230,11 @@ export class AgentSession extends DurableObject<Env> {
     if(this.active)return;
     const prepared=this.prepared(),binding=this.binding();
     if(!prepared || !binding?.access || binding.access.enabledHash!==prepared.fence.snapshotHash)throw Error("activation_review_required");
+    const interval=partialSaveIntervalMs(this.env.CUSE_PARTIAL_SAVE_INTERVAL_MS);
     const desktop=prepared.snapshot.desktopId?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(prepared.snapshot.desktopId)):undefined;
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
       ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
+      partialSaveIntervalMs:interval,
       slice:{capacity:30,durationMs:150000},turnLimits:{models:64,tools:256},
       allowUnauthenticatedCommands:!!this.env.CUSE_OWNER_PROFILE,modelFetchFor:api=>this.createModelFetch(api),wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
