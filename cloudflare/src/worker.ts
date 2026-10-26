@@ -308,23 +308,19 @@ export class AgentSession extends DurableObject<Env> {
         await this.openActive();
         if(this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value==='no')return;
         this.automation().due(Date.now(),this.recovering);this.recovering=false;
-        for(let n=0;n<25;n++){
-          const before=this.sql.all("SELECT COUNT(*) AS n FROM cuse_inbox WHERE state='pending'")[0].n;
-          if(!this.renewal.valid(Date.now()))break;
-          const head=this.sql.all("SELECT origin FROM cuse_inbox WHERE state NOT IN ('done','cancelled') ORDER BY CASE WHEN origin='control' THEN 0 ELSE 1 END,position LIMIT 1")[0];
-          if((await this.desktopState()).paused && head?.origin!=='control')break;
-          await this.runner!.step(Date.now(),prepared.snapshot.policy.timeoutMs);
-          // Topic permissions or uncertainty never fault agent work.
-          if(binding?.access?.fullControl && binding.access.exclusiveProfile && (this.automation().goals.read(this.automation().channel) || this.sql.all("SELECT name FROM sqlite_master WHERE type='table' AND name='cuse_goal_topic'").length)){
-            const a=this.automation();const outcome=await withMcp(binding.access.mcp,client=>new DurableGoalTopics(this.sql).refresh(a.goals.topicEnabled(a.channel)?a.goals.read(a.channel):null,()=>readTopic(client,binding.route),topic=>dispatchChannelAction(client,binding.route,'topic',topic))).catch(()=>'unavailable');
-            if(outcome==='unavailable')console.error(JSON.stringify({code:'goal_topic_unavailable'}));
-          }
-          for(let output=0;output<32;output++){
-            if(!this.renewal.valid(Date.now()) || this.effectsBlocked() || !this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length)break;
-            await this.inbox.sendOne(async payload=>this.sendReply(binding!,JSON.parse(payload).text));
-          }
-          if(this.sql.all("SELECT 1 FROM cuse_effects WHERE state='uncertain' LIMIT 1").length)break;
-          const after=this.sql.all("SELECT COUNT(*) AS n FROM cuse_inbox WHERE state='pending'")[0].n;if(before===after)break;
+        // A reply opens an MCP session and makes several external requests.
+        // Drain one persisted effect per alarm, separately from model execution,
+        // so long command/model replies cannot exhaust the Free invocation quota.
+        if(this.sql.all("SELECT 1 FROM cuse_effects WHERE state='pending' LIMIT 1").length){
+          await this.inbox.sendOne(async payload=>this.sendReply(binding!,JSON.parse(payload).text));return;
+        }
+        const head=this.sql.all("SELECT origin FROM cuse_inbox WHERE state NOT IN ('done','cancelled') ORDER BY CASE WHEN origin='control' THEN 0 ELSE 1 END,position LIMIT 1")[0];
+        if((await this.desktopState()).paused && head?.origin!=='control')return;
+        await this.runner!.step(Date.now(),prepared.snapshot.policy.timeoutMs);
+        // Topic permissions or uncertainty never fault agent work.
+        if(binding?.access?.fullControl && binding.access.exclusiveProfile && (this.automation().goals.read(this.automation().channel) || this.sql.all("SELECT name FROM sqlite_master WHERE type='table' AND name='cuse_goal_topic'").length)){
+          const a=this.automation();const outcome=await withMcp(binding.access.mcp,client=>new DurableGoalTopics(this.sql).refresh(a.goals.topicEnabled(a.channel)?a.goals.read(a.channel):null,()=>readTopic(client,binding.route),topic=>dispatchChannelAction(client,binding.route,'topic',topic))).catch(()=>'unavailable');
+          if(outcome==='unavailable')console.error(JSON.stringify({code:'goal_topic_unavailable'}));
         }
       }else{
         await this.openJournal();
