@@ -15,7 +15,7 @@ test('workerd owner login spans independent channel sessions, survives eviction 
   assert.deepEqual(await(await post(0,1,',login','intruder')).json(),{status:'ignored'});
   const began=await post(0,2,',login openai');assert.equal(began.status,202,await began.text());const line=await wait(0,/Sign in with ChatGPT: https/),ticket=line.match(/\/login\/([a-f0-9]{64})/)![1];
   // Login runs with no credentials and no model request. Callback grants are synthetic.
-  const page=await(await app.fetch('/login/'+ticket)).text();const auth=new URL(page.match(/href="([^"]+)"/)![1].replace(/&amp;/g,'&'));
+  const pageResponse=await app.fetch('/login/'+ticket);assert.equal(pageResponse.headers.get('Referrer-Policy'),'same-origin');const page=await pageResponse.text();const auth=new URL(page.match(/href="([^"]+)"/)![1].replace(/&amp;/g,'&'));
   const callback=CHATGPT_REDIRECT+'?'+new URLSearchParams({state:auth.searchParams.get('state')!,code:'synthetic-code',client_id:'synthetic-issued-client'});
   const origin=(await app.fetch('/login/'+ticket)).headers.get('X-Fixture-Origin')!;
   const response=await app.fetch('/login/'+ticket,{method:'POST',headers:{Origin:origin,'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({callback}).toString()});assert.equal(response.status,200);const confirmation=(await response.text()).match(/,login confirm ([a-f0-9]{12})/)![1];
