@@ -50,7 +50,7 @@ export default {async fetch(request:Request,env:TestEnv){
     case '/test/auth/verify':return Response.json(await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).verify());
     case '/test/skills':return Response.json(await exerciseSkills(s));
     case '/test/setup':await stub.prepare(s,f);return Response.json({prepared:true});
-    case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
+    case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true' || (env as any).TEST_LONG_GRANT==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
     case '/test/stats':try{return Response.json(await stub.stats());}catch{return Response.json({calls:[],inbox:[],effects:[]});}
     default:return ingress.fetch(request,env);
   }
