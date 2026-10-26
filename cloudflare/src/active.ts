@@ -1,3 +1,4 @@
+import {readOnlyBrowserProbe} from './read-recovery.ts';
 import {sessionRuntimeGuidance} from "../../src/session-guidance.ts";
 import {ModelFailure,responseMetadata} from './provider-response.ts';
 import {ExecutionSlice,ExecutionYield} from './execution-slice.ts';
@@ -21,6 +22,8 @@ import type {DesktopToolLock} from "./desktop-coordinator.ts";
 const Intent=defineDocFamily<{started:boolean;completed:boolean},null>({family:true,kind:"cuse.remote-intent",version:1,scope:"session",initial:()=>({started:false,completed:false})});
 const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:"cuse.halt",version:1,scope:"session",initial:()=>({halted:false,pending:[]})});
 function failureCategory(message:string):string{return /Unable to load site|<html/i.test(message)?'upstream_rejected':/429|rate.?limit/i.test(message)?'rate_limited':/401|403|unauthorized|invalid.*token/i.test(message)?'authentication':/timeout|timed out/i.test(message)?'timeout':'unavailable';}
+const blockedToolNotice='This tool was not dispatched. An earlier remote operation still requires recovery; this is not a failure of the requested tool. Read-only desktop status remains available.';
+const ReadRecovery=defineDocFamily<{done:boolean},null>({family:true,kind:'cuse.read-recovery',version:1,scope:'session',initial:()=>({done:false})});
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
 export interface ToolGateway {call(target:"irc"|"desktop",name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<{content:unknown[];isError?:boolean;structuredContent?:unknown}>;}
@@ -54,7 +57,7 @@ export class ActiveSession {
         if(t.target==="host"){
           if(!options.automations)throw Error("host_binding_required");
           const authority=await api.commit(async tx=>{const b=await tx.doc(Budget,key,null);const i=await tx.doc(Intent,operation,null);if(!i.started){if(b.tools>=(options.turnLimits?.tools??s.policy.toolCalls))throw Error("tool_budget_exhausted");b.tools++;i.started=true;}return {operation:b.operation,origin:b.origin};},ctx);
-          const halted=await api.commit(async tx=>{const g=await tx.doc(Halt,key,null);return g.halted || g.pending.length>0;},ctx);if(halted && !(t.name==='desktop_control' && (args as Record<string,unknown>).action==='status'))return {output:[{type:'text' as const,text:ambiguousToolOutcome}],details:{}};
+          const halted=await api.commit(async tx=>{const g=await tx.doc(Halt,key,null);return g.halted || g.pending.length>0;},ctx);if(halted && !(t.name==='desktop_control' && (args as Record<string,unknown>).action==='status'))return {output:[{type:'text' as const,text:blockedToolNotice}],details:{}};
           options.automations.legacy?.spendTool(options.automations.channel,authority.operation,operation);
           if(options.automations.legacy?.isRun(authority.operation) && ['irc_send','agent_ask','schedule_prompt'].includes(t.name))throw Error('goal_delegation_denied');
           let value:unknown;
@@ -80,7 +83,7 @@ export class ActiveSession {
           if(budget.tools>=(options.turnLimits?.tools??s.policy.toolCalls))throw Error("tool_budget_exhausted");
           budget.tools++;intent.started=true;guard.pending.push(operation);return true;
         },ctx);
-        if(!admitted)return {output:[{type:"text" as const,text:ambiguousToolOutcome}],details:{}};
+        if(!admitted)return {output:[{type:"text" as const,text:blockedToolNotice}],details:{}};
         const authority=await api.commit(async tx=>(await tx.doc(Budget,key,null)).operation,ctx);
         options.automations?.legacy?.spendTool(options.automations.channel,authority,operation);
         let ticket;
@@ -234,6 +237,32 @@ export class ActiveSession {
       if(mailbox?.kind==='question')await this.options.peers!.answer(mailbox,output,signal);
       return splitReply(output);
     }finally{signal?.removeEventListener("abort",cancel);this.running=false;this.setPeerInput(undefined);}
+  }
+  async recoverRead(taskId:number):Promise<string>{
+    const operation=objectKey(this.options.snapshot.route)+':'+taskId;
+    const completed=await this.harness.commit(async tx=>{
+      if((await tx.doc(ReadRecovery,operation,null)).done)return true;
+      const task=await tx.task(taskId as never);
+      if(!task || task.conversationId!==this.conversationId || task.kind!=='pi.tool' || task.state.status!=='terminal')throw Error('read_recovery_task_not_terminal');
+      const input=task.input as {assistant?:number;callId?:string};
+      const entry=input.assistant?await tx.entry(AssistantEntry,input.assistant as never):undefined;
+      const content=entry?.model?.[0]?.content;
+      const call=Array.isArray(content)?content.find(p=>p.type==='toolCall' && p.id===input.callId):undefined;
+      if(!call || call.type!=='toolCall' || call.name!=='run_js' || !readOnlyBrowserProbe((call.arguments as Record<string,unknown>).code))throw Error('read_recovery_probe_not_recognized');
+      const g=await tx.doc(Halt,objectKey(this.options.snapshot.route),null);
+      if(g.pending.length!==1 || g.pending[0]!==operation)throw Error('read_recovery_guard_mismatch');
+      return false;
+    },context);
+    if(completed)return 'Read recovery already recorded; nothing replayed.';
+    if(!this.options.desktop?.reconcileRead)throw Error('read_recovery_desktop_required');
+    await this.options.desktop.reconcileRead(operation);
+    await this.harness.commit(async tx=>{
+      const g=await tx.doc(Halt,objectKey(this.options.snapshot.route),null);
+      if(g.pending.length!==1 || g.pending[0]!==operation)throw Error('read_recovery_guard_changed');
+      (await tx.doc(Intent,operation,null)).completed=true;
+      g.pending=[];g.halted=false;(await tx.doc(ReadRecovery,operation,null)).done=true;
+    },context);
+    return 'Reviewed read-only browser probe recovered; no action replayed. Desktop tools are available.';
   }
   async stop():Promise<void>{await (await this.harness.conversation(this.conversationId,context))!.abort(context,{background:true});}
   async close():Promise<void>{this.closed=true;await this.harness.close(context);}

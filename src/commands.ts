@@ -20,6 +20,7 @@ import { parseScheduleCommand, SCHEDULE_USAGE, type ScheduleRequest } from "./sc
 import { parseSessionCommand, SESSION_COMMANDS, type SessionCommandAction } from "./session-commands.ts";
 
 export type ControlCommand =
+ | {kind:"recover-read";task:number}
  | {kind:"login";action:"start"|"status"|"cancel"|"confirm";code?:string}
  | { kind: "goal"; args: string }
  | { kind: "schedule"; request: ScheduleRequest }
@@ -36,6 +37,7 @@ export type IrcCommand = ControlCommand | SessionCommandAction;
 export const COMMAND_PREFIX = ",";
 
 const CONTROL_COMMANDS = [
+ {usage:"recover read <task-id>",description:"release a terminal, strictly recognized read-only browser probe; never replays the call"},
  {usage:"login [openai|status|cancel|confirm <code>]",description:"connect the owner’s ChatGPT subscription in a private browser flow; shared auth, separate channel sessions"},
  { usage: "goal [--tokens 50k] <objective> | status | pause | resume | clear | topic on/off", description: "pursue one persistent Pi Goal; optional token budget is a soft stopping threshold" },
  { usage: "schedule …", description: "schedule durable prompts: list, every, once, cron, pause, resume, delete; timezone defaults to UTC" },
@@ -95,6 +97,10 @@ export function parseCommand(line: string): IrcCommand | undefined {
 	const session = parseSessionCommand(name!, argument);
 	if (session) return session;
 	switch (name!.toLowerCase()) {
+        case "recover": {
+            const task=/^read ([1-9][0-9]{0,9})$/.exec(argument);
+            return task?{kind:"recover-read",task:Number(task[1])}:{kind:"error",message:"Usage: ,recover read <task-id>. Only recognized read-only browser probes qualify."};
+        }
         case "login": {
             if(!argument || argument.toLowerCase()==='openai')return {kind:'login',action:'start'};
             if(argument==='status'||argument==='cancel')return {kind:'login',action:argument};

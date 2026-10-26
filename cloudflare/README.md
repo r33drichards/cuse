@@ -156,3 +156,9 @@ Restart recovery resumes only inbox records explicitly marked `engine: pi-durabl
 
 
 Codex HTTP diagnostics are retained in the existing `cuse.model-failure` document for the input. The SDK response hook records only status, a validated Cloudflare Ray ID, media type, and timestamp. The original provider callback still runs, and a diagnostic persistence failure only reports a bounded code. Request bodies, authorization headers, cookies, and response bodies are excluded from this metadata. Ordinary requests continue using the same endpoint, encoding, credentials, and zero-retry policy.
+
+### Reviewed browser-read recovery
+
+The configured owner can issue `,recover read <task-id>` after inspecting a held tool. The host verifies the task belongs to this conversation, is terminal, is a `run_js` call matching the strictly bounded legacy URL/body read grammar, and is the only pending recovery intent. It releases only that exact desktop operation and records an idempotent harness receipt. It never repeats the tool or resumes a stopped task. Arbitrary JavaScript, navigation, clicks, writes, lifecycle actions and other uncertain operations are refused. A repeated recovery cannot release a newer desktop lock. This host control works while an older inbox turn is blocked; it does not cancel that turn.
+
+A tool refused by an existing recovery guard now explicitly reports that it was never dispatched. This prevents the agent from mistaking a held browser read for a new failure to start the desktop.

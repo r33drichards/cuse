@@ -22,6 +22,16 @@ export class DesktopLedger {
       const fence=Number(row.epoch)+1;this.sql.all("UPDATE cuse_desktop SET epoch=?,operation=?,state='held' WHERE id=1",fence,operation);return {status:'acquired',ticket:{operation,fence}};
     });
   }
+  reconcileRead(operation:string):void{
+    this.sql.all("CREATE TABLE IF NOT EXISTS cuse_read_recovery(operation TEXT PRIMARY KEY,epoch INTEGER NOT NULL)");
+    this.sql.transaction(()=>{
+      if(this.sql.all('SELECT 1 FROM cuse_read_recovery WHERE operation=?',operation).length)return;
+      const r=this.sql.all('SELECT * FROM cuse_desktop WHERE id=1')[0];
+      if(r.operation!==operation || !['held','uncertain'].includes(String(r.state)))throw Error('desktop_read_recovery_mismatch');
+      this.sql.all("UPDATE cuse_desktop SET state='idle',operation=NULL WHERE id=1");
+      this.sql.all('INSERT INTO cuse_read_recovery VALUES (?,?)',operation,r.epoch);
+    });
+  }
   verify(ticket:Ticket):void{
     const row=this.sql.all("SELECT * FROM cuse_desktop WHERE id=1")[0];
     if(row.state!=="held" || row.operation!==ticket.operation || row.epoch!==ticket.fence)throw Error("desktop_fence_rejected");
@@ -36,4 +46,4 @@ export class DesktopLedger {
 }
 export interface DesktopLock {acquire(operation:string):Promise<Ticket>;verify(ticket:Ticket):Promise<void>;settle(ticket:Ticket,knownComplete:boolean):Promise<void>;}
 
-export interface DesktopToolLock extends DesktopLock {tryAcquire(operation:string):Promise<AcquireResult>;}
+export interface DesktopToolLock extends DesktopLock {tryAcquire(operation:string):Promise<AcquireResult>;reconcileRead?(operation:string):Promise<void>;}
