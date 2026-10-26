@@ -66,3 +66,46 @@ expected SHA. The workflow deploys only the Worker, **not** the native Docker
 service. Do not configure secrets/subscriptions or change runtime activation as
 part of a retry. Code rollback needs a separately reviewed known-good revision;
 Durable Object data/schema migration rollback is not implied by a code rollback.
+
+## Explicit private activation
+
+The separate `operate-cloudflare.yml` workflow accepts manual `stage`, `activate`
+and `cleanup` actions on current `main` only, after a successful deployment of
+that same commit. It uses the protected `cloudflare-shadow` environment and the
+same concurrency group as deployment. A code deployment never starts this flow.
+
+Prepare a private package outside the checkout with `worker`, `approvedUntil`
+(at most two hours ahead), and `runtime`. The runtime contains exactly three
+JSON strings: `MODEL_SECRETS`, `MODEL_CONFIG`, and `WEBHOOK_ROUTES`. Each must fit
+Cloudflare's 5 KB binding limit. Every route must have `activationPending: true`.
+Gzip and base64 encode the package; store at most 48,000 characters in environment
+secret `CUSE_OPERATOR_PACKAGE` and the remaining at most 48,000 characters in
+`CUSE_OPERATOR_PACKAGE_2`. Never commit packages, credentials, archives or live
+session inventories. Delete these temporary GitHub secrets after the operation.
+
+`stage` installs runtime bindings with normal event delivery held at HTTP 503;
+signed callback verification challenges still work. It creates no subscription
+and starts no conversation. Before `activate`, fence the legacy owner, verify
+that the dedicated MCP profile owns the exact nick and buffer, and obtain the
+reviewed existing subscription grant. Include `operator` in the package with
+version 1, a fresh 32-character hexadecimal `id`, `routeKey`, complete `snapshot`,
+matching `fence`, and `grant`. The workflow supplies a thirty-minute request lease (allowing cron propagation).
+The fence must attest ownership release and identity verification, and the exact
+snapshot hash must match the enabled route. Use empty archive/context arrays for
+an approved fresh conversation; keep the original history and paused goal on the
+retained rollback volume, referenced by private retained-state metadata.
+
+The operator request is gzip encoded into at most 32 encrypted Worker secret
+bindings of at most 4,800 characters each. A temporary minute cron invokes a
+private Durable Object method; there is no public administrative HTTP endpoint.
+Initialization validates the model and exact tools, imports the reviewed context,
+and arms the existing grant. Repeated execution of the same request is idempotent
+and does not reset renewal deadlines. Only a structured completion log matching
+the request ID releases the delivery hold. No model prompt runs during setup.
+
+The workflow removes the cron and request secrets after activation, including on
+failure. A forced cancellation may interrupt cleanup: run `cleanup` explicitly;
+the expired request also fails closed. Existing unrelated cron schedules cause a
+failure before writes. On any failure, retain the legacy ownership fence, inspect
+aggregate state, and do not replay uncertain effects. Rollback requires first
+fencing the new owner before restoring the legacy service and its retained data.
