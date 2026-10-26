@@ -263,6 +263,18 @@ export class AgentSession extends DurableObject<Env> {
     const command=parseCommand(mentionText(event.data.text,binding.route.nick)??event.data.text);if(command?.kind!=='login')return;
     return {head,event,command};
   }
+  private async recoverReadControl():Promise<boolean>{
+    const binding=this.binding();if(!binding || !this.env.CUSE_OWNER_NICK)return false;
+    const row=this.sql.all("SELECT id,payload FROM cuse_inbox WHERE origin='control' AND state='pending' AND due<=? AND instr(lower(json_extract(payload,'$.data.text')),',recover')>0 ORDER BY position LIMIT 1",Date.now())[0];if(!row)return false;
+    const event=JSON.parse(String(row.payload)) as MessageEvent;
+    const command=parseCommand(mentionText(event.data.text,binding.route.nick)??event.data.text);
+    if(command?.kind!=='recover-read')return false;
+    const job=this.inbox!.claimControl(String(row.id),Date.now());if(!job)return false;
+    this.inbox!.checkpoint(job.id,JSON.stringify({engine:'pi-durable',requestId:job.id,control:'recover-read'}));
+    let reply='Read recovery refused; the task must be a terminal, recognized read-only browser probe with exactly matching recovery locks.';
+    if(event.data.nick.toLowerCase()===this.env.CUSE_OWNER_NICK.toLowerCase())try{await this.openActive();reply=await this.active!.recoverRead(command.task);}catch{console.error(JSON.stringify({code:'read_recovery_refused'}));}
+    this.inbox!.complete(job.id,[reply]);return true;
+  }
   /** Login is a host control, usable even when model authentication is broken. */
   private async loginControl():Promise<boolean>{
     const pending=this.pendingLogin();if(!pending)return false;
@@ -363,6 +375,7 @@ export class AgentSession extends DurableObject<Env> {
           await this.inbox.sendOne(async payload=>this.sendReply(binding!,JSON.parse(payload).text));return;
         }
         if(await this.loginControl())return;
+        if(await this.recoverReadControl())return;
         await this.openActive();
         if(this.sql.all("SELECT value FROM cuse_manifest WHERE key='joined'")[0]?.value==='no')return;
         this.automation().due(Date.now(),this.recovering);this.recovering=false;
@@ -403,6 +416,7 @@ export class DesktopCoordinator extends DurableObject<Env>{
   async action(access:DesktopAccess,action:DesktopAction,id:string,confirmId?:string):Promise<string>{return this.lifecycle.action(access,action,id,confirmId,fetch,access.provision?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName('provision:'+access.provision.namespace)):undefined);}
   async acquire(operation:string):Promise<Ticket>{return this.ledger.acquire(operation);}
   async tryAcquire(operation:string):Promise<AcquireResult>{return this.ledger.tryAcquire(operation);}
+  async reconcileRead(operation:string):Promise<void>{this.ledger.reconcileRead(operation);}
   async verify(ticket:Ticket):Promise<void>{this.ledger.verify(ticket);}
   async settle(ticket:Ticket,knownComplete:boolean):Promise<void>{this.ledger.settle(ticket,knownComplete);}
 }
