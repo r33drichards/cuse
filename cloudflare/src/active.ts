@@ -89,11 +89,19 @@ export class ActiveSession {
           if(ticket)await options.desktop!.verify(ticket);
           const result=await options.gateway.call(t.target,t.name,args as Record<string,unknown>,ctx.abortSignal);
           // An MCP error response can follow a partial side effect. Hold the lock.
-          if(result.isError)throw Error("tool_outcome_uncertain");
+          if(result.isError && !(t.target==='desktop' && ['skills_list','skills_read'].includes(t.name)))throw Error("tool_outcome_uncertain");
           await api.commit(async tx=>{(await tx.doc(Intent,operation,null)).completed=true;(await tx.doc(Halt,key,null)).pending=[];},ctx);
           if(ticket)await options.desktop!.settle(ticket,true);
           return {output:modelContent(result),details:{}};
         }catch{
+          // These adapters only discover/read skill resources. A failed read
+          // cannot leave a user action running on the desktop.
+          if(t.target==='desktop' && ['skills_list','skills_read'].includes(t.name)){
+            await harness.commit(async tx=>{(await tx.doc(Intent,operation,null)).completed=true;const guard=await tx.doc(Halt,key,null);guard.pending=guard.pending.filter(id=>id!==operation);},context);
+            if(ticket)await options.desktop!.settle(ticket,true);
+            options.report('skill_read_unavailable');
+            return {output:[{type:'text' as const,text:'Skill resources are unavailable. No code or desktop action was executed. Use desktop_control to check or start the desktop before trying again.'}],details:{}};
+          }
           if(ticket)await options.desktop!.settle(ticket,false).catch(()=>{});
           await harness.commit(async tx=>{(await tx.doc(Halt,key,null)).halted=true;},context);
           options.report("remote_outcome_uncertain");throw Error("remote_outcome_uncertain");
