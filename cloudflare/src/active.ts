@@ -1,4 +1,5 @@
 import {sessionRuntimeGuidance} from "../../src/session-guidance.ts";
+import {ModelFailure,responseMetadata} from './provider-response.ts';
 import {ExecutionSlice,ExecutionYield} from './execution-slice.ts';
 import {ambiguousToolOutcome} from '../../src/tool-recovery.ts';
 import {formatGoal} from './legacy/goal-types.ts';
@@ -19,7 +20,6 @@ import {modelContent} from "../../src/mcp-content.ts";
 import type {DesktopToolLock} from "./desktop-coordinator.ts";
 const Intent=defineDocFamily<{started:boolean;completed:boolean},null>({family:true,kind:"cuse.remote-intent",version:1,scope:"session",initial:()=>({started:false,completed:false})});
 const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:"cuse.halt",version:1,scope:"session",initial:()=>({halted:false,pending:[]})});
-const ModelFailure=defineDocFamily<{category:string|null},null>({family:true,kind:'cuse.model-failure',version:1,scope:'session',initial:()=>({category:null})});
 function failureCategory(message:string):string{return /Unable to load site|<html/i.test(message)?'upstream_rejected':/429|rate.?limit/i.test(message)?'rate_limited':/401|403|unauthorized|invalid.*token/i.test(message)?'authentication':/timeout|timed out/i.test(message)?'timeout':'unavailable';}
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
@@ -137,7 +137,11 @@ export class ActiveSession {
           const a=options.automations,turn=attempt.operation+":model:"+attempt.number;
           const legacyGoal=a?.legacy?.spendModel(a.channel,attempt.operation)??false;
           if(a){if(!a.goals.canRun(attempt.operation))throw Error("goal_revoked");a.goals.beginTurn(a.channel,turn,Date.now(),attempt.operation);}
-          const providerOptions=model.api==='openai-codex-responses'?{...opts,fetch:options.modelFetch??opts?.fetch,transport:'sse' as const,maxRetries:0,timeoutMs:s.policy.timeoutMs}:opts;
+          const providerOptions=model.api==='openai-codex-responses'?{...opts,fetch:options.modelFetch??opts?.fetch,transport:'sse' as const,maxRetries:0,timeoutMs:s.policy.timeoutMs,onResponse:async(response:import('@earendil-works/pi-ai').ProviderResponse,currentModel:typeof model)=>{
+            try{const http=responseMetadata(response);if(http)await harness.commit(async tx=>{(await tx.doc(ModelFailure,attempt.operation,null)).http=http;},context);}
+            catch{options.report('model_response_metadata_unavailable');}
+            await opts?.onResponse?.(response,currentModel);
+          }}:opts;
           for await(const event of models.streamSimple(model,input,legacyGoal?{...providerOptions,maxTokens:Math.min(opts?.maxTokens??4096,4096),maxRetries:0,timeoutMs:Math.min(s.policy.timeoutMs,240000),transport:'sse'}:providerOptions)){
             if(event.type==='error' && event.reason==='error'){
               const category=failureCategory(event.error.errorMessage??'');

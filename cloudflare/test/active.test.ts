@@ -6,6 +6,7 @@ import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi
 import {openNodeSqliteStorage} from '@earendil-works/pi-durable/storage/sqlite/node';
 import {BACKGROUND_CONTEXT as ctx} from '@earendil-works/chord/context';
 import {ActiveSession} from '../src/active.ts';import {dryRun,importSnapshot,snapshotHash,type Snapshot} from '../src/migration.ts';
+import {ModelFailure,responseMetadata} from '../src/provider-response.ts';
 import {ShadowJournal} from '../src/journal.ts';import {DesktopLedger} from '../src/desktop-coordinator.ts';import {database,route,event} from './helpers.ts';
 export function snapshot(provider='faux'):Snapshot{return {version:1,sourceSessionId:'old-session',route:{...route,agent:route.channel},model:{provider,modelId:'chosen'},thinkingLevel:'off',instructions:'Keep exact prior instructions.',tools:[],desktopBinding:{kind:'none'},policy:{modelRequests:3,toolCalls:2,timeoutMs:3000,peerTurns:2,peerNicks:['peer'],mentionRequired:false},archive:[{id:'old',text:'retained history'}],context:[{role:'user',content:'remembered question',timestamp:1}],retainedState:{budget:'retained'},blockers:[]};}
 async function fixture(s?:Snapshot,api?:string){
@@ -81,6 +82,25 @@ test('active Codex calls receive the Worker transport adapter without enabling r
  const fetcher:typeof fetch=async()=>new Response('synthetic');(f.options as any).modelFetch=fetcher;
  f.faux.setResponses([(_context,options)=>{assert.equal(options?.fetch,fetcher);assert.equal(options?.transport,'sse');assert.equal(options?.maxRetries,0);return fauxAssistantMessage('Encoded transport selected.');}]);
  assert.deepEqual(await f.active.handle(event()),['Encoded transport selected.']);
+ }finally{await f.close();}
+});
+test('Codex response metadata survives reopen without retaining private headers or response bodies',async()=>{
+ const f=await fixture(undefined,'openai-codex-responses');try{
+ const start=Date.now();
+ f.faux.setResponses([async(_input,options)=>{
+  assert.equal(options?.maxRetries,0);
+  await options?.onResponse?.({status:403,headers:{'CF-Ray':'a506e6d5cad40f07-SJC','Content-Type':'text/html; charset=utf-8','Set-Cookie':'MUST_NOT_PERSIST',authorization:'MUST_NOT_PERSIST'}},f.options.models.getModel(f.faux.provider.id,'chosen')!);
+  throw Error('<html>Unable to load site PRIVATE_BODY');
+ }]);
+ assert.match((await f.active.handle(event())).join(' '),/upstream_rejected/);
+ const stored=await f.active.harness.snapshot(ModelFailure,event().eventId,ctx);
+ assert.equal(stored?.category,'upstream_rejected');assert.equal(stored?.http?.status,403);assert.equal(stored?.http?.rayId,'a506e6d5cad40f07-SJC');assert.equal(stored?.http?.contentType,'text/html');assert.ok(stored!.http!.at>=start);
+ assert.ok(!JSON.stringify(stored).includes('MUST_NOT_PERSIST'));assert.ok(!JSON.stringify(stored).includes('PRIVATE_BODY'));
+ await f.reopen();assert.deepEqual(await f.active.harness.snapshot(ModelFailure,event().eventId,ctx),stored);
+ assert.equal(f.faux.state.callCount,1);
+ assert.equal(responseMetadata({status:403,headers:{'cf-ray':'arbitrary-private-text','content-type':'text/html\nprivate'}})?.rayId,null);
+ assert.equal(responseMetadata({status:403,headers:{'content-type':'text/html\nprivate'}})?.contentType,null);
+ assert.equal(responseMetadata({status:0,headers:{}}),undefined);
  }finally{await f.close();}
 });
 test('import dry run is read-only, cutover and content conflicts fail closed',async()=>{
