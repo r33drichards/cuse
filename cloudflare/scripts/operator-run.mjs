@@ -9,10 +9,12 @@ const mode=process.argv[2];
 const account=process.env.CLOUDFLARE_ACCOUNT_ID,token=process.env.CLOUDFLARE_API_TOKEN;
 const base=`https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts/${worker}`;
 const names=['MODEL_SECRETS','MODEL_CONFIG','WEBHOOK_ROUTES'];
+let phase='validate',httpStatus;
 async function api(path,method='GET',body){
+  phase=method+' '+path;
   const response=await fetch(base+path,{method,redirect:'error',signal:AbortSignal.timeout(30000),headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
   if(/^\/secrets\/CUSE_OPERATOR_(?:REQUEST|WARMUP|PARTS|PART_\d+)$/.test(path) && method==='DELETE' && response.status===404)return;
-  const data=await response.json();if(!response.ok || !data.success)throw Error('cloudflare_operation_failed');return data.result;
+  const data=await response.json();if(!response.ok || !data.success){httpStatus=response.status;throw Error('cloudflare_operation_failed');}return data.result;
 }
 const put=(name,text)=>api('/secrets','PUT',{name,type:'secret_text',text});
 async function remove(){
@@ -23,7 +25,8 @@ async function remove(){
 async function schedules(){const result=await api('/schedules');const rows=Array.isArray(result)?result:result.schedules;if(!Array.isArray(rows) || rows.some(r=>r.cron!=='* * * * *'))throw Error('unreviewed_existing_schedule');return rows;}
 let tail;
 function observe(id,expected){
-  tail=spawn('./node_modules/.bin/wrangler',['tail',worker,'--format','json','--sampling-rate','1'],{stdio:['ignore','pipe','pipe'],env:{...process.env,WRANGLER_SEND_METRICS:'false'}});
+  phase='tail_'+expected;
+  tail=spawn('./node_modules/.bin/wrangler',['tail',worker,'--format','json'],{stdio:['ignore','pipe','pipe'],env:{...process.env,WRANGLER_SEND_METRICS:'false'}});
   let timer,output='';
   const completion=new Promise((resolve,reject)=>{
     timer=setTimeout(()=>reject(Error('operator_confirmation_timeout')),1200000);
@@ -81,6 +84,8 @@ try{
       }finally{observer.stop();await api('/schedules','PUT',[]);await remove();}
     }
   }
-}catch{
+}catch(error){
+  const reason=error instanceof Error && ['operator_tail_failed','operator_tail_closed','operator_confirmation_timeout','operator_failed','cloudflare_operation_failed','operator_package_invalid','operator_delivery_gate_required','operator_warmup_required','unreviewed_existing_schedule'].includes(error.message)?error.message:'operator_validation_failed';
+  console.error(JSON.stringify({code:'private_operator_failed',phase,httpStatus,reason}));
   if(tail)tail.kill();console.error('Private operator action failed; keep the legacy owner fenced and inspect aggregate state. Never replay uncertain effects.');process.exitCode=1;
 }
