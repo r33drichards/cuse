@@ -9,6 +9,7 @@
     "test:worker": "WRANGLER_SEND_METRICS=false node --experimental-strip-types --test integration/*.test.ts"
   },
   "dependencies": {
+    "@bokuweb/zstd-wasm": "0.0.27",
     "@earendil-works/chord": "1.2.0",
     "@earendil-works/pi-ai": "1.2.0",
     "@earendil-works/pi-durable": "1.2.0",

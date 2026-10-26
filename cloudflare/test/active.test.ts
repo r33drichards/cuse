@@ -8,8 +8,8 @@ import {BACKGROUND_CONTEXT as ctx} from '@earendil-works/chord/context';
 import {ActiveSession} from '../src/active.ts';import {dryRun,importSnapshot,snapshotHash,type Snapshot} from '../src/migration.ts';
 import {ShadowJournal} from '../src/journal.ts';import {DesktopLedger} from '../src/desktop-coordinator.ts';import {database,route,event} from './helpers.ts';
 export function snapshot(provider='faux'):Snapshot{return {version:1,sourceSessionId:'old-session',route:{...route,agent:route.channel},model:{provider,modelId:'chosen'},thinkingLevel:'off',instructions:'Keep exact prior instructions.',tools:[],desktopBinding:{kind:'none'},policy:{modelRequests:3,toolCalls:2,timeoutMs:3000,peerTurns:2,peerNicks:['peer'],mentionRequired:false},archive:[{id:'old',text:'retained history'}],context:[{role:'user',content:'remembered question',timestamp:1}],retainedState:{budget:'retained'},blockers:[]};}
-async function fixture(s?:Snapshot){
- const dir=mkdtempSync(join(tmpdir(),'cuse-active-'));const faux=fauxProvider({models:[{id:'chosen'},{id:'other'}]});
+async function fixture(s?:Snapshot,api?:string){
+ const dir=mkdtempSync(join(tmpdir(),'cuse-active-'));const faux=fauxProvider({api,models:[{id:'chosen'},{id:'other'}]});
  const models=createModels();models.setProvider(faux.provider);const snap=s??snapshot(faux.provider.id);snap.model.provider=faux.provider.id;
  const fence={snapshotHash:await snapshotHash(snap),generation:route.generation,after:route.after,legacyOwnerReleased:true as const,identityVerified:true as const};
  let calls=0;const lockDb=database();const ledger=new DesktopLedger(lockDb.sql);
@@ -72,6 +72,13 @@ test('provider rejection reports a bounded notice and does not block a later pro
  const notice=await f.active.handle(event());assert.match(notice[0],/Model request failed \(upstream_rejected\)/);assert.ok(!notice[0].includes('private-upstream'));assert.equal(f.calls,1);
  await f.reopen();assert.deepEqual(await f.active.handle(event()),notice);assert.equal(f.calls,1);
  f.faux.setResponses([fauxAssistantMessage('Recovered.')]);assert.deepEqual(await f.active.handle(event(2)),['Recovered.']);assert.equal(f.calls,1);
+ }finally{await f.close();}
+});
+test('active Codex calls receive the Worker transport adapter without enabling retries',async()=>{
+ const f=await fixture(undefined,'openai-codex-responses');try{
+ const fetcher:typeof fetch=async()=>new Response('synthetic');(f.options as any).modelFetch=fetcher;
+ f.faux.setResponses([(_context,options)=>{assert.equal(options?.fetch,fetcher);assert.equal(options?.transport,'sse');assert.equal(options?.maxRetries,0);return fauxAssistantMessage('Encoded transport selected.');}]);
+ assert.deepEqual(await f.active.handle(event()),['Encoded transport selected.']);
  }finally{await f.close();}
 });
 test('import dry run is read-only, cutover and content conflicts fail closed',async()=>{

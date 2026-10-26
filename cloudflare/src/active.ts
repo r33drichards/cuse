@@ -21,7 +21,7 @@ function failureCategory(message:string):string{return /Unable to load site|<htm
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
 export interface ToolGateway {call(target:"irc"|"desktop",name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<{content:unknown[];isError?:boolean;structuredContent?:unknown}>;}
-export interface ActiveOptions {snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
+export interface ActiveOptions {snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
 export class ActiveSession {
   readonly harness:Harness;readonly conversationId:ConversationId;readonly options:ActiveOptions;
   private running=false;
@@ -127,7 +127,8 @@ export class ActiveSession {
           const a=options.automations,turn=attempt.operation+":model:"+attempt.number;
           const legacyGoal=a?.legacy?.spendModel(a.channel,attempt.operation)??false;
           if(a){if(!a.goals.canRun(attempt.operation))throw Error("goal_revoked");a.goals.beginTurn(a.channel,turn,Date.now(),attempt.operation);}
-          for await(const event of models.streamSimple(model,input,legacyGoal?{...opts,maxTokens:Math.min(opts?.maxTokens??4096,4096),maxRetries:0,timeoutMs:Math.min(s.policy.timeoutMs,240000),transport:'sse'}:model.api==='openai-codex-responses'?{...opts,transport:'sse',maxRetries:0,timeoutMs:s.policy.timeoutMs}:opts)){
+          const providerOptions=model.api==='openai-codex-responses'?{...opts,fetch:options.modelFetch??opts?.fetch,transport:'sse' as const,maxRetries:0,timeoutMs:s.policy.timeoutMs}:opts;
+          for await(const event of models.streamSimple(model,input,legacyGoal?{...providerOptions,maxTokens:Math.min(opts?.maxTokens??4096,4096),maxRetries:0,timeoutMs:Math.min(s.policy.timeoutMs,240000),transport:'sse'}:providerOptions)){
             if(event.type==='error' && event.reason==='error'){
               const category=failureCategory(event.error.errorMessage??'');
               await harness.commit(async tx=>{(await tx.doc(ModelFailure,attempt.operation,null)).category=category;},context);
