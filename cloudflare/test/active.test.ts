@@ -54,6 +54,17 @@ test('uncertain desktop error holds ownership and prevents model/tool retries',a
  await f.reopen();await assert.rejects(f.active.handle(event(2)));assert.equal(calls,1);
  }finally{await f.close();}
 });
+test('failed read-only skill discovery releases ownership and allows later turns after restart',async()=>{
+ const s=snapshot();s.desktopBinding={kind:'existing',desktopId:'desk-one'};s.desktopId='desk-one';s.tools=[{name:'skills_list',description:'Read skill catalog',inputSchema:{type:'object',properties:{}},target:'desktop'}];
+ const f=await fixture(s);try{
+ f.options.gateway.call=async()=>{throw Error('unavailable');};
+ f.faux.setResponses([fauxAssistantMessage([fauxToolCall('skills_list',{})],{stopReason:'toolUse'}),fauxAssistantMessage('Skill catalog unavailable; ready to help.')]);
+ assert.deepEqual(await f.active.handle(event()),['Skill catalog unavailable; ready to help.']);
+ assert.equal(f.lockDb.sql.all('SELECT state FROM cuse_desktop')[0].state,'idle');
+ await f.reopen();f.faux.setResponses([fauxAssistantMessage('Next turn works.')]);
+ assert.deepEqual(await f.active.handle(event(2)),['Next turn works.']);
+ }finally{await f.close();}
+});
 test('import dry run is read-only, cutover and content conflicts fail closed',async()=>{
  const s=snapshot();const plan=await dryRun(s);const j=await ShadowJournal.open(await openNodeSqliteStorage(':memory:'));
  try{const fence={snapshotHash:plan.hash,generation:route.generation,after:route.after,legacyOwnerReleased:true as const,identityVerified:true as const};
