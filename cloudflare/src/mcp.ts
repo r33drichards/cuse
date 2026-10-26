@@ -1,3 +1,4 @@
+import {noRedirectFetch} from "./http.ts";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { z } from "zod";
 import type { Rpc } from "./subscriptions.ts";
@@ -10,8 +11,8 @@ export async function withMcp<T>(access: McpAccess,operation: (client: Client,rp
   if (url.protocol!=="https:" || url.username || url.password || url.hash || !access.bearer) throw Error("mcp_configuration");
   const client=new Client({name:"cuse-durable",version:"1"},{versionNegotiation:{mode:{pin:"2026-07-28"}}});
   const transport=new StreamableHTTPClientTransport(url,{
-    requestInit:{headers:{Authorization:`Bearer ${access.bearer}`},redirect:"error"},
-    onInsufficientScope:"throw",
+    requestInit:{headers:{Authorization:`Bearer ${access.bearer}`},redirect:"manual"},
+    onInsufficientScope:"throw",fetch:noRedirectFetch,
   });
   try {
     await client.connect(transport,{timeout:10000});

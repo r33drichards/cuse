@@ -1,3 +1,4 @@
+import {noRedirectFetch} from "./http.ts";
 import {ComputerUseClient} from '../../src/computer-use.ts';
 import type {DesktopLock} from './desktop-coordinator.ts';
 import type {Sql} from './store.ts';
@@ -20,7 +21,7 @@ export class DesktopLifecycle {
    if(action==='recreate' && (!access.provision?.namespace || !access.provision.room || !access.provision.size || !provisionLock))throw Error('desktop_provision_review_required');
   }
   const request=async(path:string,init:RequestInit={})=>{
-   const response=await fetcher(new URL(path,base),{...init,redirect:'error',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+access.bearer}});
+   const response=await noRedirectFetch(new URL(path,base),{...init,redirect:'manual',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+access.bearer}},fetcher);
    if(!response.ok && !(init.method==='DELETE' && response.status===404))throw Error('desktop_operation_uncertain');
    if(init.method==='DELETE')return {};
    const body=await response.json() as Record<string,unknown>;return body;
