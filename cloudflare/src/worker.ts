@@ -1,3 +1,4 @@
+import {modelRequestFetch} from './model-fetch.ts';
 import {ChatGPTLogin} from './chatgpt-login.ts';
 import {desktopViewerUrl} from '../../src/desktop-presentation.ts';
 import {workerCodexFetch} from './codex-encoding.worker.ts';
@@ -230,7 +231,7 @@ export class AgentSession extends DurableObject<Env> {
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
       ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
       slice:{capacity:30,durationMs:150000},turnLimits:{models:64,tools:256},
-      allowUnauthenticatedCommands:!!this.env.CUSE_OWNER_PROFILE,modelFetch:workerCodexFetch,wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
+      allowUnauthenticatedCommands:!!this.env.CUSE_OWNER_PROFILE,modelFetchFor:api=>this.createModelFetch(api),wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
     this.runner=new Runner(this.inbox!,{completed:job=>this.automation().finish(job.id),failed:job=>this.automation().fault(job.id),run:async(job,checkpoint,signal)=>{
       checkpoint(JSON.stringify({engine:"pi-durable",requestId:job.id,conversation:this.active!.conversationId}));
@@ -286,6 +287,7 @@ export class AgentSession extends DurableObject<Env> {
     const authority=profile?this.env.MODEL_AUTHORITY.get(this.env.MODEL_AUTHORITY.idFromName(profile)):undefined;
     const settings=modelSettings(this.env,this.inbox?.route);return configuredModels(settings.secrets,settings.config,undefined,(authority||this.env.CUSE_OWNER_PROFILE)?provider=>provider==='openai' && this.env.CUSE_OWNER_PROFILE?this.ownerAuthority().resolveOpenAI():authority?.resolve(provider)??Promise.resolve(undefined):undefined);
   }
+  protected createModelFetch(api:string):typeof fetch{return modelRequestFetch(api,workerCodexFetch);}
   protected createGateway(snapshot:Snapshot,access:Access){return gateway(snapshot,access,snapshot.desktopId?()=>this.desktopState():undefined);}
   private desktopCoordinator(){const id=this.prepared()?.snapshot.desktopId;return id?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)):undefined;}
   private async desktopState():Promise<{id:string|null;paused:boolean}>{const id=this.prepared()?.snapshot.desktopId;return id?this.desktopCoordinator()!.current(id):{id:null,paused:false};}

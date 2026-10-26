@@ -1,3 +1,5 @@
+import {configuredModels} from '../src/models.ts';
+import {modelRequestFetch} from '../src/model-fetch.ts';
 import {PeerMailbox} from '../src/legacy/peers.ts';
 import type {Access} from '../src/gateway.ts';
 import {TestModelAuthority,TestChannelRegistry,exerciseSkills} from './capability-fixture.ts';
@@ -17,6 +19,7 @@ export class TestAgentSession extends AgentSession {
   async operatorStats(){return {receipts:this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM cuse_manifest WHERE key LIKE 'operator:%'").toArray()[0].n,grant:this.ctx.storage.sql.exec('SELECT attempts,due FROM cuse_grant').toArray()};}
   private count(kind:string){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_calls VALUES (?)',kind);}
   protected createModels(){
+    if((this.env as any).TEST_NATIVE_RESPONSES==='true')return configuredModels({OPENAI_API_KEY:'synthetic-subscription-access'});
     const faux=fauxProvider({models:(this.env as any).TEST_MANY_MODELS==='true'?Array.from({length:20},(_,n)=>({id:n?'synthetic-'+n:'chosen'})):[{id:'chosen'}]});
     if((this.env as any).TEST_LEGACY_GOAL==='true'){
       faux.setResponses([()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('goal_update',{action:'task',id:'objective',state:'done',evidence:[{kind:'inspection',ref:'synthetic evidence',result:'pass'}]})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('goal_update',{action:'submit'})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('must not run after review');}]);const models=createModels();models.setProvider(faux.provider);return models;
@@ -38,14 +41,32 @@ export class TestAgentSession extends AgentSession {
     faux.setResponses([()=>{this.count('model');return fauxAssistantMessage([fauxToolCall('run_js',{})],{stopReason:'toolUse'});},()=>{this.count('model');return fauxAssistantMessage('synthetic reply '.repeat(60));}]);
     const models=createModels();models.setProvider(faux.provider);return models;
   }
+  protected createModelFetch(api:string):typeof fetch{
+    if((this.env as any).TEST_NATIVE_RESPONSES!=='true')return super.createModelFetch(api);
+    return modelRequestFetch(api,async()=>{throw Error('legacy_transport_must_not_receive_native_request');},async(input,init)=>{
+      if(String(input)!=='https://api.openai.com/v1/responses'||init?.redirect!=='manual'||new Headers(init.headers).get('authorization')!=='Bearer synthetic-subscription-access')throw Error('native_request_invalid');
+      const payload=JSON.parse(String(init.body));if(payload.model!=='gpt-6.1-sol'||payload.store!==false)throw Error('native_payload_invalid');this.count('model');
+      const round=Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM test_calls WHERE kind='model'").one().n);
+      if(round===2 && !payload.input.some((item:any)=>item.type==='function_call_output'))throw Error('native_tool_result_missing');
+      const message={type:'message',id:'msg_synthetic',status:'completed',role:'assistant',content:[{type:'output_text',text:'Native response ready.',annotations:[]}]};
+      const call={type:'function_call',id:'fc_synthetic',call_id:'call_native',name:'native_tool',arguments:'{"value":"synthetic"}',status:'completed'};
+      const output=round===1?call:message;
+      const events:any[]=[{type:'response.created',response:{id:'resp_synthetic_'+round,status:'in_progress',output:[]}},
+        {type:'response.output_item.added',output_index:0,item:round===1?{...call,status:'in_progress',arguments:''}:{...message,status:'in_progress',content:[]}}];
+      if(round===1)events.push({type:'response.function_call_arguments.delta',item_id:call.id,output_index:0,delta:call.arguments});
+      else events.push({type:'response.content_part.added',item_id:message.id,output_index:0,content_index:0,part:{type:'output_text',text:'',annotations:[]}},{type:'response.output_text.delta',item_id:message.id,output_index:0,content_index:0,delta:'Native response ready.'});
+      events.push({type:'response.output_item.done',output_index:0,item:output},{type:'response.completed',response:{id:'resp_synthetic_'+round,status:'completed',output:[output],usage:{input_tokens:1,output_tokens:1,total_tokens:2,input_tokens_details:{cached_tokens:0}}}});
+      return new Response(events.map(e=>'event: '+e.type+'\ndata: '+JSON.stringify(e)+'\n\n').join(''),{headers:{'Content-Type':'text/event-stream'}});
+    });
+  }
   protected createPeers(snapshot:Snapshot,access:Access){if((this.env as any).TEST_LEGACY!=='true')return super.createPeers(snapshot,access);return new PeerMailbox(this.sql,snapshot.route,snapshot.compatibility!.peers!,{busy:async()=>false,send:async()=>{this.count('peer-send');}});}
   protected createGateway():ToolGateway{return {call:async()=>{this.count('tool');if((this.env as TestEnv & {TEST_HOLD_TOOL?:string}).TEST_HOLD_TOOL==='true')await new Promise(()=>{});return {content:[{type:'text',text:'synthetic result'}]};}};}
-  protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
+  protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_NATIVE_RESPONSES==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_native_replies VALUES (?)',_text);}if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
   protected async renew(binding:Binding,method:string,params:Record<string,unknown>):Promise<unknown>{
     if(method!=='events/subscribe' || params.cursor!==undefined)throw Error('wrong_renewal');
     this.count('renew');return {id:binding.route.subscriptionId,refreshBefore:new Date(Date.now()+3600000).toISOString(),cursor:null,truncated:false};
   }
-  async stats(){this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)");return {calls:this.ctx.storage.sql.exec('SELECT kind,COUNT(*) AS n FROM test_calls GROUP BY kind').toArray(),inbox:this.ctx.storage.sql.exec('SELECT state,COUNT(*) AS n FROM cuse_inbox GROUP BY state').toArray(),effects:this.ctx.storage.sql.exec('SELECT state,COUNT(*) AS n FROM cuse_effects GROUP BY state').toArray()};}
+  async stats(){this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)");if((this.env as any).TEST_NATIVE_RESPONSES==='true')this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)");return {nativeReplies:(this.env as any).TEST_NATIVE_RESPONSES==='true'?this.ctx.storage.sql.exec('SELECT text FROM test_native_replies').toArray():undefined,calls:this.ctx.storage.sql.exec('SELECT kind,COUNT(*) AS n FROM test_calls GROUP BY kind').toArray(),inbox:this.ctx.storage.sql.exec('SELECT state,COUNT(*) AS n FROM cuse_inbox GROUP BY state').toArray(),effects:this.ctx.storage.sql.exec('SELECT state,COUNT(*) AS n FROM cuse_effects GROUP BY state').toArray()};}
 }
 export default {async fetch(request:Request,env:TestEnv){
   const s=JSON.parse(env.TEST_SNAPSHOT) as Snapshot,f=JSON.parse(env.TEST_FENCE) as Fence;
