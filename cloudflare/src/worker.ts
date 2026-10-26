@@ -1,3 +1,4 @@
+import {workerCodexFetch} from './codex-encoding.worker.ts';
 import {operateModelAuth} from './model-auth-operator.ts';
 import {routeBindings,modelSettings,authProfile} from "./agent-bindings.ts";
 import {PeerMailbox,type Peer} from './legacy/peers.ts';
@@ -214,7 +215,7 @@ export class AgentSession extends DurableObject<Env> {
     const desktop=prepared.snapshot.desktopId?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(prepared.snapshot.desktopId)):undefined;
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
       ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
-      wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
+      modelFetch:workerCodexFetch,wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
     this.runner=new Runner(this.inbox!,{completed:job=>this.automation().finish(job.id),failed:job=>this.automation().fault(job.id),run:async(job,checkpoint,signal)=>{
       checkpoint(JSON.stringify({requestId:job.id,conversation:this.active!.conversationId}));
