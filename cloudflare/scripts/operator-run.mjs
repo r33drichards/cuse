@@ -3,7 +3,6 @@
 import {gunzipSync,gzipSync} from 'node:zlib';
 import {spawn} from 'node:child_process';
 import {operatorResult} from './operator-tail.mjs';
-import {operate} from '../src/operator.ts';
 const worker='cuse-durable-shadow';
 const mode=process.argv[2];
 const account=process.env.CLOUDFLARE_ACCOUNT_ID,token=process.env.CLOUDFLARE_API_TOKEN;
@@ -36,6 +35,7 @@ try{
     if(!Object.keys(bindings).length || Object.values(bindings).some(b=>b.activationPending!==true))throw Error('operator_delivery_gate_required');
     let request;
     if(mode==='activate'){
+      const {operate}=await import('../src/operator.ts');
       request={...p.operator,expiresAt:Math.min(Date.now()+1800000,p.approvedUntil)};
       if(await operate(JSON.stringify(request),bindings,()=>({activateReviewed:async()=>{}}))!=='completed')throw Error('operator_review_required');
     }
