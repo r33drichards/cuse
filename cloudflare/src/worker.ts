@@ -1,4 +1,5 @@
 import {PeerMailbox,type Peer} from './legacy/peers.ts';
+import {operate,decodeOperator} from './operator.ts';
 import {ChannelProvisioner,type ChannelPlan} from './channels.ts';
 import {subscribe} from './subscriptions.ts';
 import {DurableGoalTopics} from './goal-topics.ts';
@@ -21,8 +22,12 @@ import {Renewal} from "./renewal.ts";
 import type {Grant,SubscriptionSpec} from "./subscriptions.ts";
 import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
-export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;}
+export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;activationPending?:boolean;}
 export interface Env {
+  /** Expiring private request; scheduled operator execution is explicitly enabled externally. */
+  CUSE_OPERATOR_REQUEST?:string;
+  CUSE_OPERATOR_PARTS?:string;
+  [key:`CUSE_OPERATOR_PART_${number}`]:string|undefined;
   CHANNELS?:DurableObjectNamespace<ChannelRegistry>;
   CHANNEL_PLANS?:string;
   SESSIONS: DurableObjectNamespace<AgentSession>;
@@ -35,6 +40,16 @@ export interface Env {
   DESKTOPS:DurableObjectNamespace<DesktopCoordinator>;
 }
 export default {
+  async scheduled(_event:ScheduledController,env:Env):Promise<void> {
+    let id:string|undefined;
+    try {
+      const raw=decodeOperator(env as unknown as Record<string,unknown>);
+      const candidate=raw?JSON.parse(raw).id:undefined;
+      if(typeof candidate==='string' && /^[a-f0-9]{32}$/.test(candidate))id=candidate;
+      const status=await operate(raw,JSON.parse(env.WEBHOOK_ROUTES??'{}'),key=>env.SESSIONS.get(env.SESSIONS.idFromName(key)));
+      if(status!=='disabled')console.log(JSON.stringify({code:'operator_'+status,id}));
+    } catch {console.error(JSON.stringify({code:'operator_failed',id}));throw Error('operator_failed');}
+  },
   async fetch(request: Request,env: Env): Promise<Response> {
     if (request.method !== "POST") return new Response("not_found",{status:404});
     const path=new URL(request.url).pathname;
@@ -53,6 +68,9 @@ export default {
       const payload=await verify(request,bytes,binding.secret);
       const challenge=verification(payload);
       if (challenge !== undefined) return Response.json({challenge});
+      // Verify the callback while holding normal delivery for a reviewed fresh-generation setup.
+      // 503 keeps the producer's existing event receipt retryable during this short handoff.
+      if(binding.activationPending)throw new IntakeError(503,'activation_pending');
       if(dynamic && !dynamic.active)throw new IntakeError(503,'channel_preparing');
       const event=parseEvent(payload,request,binding.route);
       const stub=env.SESSIONS.get(env.SESSIONS.idFromName(objectKey(binding.route)));
@@ -152,6 +170,22 @@ export class AgentSession extends DurableObject<Env> {
     await this.prepare(snapshot,fence);await this.armRenewal(grant);
   }
   /** Register an already-approved grant. Does not create a subscription. */
+  async activateReviewed(id:string,snapshot:Snapshot,fence:Fence,grant:Grant):Promise<void> {
+    if(!/^[a-f0-9]{32}$/.test(id))throw Error('operator_id_invalid');
+    await this.prepare(snapshot,fence);
+    return this.enqueue(async()=>{
+      const key='operator:'+id,old=this.sql.all('SELECT value FROM cuse_manifest WHERE key=?',key)[0];
+      const fingerprint=JSON.stringify({hash:fence.snapshotHash,grant});
+      if(old){if(old.value!==fingerprint)throw Error('operator_id_conflict');return;}
+      const binding=this.binding();
+      if(!binding?.access || binding.access.enabledHash!==fence.snapshotHash || !binding.subscription || grant.id!==binding.route.subscriptionId)throw Error('activation_review_required');
+      // Validate model authentication and initialize the reviewed context before arming execution.
+      await this.openActive();
+      this.renewal.arm(grant,Date.now());
+      await this.ctx.storage.setAlarm(Date.now()+1);
+      this.sql.all('INSERT INTO cuse_manifest VALUES (?,?)',key,fingerprint);
+    });
+  }
   async armRenewal(grant:Grant):Promise<void>{return this.enqueue(async()=>{
     const binding=this.binding();if(!binding?.subscription || !binding.access || grant.id!==binding.route.subscriptionId)throw Error("grant_binding_required");
     if(binding.subscription.arguments.channel_id!==binding.route.buffer || (binding.subscription.arguments.trigger==="mention" && binding.subscription.arguments.nick!==binding.route.nick))throw Error("grant_route_mismatch");

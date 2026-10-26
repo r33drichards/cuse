@@ -10,8 +10,9 @@ import {objectKey} from '../src/protocol.ts';
 import type {Snapshot,Fence} from '../src/migration.ts';
 import type {ToolGateway} from '../src/active.ts';
 export {DesktopCoordinator};
-interface TestEnv extends Env {TEST_SNAPSHOT:string;TEST_FENCE:string;}
+interface TestEnv extends Env {TEST_SNAPSHOT:string;TEST_FENCE:string;TEST_LEGACY?:string;}
 export class TestAgentSession extends AgentSession {
+  async operatorStats(){return {receipts:this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM cuse_manifest WHERE key LIKE 'operator:%'").toArray()[0].n,grant:this.ctx.storage.sql.exec('SELECT attempts,due FROM cuse_grant').toArray()};}
   private count(kind:string){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_calls VALUES (?)',kind);}
   protected createModels(){
     const faux=fauxProvider({models:[{id:'chosen'}]});
@@ -39,12 +40,14 @@ export default {async fetch(request:Request,env:TestEnv){
   const s=JSON.parse(env.TEST_SNAPSHOT) as Snapshot,f=JSON.parse(env.TEST_FENCE) as Fence;
   const stub=env.SESSIONS.get(env.SESSIONS.idFromName(objectKey(s.route))) as unknown as DurableObjectStub<TestAgentSession>;
   switch(new URL(request.url).pathname){
+    case '/test/operate':await ingress.scheduled({} as ScheduledController,env);return Response.json({completed:true});
+    case '/test/operator-stats':return Response.json(await stub.operatorStats());
     case '/test/dynamic/stats':{const route=(await env.CHANNELS!.get(env.CHANNELS!.idFromName('registry')).list())[0]?.route;if(!route)return Response.json({});return Response.json(await (env.SESSIONS.get(env.SESSIONS.idFromName(objectKey(route))) as unknown as DurableObjectStub<TestAgentSession>).stats());}
     case '/test/auth/seed':await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).seed('openai-codex',{type:'oauth',access:'synthetic-expired',refresh:'synthetic-refresh',expires:0},null);return Response.json({seeded:true});
     case '/test/auth/verify':return Response.json(await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).verify());
     case '/test/skills':return Response.json(await exerciseSkills(s));
     case '/test/setup':await stub.prepare(s,f);return Response.json({prepared:true});
-    case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+6000).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
+    case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
     case '/test/stats':try{return Response.json(await stub.stats());}catch{return Response.json({calls:[],inbox:[],effects:[]});}
     default:return ingress.fetch(request,env);
   }
