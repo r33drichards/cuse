@@ -34,6 +34,55 @@ process loss can lose the latest uncheckpointed partial text (a larger interval
 increases that window); this is not a guarantee of a periodic write when idle,
 nor a change to tool replay policy. Actual total write savings depend on load.
 
+## Automatic subscription recovery (explicit option)
+
+`CUSE_SUBSCRIPTION_RECOVERY=automatic` enables persisted, rate-bounded recovery
+of the existing approved webhook subscription. The default `manual` preserves
+fail-closed behavior. Automatic mode never creates a new channel, resets a
+conversation, changes authentication, or retries an uncertain remote action.
+
+Recovery uses the exact existing subscription identity and the saved
+**producer-acknowledged** cursor, never a last-arriving webhook cursor. It needs
+compatible producer coverage provenance to distinguish a surviving subscription
+from a deleted/recreated subscription with the same deterministic ID. Initial
+legacy enrollment requires the exact retained acknowledged producer receipt;
+a zero/pruned cursor or numeric cursor range alone is not continuity proof.
+Unknown or conflicting provenance remains held unless the explicit resume
+policy produces an audited acknowledgment of loss.
+
+- `CUSE_RECOVERY_MIN_DELAY_MS`: integer 1000–3600000, default **30000**.
+- `CUSE_RECOVERY_MAX_DELAY_MS`: same bounds, default **900000**, at least minimum.
+- Retry reservations and the next eligible time are persisted before network I/O;
+  repeated failures use capped exponential cooldown, including across restarts.
+  Automatic attempts remain rate-bounded while the subscription is unavailable.
+- `CUSE_RECOVERY_GAP_POLICY=hold` (default) allows only proven continuity repair.
+- `CUSE_RECOVERY_GAP_POLICY=resume` explicitly accepts that unavailable older
+  messages may never be processed. The producer records a gap generation and
+  acknowledged-loss boundary; Cuse durably records and queues a gap warning.
+  This is **degraded continuity**, not a claim that missing history was recovered.
+  Every newly detected gap is reconciled and recorded separately. Producer proof
+  is bounded (20 native pages, 4 MiB, 15 seconds); a gap not provable within that
+  budget is not evidence of complete history. Budget exhaustion or paging errors
+  remain held for another bounded attempt, even in resume mode.
+
+Delay/gap-policy overrides require automatic mode. Invalid values fail clearly.
+Roll out the compatible producer first, then Cuse, and only then enable the
+option for the reviewed deployment. An older producer cannot supply the
+incarnation/gap proof; do not enable the option and assume a legacy clean
+boolean proves recovery. No secret rotation or subscription deletion is needed.
+
+Disabling automatic mode stops Cuse recovery attempts. The producer receives the
+opt-out on the next successful ordinary renewal (or stops recovery when its
+lease expires). For an immediate producer opt-out, renew the same approved
+subscription without the recovery option; do not unsubscribe or recreate it.
+Previously acknowledged loss remains in the audit and is not erased by opt-out.
+
+Existing queued jobs and producer outbox rows are preserved. Normal event-ID
+receipts deduplicate replay; uncertain delivery/tool effects keep their existing
+fences and are never automatically repeated by subscription recovery. Callback
+failures and expired leases can recover without an operator, but this does not
+repair missing credentials, corrupt storage, or unknown external side effects.
+
 ## GitHub Actions deployment on main
 
 `.github/workflows/deploy-cloudflare.yml` runs on pushes to `main` (including

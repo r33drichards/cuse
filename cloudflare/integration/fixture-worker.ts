@@ -19,6 +19,7 @@ export class TestAgentSession extends AgentSession {
   async operatorStats(){return {receipts:this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM cuse_manifest WHERE key LIKE 'operator:%'").toArray()[0].n,grant:this.ctx.storage.sql.exec('SELECT attempts,due FROM cuse_grant').toArray()};}
   private count(kind:string){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_calls VALUES (?)',kind);}
   protected createModels(){
+    if((this.env as any).TEST_SUBSCRIPTION_RECOVERY){const faux=fauxProvider({models:[{id:'chosen'}]});faux.setResponses([()=>{this.count('model');return fauxAssistantMessage('Recovered queued work.');}]);const models=createModels();models.setProvider(faux.provider);return models;}
     if((this.env as any).TEST_NATIVE_RESPONSES==='true')return configuredModels({OPENAI_API_KEY:'synthetic-subscription-access'});
     const faux=fauxProvider({models:(this.env as any).TEST_MANY_MODELS==='true'?Array.from({length:20},(_,n)=>({id:n?'synthetic-'+n:'chosen'})):[{id:'chosen'}]});
     if((this.env as any).TEST_READ_RECOVERY==='true'){
@@ -65,10 +66,27 @@ export class TestAgentSession extends AgentSession {
   }
   protected createPeers(snapshot:Snapshot,access:Access){if((this.env as any).TEST_LEGACY!=='true')return super.createPeers(snapshot,access);return new PeerMailbox(this.sql,snapshot.route,snapshot.compatibility!.peers!,{busy:async()=>false,send:async()=>{this.count('peer-send');}});}
   protected createGateway():ToolGateway{return {call:async(_target,_name,args)=>{this.count('tool');if((this.env as any).TEST_READ_RECOVERY==='true' && String(args.code).includes('browser_execute'))throw Error('synthetic_read_timeout');if((this.env as TestEnv & {TEST_HOLD_TOOL?:string}).TEST_HOLD_TOOL==='true')await new Promise(()=>{});return {content:[{type:'text',text:'synthetic result'}]};}};}
-  protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_READ_RECOVERY==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_replies VALUES (?)',_text);}if((this.env as any).TEST_NATIVE_RESPONSES==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_native_replies VALUES (?)',_text);}if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
+  protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_READ_RECOVERY==='true'||(this.env as any).TEST_SUBSCRIPTION_RECOVERY){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_replies VALUES (?)',_text);}if((this.env as any).TEST_NATIVE_RESPONSES==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_native_replies VALUES (?)',_text);}if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
   protected async renew(binding:Binding,method:string,params:Record<string,unknown>):Promise<unknown>{
+    if((this.env as any).TEST_SUBSCRIPTION_RECOVERY){
+      if(method!=='events/subscribe' || params.cursor!=='producer-ack-1')throw Error('recovery_cursor_required');
+      this.count('renew');const count=Number(this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM test_calls WHERE kind='renew'").one().n);
+      if(count===1)throw Error('temporary_callback_failure');
+      const degraded=(this.env as any).TEST_SUBSCRIPTION_RECOVERY==='gap';
+      if((params.recovery as any)?.mode!==(degraded?'resume':'prove'))throw Error('recovery_policy_missing');
+      return {id:binding.route.subscriptionId,refreshBefore:new Date(Date.now()+3600000).toISOString(),cursor:'producer-ack-1',truncated:degraded,coverage:{version:1,incarnation:'a'.repeat(32),generation:degraded?1:0,status:degraded?'degraded':'continuous',...(degraded?{reason:'legacy_unknown',proof:'acknowledged_loss',acknowledgedGeneration:1}:{})}};
+    }
     if(method!=='events/subscribe' || params.cursor!==undefined)throw Error('wrong_renewal');
     this.count('renew');return {id:binding.route.subscriptionId,refreshBefore:new Date(Date.now()+3600000).toISOString(),cursor:null,truncated:false};
+  }
+  async seedSubscriptionRecovery(){
+    const s=JSON.parse((this.env as TestEnv).TEST_SNAPSHOT) as Snapshot,gap=(this.env as any).TEST_SUBSCRIPTION_RECOVERY==='gap';
+    await this.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+3600000).toISOString(),cursor:'producer-ack-1',truncated:false,...(gap?{}:{coverage:{version:1 as const,incarnation:'a'.repeat(32),generation:0,status:'continuous' as const}})});
+    this.ctx.storage.sql.exec("UPDATE cuse_grant SET state=?,due=?,grant_json=json_set(grant_json,'$.refreshBefore',?) WHERE id=1",gap?'coverage-gap':'blocked',Date.now()-1,new Date(Date.now()-1000).toISOString());
+  }
+  async subscriptionRecoveryStats(){
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_replies(text TEXT)');
+    return {...await this.stats(),grant:this.ctx.storage.sql.exec('SELECT state,attempts,due FROM cuse_grant').toArray(),audits:this.ctx.storage.sql.exec('SELECT incarnation,generation,reason FROM cuse_grant_gap_audit').toArray(),replies:this.ctx.storage.sql.exec('SELECT text FROM test_replies').toArray()};
   }
   async recoveryStats(){return {tasks:this.ctx.storage.sql.exec("SELECT id,record FROM tasks WHERE json_extract(record,'$.kind')='pi.tool'").toArray(),replies:this.ctx.storage.sql.exec('SELECT text FROM test_replies').toArray()};}
   async stats(){this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)");if((this.env as any).TEST_NATIVE_RESPONSES==='true')this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)");return {nativeReplies:(this.env as any).TEST_NATIVE_RESPONSES==='true'?this.ctx.storage.sql.exec('SELECT text FROM test_native_replies').toArray():undefined,calls:this.ctx.storage.sql.exec('SELECT kind,COUNT(*) AS n FROM test_calls GROUP BY kind').toArray(),inbox:this.ctx.storage.sql.exec('SELECT state,COUNT(*) AS n FROM cuse_inbox GROUP BY state').toArray(),effects:this.ctx.storage.sql.exec('SELECT state,COUNT(*) AS n FROM cuse_effects GROUP BY state').toArray()};}
@@ -86,6 +104,8 @@ export default {async fetch(request:Request,env:TestEnv){
     case '/test/skills':return Response.json(await exerciseSkills(s));
     case '/test/setup':await stub.prepare(s,f);return Response.json({prepared:true});
     case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true' || (env as any).TEST_LONG_GRANT==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
+    case '/test/subscription-recovery-seed':await stub.seedSubscriptionRecovery();return Response.json({seeded:true});
+    case '/test/subscription-recovery-stats':return Response.json(await stub.subscriptionRecoveryStats());
     case '/test/recovery-stats':return Response.json(await stub.recoveryStats());
     case '/test/stats':try{return Response.json(await stub.stats());}catch{return Response.json({calls:[],inbox:[],effects:[]});}
     default:return ingress.fetch(request,env);
