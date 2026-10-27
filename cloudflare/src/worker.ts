@@ -1,3 +1,5 @@
+import {queueRecoveryNotices} from './recovery-notice.ts';
+import {subscriptionRecovery,type RecoveryEnvironment} from './recovery-config.ts';
 import {partialSaveIntervalMs} from './progress.ts';
 import {modelRequestFetch} from './model-fetch.ts';
 import {ChatGPTLogin} from './chatgpt-login.ts';
@@ -30,7 +32,7 @@ import type {Grant,SubscriptionSpec} from "./subscriptions.ts";
 import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
 export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;activationPending?:boolean;}
-export interface Env {
+export interface Env extends RecoveryEnvironment {
   /** In-flight model checkpoint interval, milliseconds; defaults to 1000. */
   CUSE_PARTIAL_SAVE_INTERVAL_MS?:string;
   /** One trusted IRC owner; channels are sessions, never user identities. */
@@ -126,7 +128,7 @@ export class AgentSession extends DurableObject<Env> {
   constructor(ctx: DurableObjectState,env: Env) {
     super(ctx,env);
     this.sql={all:(query,...params)=>ctx.storage.sql.exec(query,...params).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)};
-    this.renewal=new Renewal(this.sql);
+    this.renewal=new Renewal(this.sql,subscriptionRecovery(env,ctx.id.toString()));
     ctx.blockConcurrencyWhile(async()=>{
       this.sql.all("CREATE TABLE IF NOT EXISTS cuse_manifest (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
       const saved=this.sql.all("SELECT value FROM cuse_manifest WHERE key='route'")[0];
@@ -347,6 +349,7 @@ export class AgentSession extends DurableObject<Env> {
       this.renewing??=this.renewal.alarm((method,params)=>this.renew(binding,method,params),{...binding.subscription,secret:binding.secret},Date.now()).finally(()=>{this.renewing=undefined;});
       await this.renewing;
     }
+    if(this.inbox)queueRecoveryNotices(this.sql,this.inbox.route);
     if(this.busy){await this.refreshAlarm();return;}
     this.busy=this.drain().finally(()=>{this.busy=undefined;});await this.busy;
   }
