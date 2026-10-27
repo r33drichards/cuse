@@ -7,7 +7,7 @@ import {ExecutionSlice,ExecutionYield} from './execution-slice.ts';
 import {ambiguousToolOutcome} from '../../src/tool-recovery.ts';
 import {formatGoal} from './legacy/goal-types.ts';
 import {legacySchema} from './legacy/schemas.ts';
-import {hasPeerEnvelope,type PeerMailbox,type PeerInput} from './legacy/peers.ts';
+import {isAddressedPeerEnvelope,type PeerMailbox,type PeerInput} from './legacy/peers.ts';
 import {command,Mention} from "./command-handler.ts";
 import {mentionText,type IrcCommand} from "../../src/commands.ts";
 import {hostCall} from "./host-tools.ts";
@@ -25,6 +25,7 @@ const Intent=defineDocFamily<{started:boolean;completed:boolean},null>({family:t
 const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:"cuse.halt",version:1,scope:"session",initial:()=>({halted:false,pending:[]})});
 function failureCategory(message:string):string{return /Unable to load site|<html/i.test(message)?'upstream_rejected':/429|rate.?limit/i.test(message)?'rate_limited':/401|403|unauthorized|invalid.*token/i.test(message)?'authentication':/timeout|timed out/i.test(message)?'timeout':'unavailable';}
 const blockedToolNotice='This tool was not dispatched. An earlier remote operation still requires recovery; this is not a failure of the requested tool. Read-only channel inspection, skill resources, and desktop status remain available.';
+export const RestrictedPeerDenial=defineDocFamily<{outcome:'denied_without_dispatch'|null},null>({family:true,kind:'cuse.restricted-peer-denial',version:1,scope:'session',initial:()=>({outcome:null})});
 const ReadRecovery=defineDocFamily<{done:boolean},null>({family:true,kind:'cuse.read-recovery',version:1,scope:'session',initial:()=>({done:false})});
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
@@ -208,8 +209,12 @@ export class ActiveSession {
       const conversation=(await this.harness.conversation(this.conversationId,context))!;
       const own=fold(s.route.nick),nick=fold(event.data.nick),internal=origin==="schedule" || origin==="goal";
       if(!internal && nick===own)return [];
-      // Refuse before mailbox assembly or any peer-effect intent is created.
-      if(this.options.restrictedIrc && !internal && hasPeerEnvelope(event.data.text))throw Error('restricted_irc_peer_action');
+      // Terminal, audited denial before mailbox assembly or any side-effect
+      // intent. The inbox retains the original payload; later work can proceed.
+      if(this.options.restrictedIrc && !internal && isAddressedPeerEnvelope(event,s.route,[...s.policy.peerNicks,...(s.compatibility?.peers??[]).map(p=>p.nick)])){
+        await this.harness.commit(async tx=>{const receipt=await tx.doc(RestrictedPeerDenial,`${key}:${event.eventId}`,null);if(receipt.outcome===null)receipt.outcome='denied_without_dispatch';},context);
+        return [];
+      }
       const mailbox=!internal && !this.options.restrictedIrc?await this.options.peers?.receive(event):undefined;
       if(mailbox===null)return [];
       this.setPeerInput(mailbox);

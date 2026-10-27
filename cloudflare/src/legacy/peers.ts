@@ -5,9 +5,16 @@ export interface Peer {channel:string;nick:string;buffer:string;}
 export interface PeerInput {text:string;requestId:string;source:string;kind:'question'|'answer';ancestry:string[];rootId:string;}
 export interface PeerIO {send(peer:Peer,text:string,signal?:AbortSignal):Promise<void>;busy(peer:Peer):Promise<boolean>;}
 const prefix='cuse-peer-v1 ';
-export const hasPeerEnvelope=(text:string):boolean=>text.includes(prefix);
+
 export const foldPeer=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({'[':'{',']':'}','\\':'|','^':'~'})[c]!);
 const lower=foldPeer;
+/** Recognize only reserved messages addressed to this agent by a configured
+ * peer. A human quoting the marker is ordinary input, not a peer operation. */
+export function isAddressedPeerEnvelope(event:MessageEvent,route:Route,peerNicks:readonly string[]):boolean {
+ return event.data.channel_id===route.buffer && peerNicks.some(n=>lower(n)===lower(event.data.nick))
+  && lower(event.data.text).startsWith(lower(route.nick+': '+prefix));
+}
+
 /** Private mailbox semantics carried only over MCP IRC sends and signed webhook intake.
  * No direct RPC injects a prompt, and no missing identity/channel is provisioned. */
 export class PeerMailbox {

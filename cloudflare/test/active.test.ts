@@ -1,3 +1,5 @@
+import {Runner} from '../src/runner.ts';
+import {objectKey} from '../src/protocol.ts';
 import {Automations} from '../src/automations.ts';import {InboxStore} from '../src/store.ts';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';import {join} from 'node:path';import {tmpdir} from 'node:os';
@@ -5,7 +7,7 @@ import {createModels} from '@earendil-works/pi-ai/models';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai/providers/faux';
 import {openNodeSqliteStorage} from '@earendil-works/pi-durable/storage/sqlite/node';
 import {BACKGROUND_CONTEXT as ctx} from '@earendil-works/chord/context';
-import {ActiveSession} from '../src/active.ts';import {dryRun,importSnapshot,snapshotHash,type Snapshot} from '../src/migration.ts';
+import {ActiveSession,RestrictedPeerDenial} from '../src/active.ts';import {dryRun,importSnapshot,snapshotHash,type Snapshot} from '../src/migration.ts';
 import {ModelFailure,responseMetadata} from '../src/provider-response.ts';
 import {ShadowJournal} from '../src/journal.ts';import {DesktopLedger} from '../src/desktop-coordinator.ts';import {database,route,event} from './helpers.ts';
 export function snapshot(provider='faux'):Snapshot{return {version:1,sourceSessionId:'old-session',route:{...route,agent:route.channel},model:{provider,modelId:'chosen'},thinkingLevel:'off',instructions:'Keep exact prior instructions.',tools:[],desktopBinding:{kind:'none'},policy:{modelRequests:3,toolCalls:2,timeoutMs:3000,peerTurns:2,peerNicks:['peer'],mentionRequired:false},archive:[{id:'old',text:'retained history'}],context:[{role:'user',content:'remembered question',timestamp:1}],retainedState:{budget:'retained'},blockers:[]};}
@@ -249,17 +251,41 @@ test('restricted runtime preserves original snapshot hash and history across reo
  }finally{await f.close();}
 });
 
-test('restricted runtime refuses peer envelopes before mailbox mutation or automatic answer',async()=>{
+test('restricted peer denial is durable and terminal, preserves payload, and does not block following human work',async()=>{
  const f=await fixture(undefined,undefined,true);try{
  let receives=0,answers=0;
  (f.options as any).peers={receive:async()=>{receives++;return {kind:'question'};},answer:async()=>{answers++;}};
- const e=event();e.data.text='cuse-alpha: cuse-peer-v1 retained queued envelope';
- await assert.rejects(f.active.handle(e),/restricted_irc_peer_action/);
+ const e=event();e.data.nick='PEER';e.data.text=f.options.snapshot.route.nick+': cuse-peer-v1 '+ 'a'.repeat(64)+' 0/1 e30=';
+ const key=objectKey(f.options.snapshot.route)+':'+e.eventId;
+ const inbox=new InboxStore(f.lockDb.sql,f.options.snapshot.route);
+ inbox.accept(e,'peer-envelope');inbox.accept(event(2),'human');
+ const runner=new Runner(inbox,{run:async(job,_checkpoint,signal)=>f.active.handle(JSON.parse(job.payload),signal)});
+ await runner.step();
+ assert.equal(inbox.job(e.eventId)?.state,'done');assert.equal(inbox.job(e.eventId)?.payload,JSON.stringify(e));
+ const receipt=await f.active.harness.snapshot(RestrictedPeerDenial,key,ctx);
+ assert.deepEqual(receipt,{outcome:'denied_without_dispatch'});
  assert.equal(receives,0);assert.equal(answers,0);assert.equal(f.faux.state.callCount,0);
- await f.reopen();await assert.rejects(f.active.handle(e),/restricted_irc_peer_action/);
+ assert.equal(f.lockDb.sql.all('SELECT COUNT(*) AS n FROM cuse_effects')[0].n,0);
+ await f.reopen();assert.deepEqual(await f.active.handle(e),[]);
+ assert.deepEqual(await f.active.harness.snapshot(RestrictedPeerDenial,key,ctx),receipt);
  assert.equal(receives,0);assert.equal(answers,0);
  f.faux.setResponses([fauxAssistantMessage('ordinary message works')]);
- assert.deepEqual(await f.active.handle(event(2)),['ordinary message works']);assert.equal(receives,0);
+ await runner.step();assert.equal(inbox.job(event(2).eventId)?.state,'done');assert.equal(f.faux.state.callCount,1);
+ assert.equal(inbox.job(e.eventId)?.payload,JSON.stringify(e));
+ assert.equal(f.lockDb.sql.all('SELECT COUNT(*) AS n FROM cuse_effects WHERE event=?',e.eventId)[0].n,0);
+ }finally{await f.close();}
+});
+
+test('human marker quotations and non-addressed peer text are not restricted peer envelopes',async()=>{
+ const f=await fixture(undefined,undefined,true);try{
+ const e=event();e.data.text=f.options.snapshot.route.nick+': cuse-peer-v1 quoted in a human question';
+ f.faux.setResponses([fauxAssistantMessage('human quote answered')]);
+ assert.deepEqual(await f.active.handle(e),['human quote answered']);
+ assert.equal(await f.active.harness.snapshot(RestrictedPeerDenial,objectKey(f.options.snapshot.route)+':'+e.eventId,ctx),undefined);
+ const p=event(2);p.data.nick='peer';p.data.text=f.options.snapshot.route.nick+': discussing cuse-peer-v1 marker';
+ f.faux.setResponses([fauxAssistantMessage('ordinary peer text')]);
+ assert.deepEqual(await f.active.handle(p),['ordinary peer text']);
+ assert.equal(await f.active.harness.snapshot(RestrictedPeerDenial,objectKey(f.options.snapshot.route)+':'+p.eventId,ctx),undefined);
  }finally{await f.close();}
 });
 

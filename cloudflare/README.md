@@ -103,6 +103,10 @@ rewritten. The runtime catalog is a subset: only already-present
 `weechat_buffers` / `weechat_msg` IRC tools remain, constrained to the configured
 buffer. Dynamic IRC commands, `irc_send`, `agent_ask` and automatic peer-envelope
 answers are denied; unrelated existing tools and read-only peer status remain.
+Recognized addressed peer envelopes receive a durable denial receipt without
+model execution or output, then finish their inbox job so later human work is not
+stranded. Their original payload remains retained; human text merely quoting the
+protocol marker is not treated as a peer envelope.
 A missing message tool is not added to the model catalog; ordinary final replies
 still use the existing host outbox and restricted message adapter.
 
