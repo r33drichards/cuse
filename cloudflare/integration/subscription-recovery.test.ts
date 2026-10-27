@@ -7,7 +7,8 @@ for(const kind of ['expired','gap'])test(`workerd automatically recovers ${kind}
  const snapshot:Snapshot={version:1,sourceSessionId:'synthetic-recovery',route:{...route,agent:route.channel},model:{provider:'faux',modelId:'chosen'},thinkingLevel:'off',instructions:'Synthetic only',tools:[],desktopBinding:{kind:'none'},policy:{modelRequests:3,toolCalls:2,timeoutMs:5000,peerTurns:0,peerNicks:[],mentionRequired:false},archive:[],context:[],retainedState:{},blockers:[]};
  const fence={snapshotHash:await snapshotHash(snapshot),generation:route.generation,after:route.after,legacyOwnerReleased:true,identityVerified:true};
  const binding={route:snapshot.route,secret,access:{mcp:{endpoint:'https://example.invalid/mcp',bearer:'synthetic'},fullControl:false,enabledHash:fence.snapshotHash},subscription:{arguments:{channel_id:route.buffer,trigger:'message'},callback:'https://example.invalid/events/test',ttlMs:3600000}};
- const start=(automatic=false)=>unstable_dev('integration/fixture-worker.ts',{config:'integration/wrangler.test.jsonc',local:true,ip:'127.0.0.1',port:0,inspectorPort:0,persist:true,persistTo:dir,logLevel:'error',vars:{TEST_SUBSCRIPTION_RECOVERY:kind,WEBHOOK_ROUTES:JSON.stringify({test:binding}),TEST_SNAPSHOT:JSON.stringify(snapshot),TEST_FENCE:JSON.stringify(fence),...(automatic?{CUSE_SUBSCRIPTION_RECOVERY:'automatic',CUSE_RECOVERY_GAP_POLICY:kind==='gap'?'resume':'hold',CUSE_RECOVERY_MIN_DELAY_MS:'1000',CUSE_RECOVERY_MAX_DELAY_MS:'4000'}:{})},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,forceLocal:true,watch:false}});
+ let selectedId='';
+ const start=(automatic=false,sessionIds=[selectedId])=>unstable_dev('integration/fixture-worker.ts',{config:'integration/wrangler.test.jsonc',local:true,ip:'127.0.0.1',port:0,inspectorPort:0,persist:true,persistTo:dir,logLevel:'error',vars:{TEST_SUBSCRIPTION_RECOVERY:kind,WEBHOOK_ROUTES:JSON.stringify({test:binding}),TEST_SNAPSHOT:JSON.stringify(snapshot),TEST_FENCE:JSON.stringify(fence),...(automatic?{CUSE_SUBSCRIPTION_RECOVERY:'automatic',CUSE_RECOVERY_SESSION_IDS:JSON.stringify(sessionIds),CUSE_RECOVERY_GAP_POLICY:kind==='gap'?'resume':'hold',CUSE_RECOVERY_MIN_DELAY_MS:'1000',CUSE_RECOVERY_MAX_DELAY_MS:'4000'}:{})},experimental:{disableExperimentalWarning:true,disableDevRegistry:true,forceLocal:true,watch:false}});
  let app=await start();
  const stats=async()=>await (await app.fetch('/test/subscription-recovery-stats')).json() as any;
  const post=async()=>{const r=signed(event(),Date.now());return app.fetch('/events/test',{method:'POST',headers:Object.fromEntries(r.headers),body:await r.text()});};
@@ -15,6 +16,12 @@ for(const kind of ['expired','gap'])test(`workerd automatically recovers ${kind}
  try{
   assert.equal((await app.fetch('/test/setup')).status,200);assert.equal((await app.fetch('/test/subscription-recovery-seed')).status,200);
   assert.equal((await post()).status,202);await new Promise(r=>setTimeout(r,1200));assert.equal((await stats()).calls.length,0);
+  selectedId=((await (await app.fetch('/test/subscription-recovery-id')).json()) as {id:string}).id;assert.match(selectedId,/^[a-f0-9]{64}$/);
+  const excludedId=(selectedId[0]==='a'?'b':'a')+selectedId.slice(1);
+  await app.stop();app=await start(true,[excludedId]);
+  await new Promise(r=>setTimeout(r,1400));const excluded=await stats();
+  assert.equal(excluded.calls.length,0);assert.equal(excluded.grant[0].state,kind==='gap'?'coverage-gap':'blocked');assert.equal(excluded.audits.length,0);assert.equal(excluded.replies.length,0);
+  assert.ok(excluded.inbox.some((r:any)=>r.state==='pending'),'non-selected session retains queued work without enrollment');
   await app.stop();app=await start(true);
   const done=await waitFor(s=>s.inbox.some((r:any)=>r.state==='done') && s.replies.some((r:any)=>r.text==='Recovered queued work.'));
   assert.equal(done.grant[0].state,'active');assert.equal(done.calls.find((r:any)=>r.kind==='renew').n,2);assert.equal(done.calls.find((r:any)=>r.kind==='model').n,1);

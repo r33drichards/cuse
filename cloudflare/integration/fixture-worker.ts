@@ -104,6 +104,7 @@ export default {async fetch(request:Request,env:TestEnv){
     case '/test/skills':return Response.json(await exerciseSkills(s));
     case '/test/setup':await stub.prepare(s,f);return Response.json({prepared:true});
     case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true' || (env as any).TEST_LONG_GRANT==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
+    case '/test/subscription-recovery-id':return Response.json({id:stub.id.toString()});
     case '/test/subscription-recovery-seed':await stub.seedSubscriptionRecovery();return Response.json({seeded:true});
     case '/test/subscription-recovery-stats':return Response.json(await stub.subscriptionRecoveryStats());
     case '/test/recovery-stats':return Response.json(await stub.recoveryStats());

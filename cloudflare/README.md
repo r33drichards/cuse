@@ -37,7 +37,15 @@ nor a change to tool replay policy. Actual total write savings depend on load.
 ## Automatic subscription recovery (explicit option)
 
 `CUSE_SUBSCRIPTION_RECOVERY=automatic` enables persisted, rate-bounded recovery
-of the existing approved webhook subscription. The default `manual` preserves
+only for explicitly selected existing sessions. **`CUSE_RECOVERY_SESSION_IDS` is
+required:** a JSON array of 1–64 unique full lowercase 64-hex Durable Object IDs.
+There is no implicit all-session mode, wildcard, prefix or agent-name matching.
+Resolve each ID from the reviewed `SESSIONS` namespace and exact immutable route
+(`objectKey(route)` includes agent, channel and generation), then independently
+verify that it belongs to the intended agent/session before enabling it.
+Non-listed sessions retain manual behavior, even when the Worker-wide mode is
+automatic; selection occurs before stopped-grant migration. Missing or malformed
+allowlists fail closed. The default `manual` preserves
 fail-closed behavior. Automatic mode never creates a new channel, resets a
 conversation, changes authentication, or retries an uncertain remote action.
 
@@ -65,13 +73,14 @@ policy produces an audited acknowledgment of loss.
   budget is not evidence of complete history. Budget exhaustion or paging errors
   remain held for another bounded attempt, even in resume mode.
 
-Delay/gap-policy overrides require automatic mode. Invalid values fail clearly.
+Session allowlists and delay/gap-policy overrides require automatic mode. Invalid values fail clearly.
 Roll out the compatible producer first, then Cuse, and only then enable the
-option for the reviewed deployment. An older producer cannot supply the
+option for the reviewed session IDs. An older producer cannot supply the
 incarnation/gap proof; do not enable the option and assume a legacy clean
 boolean proves recovery. No secret rotation or subscription deletion is needed.
 
-Disabling automatic mode stops Cuse recovery attempts. The producer receives the
+Removing a session ID from the allowlist stops its Cuse recovery attempts.
+To disable automatic mode entirely, also remove its allowlist/delay/gap settings. The producer receives the
 opt-out on the next successful ordinary renewal (or stops recovery when its
 lease expires). For an immediate producer opt-out, renew the same approved
 subscription without the recovery option; do not unsubscribe or recreate it.

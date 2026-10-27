@@ -128,7 +128,7 @@ export class AgentSession extends DurableObject<Env> {
   constructor(ctx: DurableObjectState,env: Env) {
     super(ctx,env);
     this.sql={all:(query,...params)=>ctx.storage.sql.exec(query,...params).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)};
-    this.renewal=new Renewal(this.sql,subscriptionRecovery(env));
+    this.renewal=new Renewal(this.sql,subscriptionRecovery(env,ctx.id.toString()));
     ctx.blockConcurrencyWhile(async()=>{
       this.sql.all("CREATE TABLE IF NOT EXISTS cuse_manifest (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
       const saved=this.sql.all("SELECT value FROM cuse_manifest WHERE key='route'")[0];
