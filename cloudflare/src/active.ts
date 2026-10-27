@@ -1,3 +1,4 @@
+import {restrictedRuntimeTools} from './restricted-irc.ts';
 import {partialSaveIntervalMs} from './progress.ts';
 import {readOnlyBrowserProbe,isReadOnlyRemoteTool} from './read-recovery.ts';
 import {sessionRuntimeGuidance} from "../../src/session-guidance.ts";
@@ -6,7 +7,7 @@ import {ExecutionSlice,ExecutionYield} from './execution-slice.ts';
 import {ambiguousToolOutcome} from '../../src/tool-recovery.ts';
 import {formatGoal} from './legacy/goal-types.ts';
 import {legacySchema} from './legacy/schemas.ts';
-import type {PeerMailbox,PeerInput} from './legacy/peers.ts';
+import {isAddressedPeerEnvelope,type PeerMailbox,type PeerInput} from './legacy/peers.ts';
 import {command,Mention} from "./command-handler.ts";
 import {mentionText,type IrcCommand} from "../../src/commands.ts";
 import {hostCall} from "./host-tools.ts";
@@ -24,11 +25,12 @@ const Intent=defineDocFamily<{started:boolean;completed:boolean},null>({family:t
 const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:"cuse.halt",version:1,scope:"session",initial:()=>({halted:false,pending:[]})});
 function failureCategory(message:string):string{return /Unable to load site|<html/i.test(message)?'upstream_rejected':/429|rate.?limit/i.test(message)?'rate_limited':/401|403|unauthorized|invalid.*token/i.test(message)?'authentication':/timeout|timed out/i.test(message)?'timeout':'unavailable';}
 const blockedToolNotice='This tool was not dispatched. An earlier remote operation still requires recovery; this is not a failure of the requested tool. Read-only channel inspection, skill resources, and desktop status remain available.';
+export const RestrictedPeerDenial=defineDocFamily<{outcome:'denied_without_dispatch'|null},null>({family:true,kind:'cuse.restricted-peer-denial',version:1,scope:'session',initial:()=>({outcome:null})});
 const ReadRecovery=defineDocFamily<{done:boolean},null>({family:true,kind:'cuse.read-recovery',version:1,scope:'session',initial:()=>({done:false})});
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
 export interface ToolGateway {call(target:"irc"|"desktop",name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<{content:unknown[];isError?:boolean;structuredContent?:unknown}>;}
-export interface ActiveOptions {partialSaveIntervalMs?:number;allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;modelFetchFor?:(api:string)=>typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
+export interface ActiveOptions {restrictedIrc?:boolean;partialSaveIntervalMs?:number;allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;modelFetchFor?:(api:string)=>typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
 export class ActiveSession {
   readonly harness:Harness;readonly conversationId:ConversationId;readonly options:ActiveOptions;
   private running=false;
@@ -40,21 +42,23 @@ export class ActiveSession {
   static async open(storage:Storage,options:ActiveOptions):Promise<ActiveSession>{
     const interval=partialSaveIntervalMs(options.partialSaveIntervalMs);
     const {snapshot:s,models}=options;
+    const runtimeTools=options.restrictedIrc?restrictedRuntimeTools(s.tools):s.tools;
     // Validate the reviewed model before import. Owner host commands can repair
     // missing credentials; actual model requests still require provider auth.
     let model=models.getModel(s.model.provider,s.model.modelId);
     if(!model){const refreshed=await models.refresh({providers:[s.model.provider],allowNetwork:true,signal:AbortSignal.timeout(s.policy.timeoutMs)});if(refreshed.errors.size)throw Error('model_catalog_unavailable');model=models.getModel(s.model.provider,s.model.modelId);}
     if(!model || (!options.allowUnauthenticatedCommands && !await models.getAuth(model)))throw Error("model_auth_unavailable");
-    if(s.tools.some(t=>t.target==="desktop") && (!options.desktop || !s.desktopId))throw Error("desktop_mapping_required");
-    const legacyGoals=s.tools.some(t=>['goal_status','goal_update'].includes(t.name));
+    if(runtimeTools.some(t=>t.target==="desktop") && (!options.desktop || !s.desktopId))throw Error("desktop_mapping_required");
+    const legacyGoals=runtimeTools.some(t=>['goal_status','goal_update'].includes(t.name));
     if(legacyGoals){if(!s.compatibility?.legacyGoals || !options.automations)throw Error('legacy_goal_permission_required');options.automations.enableLegacyGoals();}
-    if(s.tools.some(t=>['irc_send','agent_list','agent_ask'].includes(t.name)) && (!s.compatibility?.peers || !options.peers))throw Error('legacy_peer_permission_required');
-    if(s.tools.some(t=>['irc_send','agent_list','agent_ask','goal_status','goal_update'].includes(t.name) && t.target!=='host'))throw Error('legacy_tool_target');
+    if(runtimeTools.some(t=>['irc_send','agent_list','agent_ask'].includes(t.name)) && (!s.compatibility?.peers || !options.peers))throw Error('legacy_peer_permission_required');
+    if(runtimeTools.some(t=>['irc_send','agent_list','agent_ask','goal_status','goal_update'].includes(t.name) && t.target!=='host'))throw Error('legacy_tool_target');
     let peerInput:PeerInput|undefined;
     const registry=createRegistry();let harness!:Harness;
     const key=objectKey(s.route);
-    const tools:ToolRegistration[]=s.tools.map(t=>defineTool({name:t.name,description:t.description,parameters:(legacySchema(t.name)??t.inputSchema) as TSchema,replay:t.target==="host" || isReadOnlyRemoteTool(t.target,t.name)?"safe":"unsafe",executionMode:"sequential",
+    const tools:ToolRegistration[]=runtimeTools.map(t=>defineTool({name:t.name,description:t.description,parameters:(legacySchema(t.name)??t.inputSchema) as TSchema,replay:t.target==="host" || isReadOnlyRemoteTool(t.target,t.name)?"safe":"unsafe",executionMode:"sequential",
       async execute(args,api,ctx){
+        if(options.restrictedIrc && ['irc_send','agent_ask'].includes(t.name))throw Error('restricted_irc_peer_action');
         const operation=`${key}:${api.taskId}`;
         if(t.target==="host"){
           if(!options.automations)throw Error("host_binding_required");
@@ -188,7 +192,8 @@ export class ActiveSession {
       const id=await importSnapshot(harness,s,options.fence);
       options.automations?.restoreControls(s.retainedState,await snapshotHash(s));
       const conversation=(await harness.conversation(id,context))!;
-      // Imported selection equals exported tool names; no silently missing tools.
+      // Preserve the original import/hash; explicit session attenuation changes only
+      // the runtime selection and cannot introduce capabilities absent from export.
       await conversation.configure({tools,extensions:[extension]},context);
       await harness.commit(async tx=>{const marker=await tx.doc(Intent,`budget-import:${await snapshotHash(s)}`,null);if(!marker.completed){const b=await tx.doc(Budget,key,null);b.peerTurns=s.policy.peerTurns;marker.completed=true;}},context);
       await harness.commit(async tx=>{await tx.doc(Mention,key,s.policy.mentionRequired);},context);
@@ -204,7 +209,13 @@ export class ActiveSession {
       const conversation=(await this.harness.conversation(this.conversationId,context))!;
       const own=fold(s.route.nick),nick=fold(event.data.nick),internal=origin==="schedule" || origin==="goal";
       if(!internal && nick===own)return [];
-      const mailbox=!internal?await this.options.peers?.receive(event):undefined;
+      // Terminal, audited denial before mailbox assembly or any side-effect
+      // intent. The inbox retains the original payload; later work can proceed.
+      if(this.options.restrictedIrc && !internal && isAddressedPeerEnvelope(event,s.route,[...s.policy.peerNicks,...(s.compatibility?.peers??[]).map(p=>p.nick)])){
+        await this.harness.commit(async tx=>{const receipt=await tx.doc(RestrictedPeerDenial,`${key}:${event.eventId}`,null);if(receipt.outcome===null)receipt.outcome='denied_without_dispatch';},context);
+        return [];
+      }
+      const mailbox=!internal && !this.options.restrictedIrc?await this.options.peers?.receive(event):undefined;
       if(mailbox===null)return [];
       this.setPeerInput(mailbox);
       const mentioned=mentionText(event.data.text,s.route.nick);
@@ -254,7 +265,7 @@ export class ActiveSession {
       if(!answer || message?.role!=="assistant" || message.stopReason==="error" || message.stopReason==="aborted")throw Error("execution_incomplete");
       const text=(answer?.model?.[0]?.content??[]);
       const output=typeof text==="string"?text:text.filter(p=>p.type==="text").map(p=>p.text).join("");
-      if(mailbox?.kind==='question')await this.options.peers!.answer(mailbox,output,signal);
+      if(mailbox?.kind==='question'){if(this.options.restrictedIrc)throw Error('restricted_irc_peer_action');await this.options.peers!.answer(mailbox,output,signal);}
       return splitReply(output);
     }finally{signal?.removeEventListener("abort",cancel);this.running=false;this.setPeerInput(undefined);}
   }

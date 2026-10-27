@@ -1,3 +1,5 @@
+import {restrictedIrcForSession} from './restricted-irc.ts';
+import {gapAcknowledgment,acknowledgeGapNotice,type GapAcknowledgment} from './gap-acknowledgment.ts';
 import {queueRecoveryNotices} from './recovery-notice.ts';
 import {recoveryDiagnostic,runRecoveryDiagnostic,type DiagnosticRequest,type DiagnosticResult} from './recovery-diagnostic.ts';
 import {subscriptionRecovery,type RecoveryEnvironment} from './recovery-config.ts';
@@ -34,6 +36,8 @@ import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
 export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;activationPending?:boolean;}
 export interface Env extends RecoveryEnvironment {
+  CUSE_RESTRICTED_IRC_SESSION_IDS?:string;
+  CUSE_RECOVERY_GAP_ACK_REQUEST?:string;
   CUSE_RECOVERY_DIAGNOSTIC_REQUEST?:string;
   /** In-flight model checkpoint interval, milliseconds; defaults to 1000. */
   CUSE_PARTIAL_SAVE_INTERVAL_MS?:string;
@@ -119,6 +123,8 @@ export class AgentSession extends DurableObject<Env> {
   private automation():Automations {if(!this.inbox)throw Error("route_required");const a=this.automations??=new Automations(this.inbox);if(this.prepared()?.snapshot.compatibility?.legacyGoals)a.enableLegacyGoals();return a;}
   private renewal:Renewal;
   private diagnostic?:DiagnosticRequest;
+  private readonly restrictedIrc:boolean;
+  private readonly gapAck?:GapAcknowledgment;
   private busy?:Promise<void>;
   private renewing?:Promise<void>;
   private serial: Promise<unknown> = Promise.resolve();
@@ -133,6 +139,8 @@ export class AgentSession extends DurableObject<Env> {
     this.sql={all:(query,...params)=>ctx.storage.sql.exec(query,...params).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)};
     this.renewal=new Renewal(this.sql,subscriptionRecovery(env,ctx.id.toString()));
     this.diagnostic=recoveryDiagnostic(env,ctx.id.toString(),Date.now());
+    this.restrictedIrc=restrictedIrcForSession(env,ctx.id.toString());
+    this.gapAck=gapAcknowledgment(env,ctx.id.toString(),Date.now());
     ctx.blockConcurrencyWhile(async()=>{
       this.sql.all("CREATE TABLE IF NOT EXISTS cuse_manifest (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
       const saved=this.sql.all("SELECT value FROM cuse_manifest WHERE key='route'")[0];
@@ -175,7 +183,8 @@ export class AgentSession extends DurableObject<Env> {
   }
   private binding():Binding|undefined {
     if(!this.inbox)return;
-    return Object.values(routeBindings(this.env)).find(b=>objectKey(b.route)===objectKey(this.inbox!.route))??JSON.parse(String(this.sql.all("SELECT value FROM cuse_manifest WHERE key='dynamic_binding'")[0]?.value??'null'))??undefined;
+    const binding:Binding|undefined=Object.values(routeBindings(this.env)).find(b=>objectKey(b.route)===objectKey(this.inbox!.route))??JSON.parse(String(this.sql.all("SELECT value FROM cuse_manifest WHERE key='dynamic_binding'")[0]?.value??'null'))??undefined;
+    return this.restrictedIrc && binding?.access?{...binding,access:{...binding.access,fullControl:false,exclusiveProfile:false}}:binding;
   }
   private prepared():{snapshot:Snapshot;fence:Fence}|undefined {
     const row=this.sql.all("SELECT value FROM cuse_manifest WHERE key='prepared'")[0];return row?JSON.parse(String(row.value)):undefined;
@@ -240,7 +249,7 @@ export class AgentSession extends DurableObject<Env> {
     const desktop=prepared.snapshot.desktopId?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(prepared.snapshot.desktopId)):undefined;
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
       ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
-      partialSaveIntervalMs:interval,
+      partialSaveIntervalMs:interval,restrictedIrc:this.restrictedIrc,
       slice:{capacity:30,durationMs:150000},turnLimits:{models:64,tools:256},
       allowUnauthenticatedCommands:!!this.env.CUSE_OWNER_PROFILE,modelFetchFor:api=>this.createModelFetch(api),wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
@@ -258,7 +267,7 @@ export class AgentSession extends DurableObject<Env> {
     for(const peer of peers)bindingFor(peer);
     return new PeerMailbox(this.sql,snapshot.route,peers,{
       busy:async peer=>{const b=bindingFor(peer);const data=await withMcp(access.mcp,client=>readChannel(client,{...snapshot.route,channel:peer.channel,buffer:peer.buffer},1)) as {buffer?:{full_name?:string;localvar_nick?:string;localvar_channel?:string}};if(data.buffer?.full_name!==peer.buffer || data.buffer.localvar_nick!==snapshot.route.nick || data.buffer.localvar_channel!==peer.channel)throw Error('peer_membership_unverified');return this.env.SESSIONS.get(this.env.SESSIONS.idFromName(objectKey(b.route))).peerBusy();},
-      send:(peer,text)=>withMcp(access.mcp,client=>dispatchReply(client,{...snapshot.route,channel:peer.channel,buffer:peer.buffer},text,access.fullControl)),
+      send:(peer,text)=>{if(this.restrictedIrc)throw Error('restricted_irc_peer_write');return withMcp(access.mcp,client=>dispatchReply(client,{...snapshot.route,channel:peer.channel,buffer:peer.buffer},text,access.fullControl));},
     });
   }
   private ownerAuthority(){
@@ -311,7 +320,7 @@ export class AgentSession extends DurableObject<Env> {
     const settings=modelSettings(this.env,this.inbox?.route);return configuredModels(settings.secrets,settings.config,undefined,(authority||this.env.CUSE_OWNER_PROFILE)?provider=>provider==='openai' && this.env.CUSE_OWNER_PROFILE?this.ownerAuthority().resolveOpenAI():authority?.resolve(provider)??Promise.resolve(undefined):undefined);
   }
   protected createModelFetch(api:string):typeof fetch{return modelRequestFetch(api,workerCodexFetch);}
-  protected createGateway(snapshot:Snapshot,access:Access){return gateway(snapshot,access,snapshot.desktopId?()=>this.desktopState():undefined);}
+  protected createGateway(snapshot:Snapshot,access:Access){return gateway(snapshot,access,snapshot.desktopId?()=>this.desktopState():undefined,fetch,this.restrictedIrc);}
   private desktopCoordinator(){const id=this.prepared()?.snapshot.desktopId;return id?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)):undefined;}
   private async desktopState():Promise<{id:string|null;paused:boolean}>{const id=this.prepared()?.snapshot.desktopId;return id?this.desktopCoordinator()!.current(id):{id:null,paused:false};}
   private async control(command:IrcCommand,id:string):Promise<string[]>{
@@ -361,6 +370,7 @@ export class AgentSession extends DurableObject<Env> {
       await this.renewing;
     }
     if(this.inbox)queueRecoveryNotices(this.sql,this.inbox.route);
+    if(this.inbox && this.gapAck && this.restrictedIrc && this.renewal.valid(Date.now()))acknowledgeGapNotice(this.sql,this.inbox.route,this.gapAck,Date.now());
     if(this.busy){await this.refreshAlarm();return;}
     this.busy=this.drain().finally(()=>{this.busy=undefined;});await this.busy;
   }

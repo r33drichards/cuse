@@ -92,6 +92,54 @@ fences and are never automatically repeated by subscription recovery. Callback
 failures and expired leases can recover without an operator, but this does not
 repair missing credentials, corrupt storage, or unknown external side effects.
 
+## Reviewed restricted-IRC repair (default off)
+
+`CUSE_RESTRICTED_IRC_SESSION_IDS` is a JSON array of 1–64 unique lowercase
+64-hex Durable Object IDs, each already in `CUSE_RECOVERY_SESSION_IDS` with
+`CUSE_SUBSCRIPTION_RECOVERY=automatic`. Only those sessions derive
+`fullControl=false` and `exclusiveProfile=false` at runtime. No encrypted binding,
+credential, reviewed snapshot/hash, archived conversation or retained history is
+rewritten. The runtime catalog is a subset: only already-present
+`weechat_buffers` / `weechat_msg` IRC tools remain, constrained to the configured
+buffer. Dynamic IRC commands, `irc_send`, `agent_ask` and automatic peer-envelope
+answers are denied; unrelated existing tools and read-only peer status remain.
+Recognized addressed peer envelopes receive a durable denial receipt without
+model execution or output, then finish their inbox job so later human work is not
+stranded. Their original payload remains retained; human text merely quoting the
+protocol marker is not treated as a peer envelope.
+A missing message tool is not added to the model catalog; ordinary final replies
+still use the existing host outbox and restricted message adapter.
+
+An operator may separately acknowledge **one reviewed uncertain recovery-gap
+warning**, accepting that its delivery remains unknown and it may never appear
+in IRC. This is not automatic uncertainty reconciliation. Set the non-secret
+`CUSE_RECOVERY_GAP_ACK_REQUEST` to an exact JSON object with `id` (32 lowercase
+hex), `sessionId` (64 lowercase hex), `expiresAt` (Unix milliseconds, at most
+30 minutes ahead), `incarnation` (32 lowercase hex), and positive integer
+`generation`. The exact session must also have restricted IRC enabled and a
+valid subscription. The warning must match the audited generation, exact
+route-derived effect ID/event and canonical warning payload, and have state
+`uncertain` with error `send_uncertain` or `interrupted`. No ordinary reply or
+other uncertain action qualifies.
+
+The synchronous transaction records `cuse_gap_notice_ack` with the previous
+state/error and outcome `unknown_delivery_accepted_without_replay`, then marks
+only that warning `acknowledged_uncertain`. Its original payload/error remain;
+it is never marked sent or replayed. Identical requests are idempotent, conflicting
+requests fail closed, and every other uncertain action retains its fence.
+Queued jobs are neither deleted nor reset. Future gap generations require their
+own warning and cannot reuse this acknowledgment.
+
+Deploy code first; activate the exact-session restriction, verify the effective
+adapter with the bounded read-only diagnostic, and only then install the reviewed
+acknowledgment. Remove the expiring request after its audit row is confirmed;
+keep the restriction while the producer remains restricted. Preserve all existing
+bindings/secrets using supported inheritance. Do not remove the restriction as
+an ordinary rollback: doing so restores the historical adapter configuration.
+Older code does not understand the terminal acknowledgment and may hold the
+outbox rather than send it; rollback therefore requires review, not a state
+rewrite or replay. These options do not enable producer full-control mode.
+
 ## Optional one-shot recovery diagnostic
 
 `CUSE_RECOVERY_DIAGNOSTIC_REQUEST` is disabled when absent. An operator may supply
