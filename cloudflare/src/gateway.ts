@@ -1,3 +1,4 @@
+import {managedRuntimeTools,isManagedJsTool,validateManagedJsArgs,managedJsResult} from './managed-js.ts';
 import {restrictedRuntimeTools} from './restricted-irc.ts';
 import {noRedirectFetch} from "./http.ts";
 import {SkillError} from '../../src/mcp-skills.ts';
@@ -9,18 +10,27 @@ import type {ToolGateway} from './active.ts';
 export interface Access {mcp:McpAccess;fullControl:boolean;enabledHash?:string;authProfile?:string;exclusiveProfile?:boolean;desktop?:DesktopAccess;}
 /** Uses the existing /<desktop-id>/mcp endpoint, not a guessed provision/fork API.
  * Reuse the native client and its narrowly scoped pre-dispatch recovery. */
-export function gateway(snapshot:Snapshot,access:Access,currentDesktop?:()=>Promise<{id:string|null;paused:boolean}>,fetcher:typeof fetch=fetch,restrictedIrc=false):ToolGateway{
- const runtimeTools=restrictedIrc?restrictedRuntimeTools(snapshot.tools):snapshot.tools;
+export function gateway(snapshot:Snapshot,access:Access,currentDesktop?:()=>Promise<{id:string|null;paused:boolean}>,fetcher:typeof fetch=fetch,restrictedIrc=false,managedJs=false):ToolGateway{
+ if(managedJs && !restrictedIrc)throw Error('managed_js_requires_restricted_irc');
+ const runtimeTools=managedJs?managedRuntimeTools(snapshot.tools,true):restrictedIrc?restrictedRuntimeTools(snapshot.tools):snapshot.tools;
  if(restrictedIrc)access={...access,fullControl:false,exclusiveProfile:false};
  // Same native desktop capability set as src/tools.ts; host controls need their own adapters.
  if(runtimeTools.some(t=>t.target==='desktop' && !['run_js','get_artifact','list_artifacts','get_artifact_upload_url','skills_list','skills_read'].includes(t.name)))throw Error('desktop_tool_adapter_required');
- if(!(access.fullControl && access.exclusiveProfile) && runtimeTools.some(t=>t.target==='irc' && !['weechat_buffers','weechat_msg'].includes(t.name)))throw Error('irc_tool_adapter_required');
+ if(!(access.fullControl && access.exclusiveProfile) && runtimeTools.some(t=>t.target==='irc' && !['weechat_buffers','weechat_msg'].includes(t.name) && !(managedJs && isManagedJsTool(t.name))))throw Error('irc_tool_adapter_required');
  const loadedSkills=new Map<string,string>();
  let desktopClient:DesktopMcp|undefined;
  return {async call(target,name,args,signal){
+  if(isManagedJsTool(name) && (!managedJs || target!=='irc'))throw Error('tool_not_configured');
   const configured=runtimeTools.find(t=>t.name===name && t.target===target);if(!configured)throw Error('tool_not_configured');
+  if(target==='irc' && managedJs && isManagedJsTool(name))validateManagedJsArgs(name,args);
   if(restrictedIrc && target==='irc' && args.buffer!==undefined && args.buffer!==snapshot.route.buffer)throw Error('cross_identity_buffer');
   if(target==='irc')return withMcp(access.mcp,async client=>{
+    if(managedJs && isManagedJsTool(name)){
+      const identity=await readChannel(client,snapshot.route,1) as {buffer?:{full_name?:string;localvar_nick?:string;localvar_channel?:string;localvar_type?:string}};
+      const b=identity?.buffer;if(b?.full_name!==snapshot.route.buffer || b.localvar_nick!==snapshot.route.nick || b.localvar_channel!==snapshot.route.channel || b.localvar_type!=='channel')throw Error('identity_mapping_changed');
+      const result=await client.callTool({name,arguments:args},{signal,timeout:snapshot.policy.timeoutMs});
+      return managedJsResult(result);
+    }
     if(name==='weechat_buffers'){
       const data=await readIrcBuffer(client,snapshot.route,args,!!(access.fullControl && access.exclusiveProfile));
       return {content:[{type:'text',text:JSON.stringify(data)}]};

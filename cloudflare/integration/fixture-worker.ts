@@ -7,6 +7,7 @@ export {TestModelAuthority,TestChannelRegistry};
 // Test-only entrypoint. Never referenced by production wrangler.jsonc.
 import ingress,{AgentSession,DesktopCoordinator,type Env,type Binding} from '../src/worker.ts';
 import {createModels} from '@earendil-works/pi-ai/models';
+import {getCurrentTools} from '@earendil-works/pi-ai/utils/transcript';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai/providers/faux';
 import {objectKey} from '../src/protocol.ts';
 import {queueRecoveryNotices} from '../src/recovery-notice.ts';
@@ -32,7 +33,30 @@ export class TestAgentSession extends AgentSession {
   override async alarm():Promise<void>{this.sendsThisAlarm=0;return super.alarm();}
   async operatorStats(){return {receipts:this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM cuse_manifest WHERE key LIKE 'operator:%'").toArray()[0].n,grant:this.ctx.storage.sql.exec('SELECT attempts,due FROM cuse_grant').toArray()};}
   private count(kind:string){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_calls(kind TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_calls VALUES (?)',kind);}
+  async managedJsStats(){
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_managed_catalog(names TEXT)');
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_managed_calls(name TEXT,args TEXT)');
+    return {...await this.stats(),catalogs:this.ctx.storage.sql.exec('SELECT names FROM test_managed_catalog').toArray(),tools:this.ctx.storage.sql.exec('SELECT name,args FROM test_managed_calls').toArray(),prepared:this.ctx.storage.sql.exec("SELECT value FROM cuse_manifest WHERE key='prepared'").toArray()[0]?.value};
+  }
   protected createModels(){
+    if((this.env as any).TEST_MANAGED_JS==='true'){
+      const faux=fauxProvider({models:[{id:'chosen'}]});
+      faux.setResponses(Array.from({length:30},()=>context=>{
+        this.count('model');this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_managed_catalog(names TEXT)');
+        const names=getCurrentTools(context.messages).map(t=>t.name);this.ctx.storage.sql.exec('INSERT INTO test_managed_catalog VALUES (?)',JSON.stringify(names));
+        this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_managed_round(id TEXT PRIMARY KEY,n INTEGER)');
+        const id=String(this.ctx.storage.sql.exec("SELECT id FROM cuse_inbox WHERE state='running' ORDER BY position LIMIT 1").toArray()[0]?.id);
+        this.ctx.storage.sql.exec('INSERT INTO test_managed_round VALUES (?,1) ON CONFLICT(id) DO UPDATE SET n=n+1',id);
+        const round=Number(this.ctx.storage.sql.exec('SELECT n FROM test_managed_round WHERE id=?',id).one().n);
+        if(round===1 && names.includes('weechat_managed_script_status'))return fauxAssistantMessage([
+          fauxToolCall('weechat_managed_script_status',{}),fauxToolCall('weechat_managed_script_read',{name:'synthetic'}),
+          fauxToolCall('weechat_managed_script_write',{name:'synthetic',source:'setTimeout(() => {}, 1);',expected_digest:''}),
+          fauxToolCall('weechat_managed_script_validate',{name:'synthetic',digest:'a'.repeat(64)}),
+          fauxToolCall('weechat_managed_script_activate',{name:'synthetic',digest:'a'.repeat(64)}),
+        ],{stopReason:'toolUse'});
+        return fauxAssistantMessage('Managed catalog checked.');
+      }));const models=createModels();models.setProvider(faux.provider);return models;
+    }
     if((this.env as any).TEST_SUBSCRIPTION_RECOVERY){const faux=fauxProvider({models:[{id:'chosen'}]});faux.setResponses([()=>{this.count('model');return fauxAssistantMessage('Recovered queued work.');}]);const models=createModels();models.setProvider(faux.provider);return models;}
     if((this.env as any).TEST_NATIVE_RESPONSES==='true')return configuredModels({OPENAI_API_KEY:'synthetic-subscription-access'});
     const faux=fauxProvider({models:(this.env as any).TEST_MANY_MODELS==='true'?Array.from({length:20},(_,n)=>({id:n?'synthetic-'+n:'chosen'})):[{id:'chosen'}]});
@@ -79,7 +103,7 @@ export class TestAgentSession extends AgentSession {
     });
   }
   protected createPeers(snapshot:Snapshot,access:Access){if((this.env as any).TEST_LEGACY!=='true')return super.createPeers(snapshot,access);return new PeerMailbox(this.sql,snapshot.route,snapshot.compatibility!.peers!,{busy:async()=>false,send:async()=>{this.count('peer-send');}});}
-  protected createGateway():ToolGateway{return {call:async(_target,_name,args)=>{this.count('tool');if((this.env as any).TEST_READ_RECOVERY==='true' && String(args.code).includes('browser_execute'))throw Error('synthetic_read_timeout');if((this.env as TestEnv & {TEST_HOLD_TOOL?:string}).TEST_HOLD_TOOL==='true')await new Promise(()=>{});return {content:[{type:'text',text:'synthetic result'}]};}};}
+  protected createGateway():ToolGateway{return {call:async(_target,_name,args)=>{this.count('tool');if((this.env as any).TEST_MANAGED_JS==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_managed_calls(name TEXT,args TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_managed_calls VALUES (?,?)',_name,JSON.stringify(args));}if((this.env as any).TEST_READ_RECOVERY==='true' && String(args.code).includes('browser_execute'))throw Error('synthetic_read_timeout');if((this.env as TestEnv & {TEST_HOLD_TOOL?:string}).TEST_HOLD_TOOL==='true')await new Promise(()=>{});return {content:[{type:'text',text:'synthetic result'}]};}};}
   protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_GAP_ACK==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_gap_replies(text TEXT,full_control INTEGER)');this.ctx.storage.sql.exec('INSERT INTO test_gap_replies VALUES (?,?)',_text,_binding.access?.fullControl?1:0);}if((this.env as any).TEST_READ_RECOVERY==='true'||(this.env as any).TEST_SUBSCRIPTION_RECOVERY){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_replies VALUES (?)',_text);}if((this.env as any).TEST_NATIVE_RESPONSES==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_native_replies VALUES (?)',_text);}if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
   protected async renew(binding:Binding,method:string,params:Record<string,unknown>):Promise<unknown>{
     if((this.env as any).TEST_SUBSCRIPTION_RECOVERY){
@@ -116,6 +140,7 @@ export default {async fetch(request:Request,env:TestEnv){
     case '/test/auth/seed':await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).seed('openai-codex',{type:'oauth',access:'synthetic-expired',refresh:'synthetic-refresh',expires:0},null);return Response.json({seeded:true});
     case '/test/auth/verify':return Response.json(await (env.MODEL_AUTHORITY.get(env.MODEL_AUTHORITY.idFromName('synthetic-owner')) as unknown as DurableObjectStub<TestModelAuthority>).verify());
     case '/test/skills':return Response.json(await exerciseSkills(s));
+    case '/test/managed-js-stats':return Response.json(await stub.managedJsStats());
     case '/test/setup':await stub.prepare(s,f);return Response.json({prepared:true});
     case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true' || (env as any).TEST_LONG_GRANT==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
     case '/test/subscription-recovery-id':return Response.json({id:stub.id.toString()});

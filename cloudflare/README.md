@@ -140,6 +140,45 @@ Older code does not understand the terminal acknowledgment and may hold the
 outbox rather than send it; rollback therefore requires review, not a state
 rewrite or replay. These options do not enable producer full-control mode.
 
+## Explicit managed-script capability grant (default off)
+
+`CUSE_MANAGED_JS_SESSION_IDS` separately authorizes the five managed JavaScript
+source/status tools for exact sessions. It is a JSON array of 1–64 unique
+lowercase 64-hex DO IDs and must be a subset of
+`CUSE_RESTRICTED_IRC_SESSION_IDS` (and therefore the recovery allowlist). It does
+not enable a general IRC command adapter. Other sessions retain their existing
+catalog. Enabling it requires explicit approval to add these capabilities;
+it is not implied by subscription recovery or restricted-IRC repair.
+
+The original reviewed snapshot, hash, archive and context remain unchanged.
+A fixed runtime overlay adds only `weechat_managed_script_status`,
+`weechat_managed_script_read`, `weechat_managed_script_write`,
+`weechat_managed_script_validate`, and `weechat_managed_script_activate`.
+A separate `cuse.managed-js-grant` durable document records the schema version,
+exact tool names and first enablement time. Historical name collisions fail
+closed rather than replacing a reviewed tool. Removing the setting revokes the
+runtime overlay but preserves its receipt, source files and active scripts;
+revocation is not script deactivation and does not replay uncertain actions.
+
+Adapters validate the exact producer schema, bounded names/source/digests and
+the configured IRC identity before dispatch. Status/read are read-only;
+write/validate/activate use the existing unsafe-action intent fence without
+automatic replay. No arbitrary paths, policy administration, trusted plugin
+reload, command fallback or full-control permission is added. The producer
+must actually expose the five tools; absence or error does not broaden access.
+
+Deploy a compatible managed producer before enabling the consumer grant.
+Managed mode requires `WEECHAT_MCP_FULL_CONTROL=0`; enabling full control while
+managed mode is enabled is rejected by producer startup. Native timers are
+already available inside managed isolates, but neither tool access nor timer
+scheduling grants logging, channel-send, event-intake or HTTP permissions.
+Read-only per-generation timer counters in the producer status permit testing
+callback execution with the existing deny-all effect policy. Counter success
+is not evidence that an external effect was permitted or delivered. Roll back
+by removing the exact consumer grant first; preserve the original snapshot and
+all pending effect receipts. Source/active generation changes require their own
+reviewed lifecycle action, not session deletion.
+
 ## Optional one-shot recovery diagnostic
 
 `CUSE_RECOVERY_DIAGNOSTIC_REQUEST` is disabled when absent. An operator may supply

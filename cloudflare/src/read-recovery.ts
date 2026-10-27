@@ -6,6 +6,6 @@ export function readOnlyBrowserProbe(code:unknown):boolean {
 
 /** Only typed adapters whose contract cannot dispatch a user action. */
 export function isReadOnlyRemoteTool(target:string,name:string):boolean {
-  return target==='irc' && name==='weechat_buffers'
+  return target==='irc' && ['weechat_buffers','weechat_managed_script_status','weechat_managed_script_read'].includes(name)
     || target==='desktop' && ['skills_list','skills_read'].includes(name);
 }

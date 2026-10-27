@@ -1,3 +1,4 @@
+import {managedRuntimeTools,isManagedJsTool} from './managed-js.ts';
 import {restrictedRuntimeTools} from './restricted-irc.ts';
 import {partialSaveIntervalMs} from './progress.ts';
 import {readOnlyBrowserProbe,isReadOnlyRemoteTool} from './read-recovery.ts';
@@ -25,12 +26,13 @@ const Intent=defineDocFamily<{started:boolean;completed:boolean},null>({family:t
 const Halt=defineDocFamily<{halted:boolean;pending:string[]},null>({family:true,kind:"cuse.halt",version:1,scope:"session",initial:()=>({halted:false,pending:[]})});
 function failureCategory(message:string):string{return /Unable to load site|<html/i.test(message)?'upstream_rejected':/429|rate.?limit/i.test(message)?'rate_limited':/401|403|unauthorized|invalid.*token/i.test(message)?'authentication':/timeout|timed out/i.test(message)?'timeout':'unavailable';}
 const blockedToolNotice='This tool was not dispatched. An earlier remote operation still requires recovery; this is not a failure of the requested tool. Read-only channel inspection, skill resources, and desktop status remain available.';
+export const ManagedJsGrant=defineDocFamily<{version:1;tools:string[];firstEnabledAt:number|null},null>({family:true,kind:'cuse.managed-js-grant',version:1,scope:'session',initial:()=>({version:1,tools:[],firstEnabledAt:null})});
 export const RestrictedPeerDenial=defineDocFamily<{outcome:'denied_without_dispatch'|null},null>({family:true,kind:'cuse.restricted-peer-denial',version:1,scope:'session',initial:()=>({outcome:null})});
 const ReadRecovery=defineDocFamily<{done:boolean},null>({family:true,kind:'cuse.read-recovery',version:1,scope:'session',initial:()=>({done:false})});
 const Budget=defineDocFamily<{models:number;tools:number;peerTurns:number;operation:string;origin:string;events:Record<string,boolean>},null>({family:true,kind:"cuse.budget",version:1,scope:"session",initial:()=>({models:0,tools:0,peerTurns:0,operation:"",origin:"human",events:{}})});
 const fold=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({"[":"{","]":"}","\\":"|","^":"~"})[c]!);
 export interface ToolGateway {call(target:"irc"|"desktop",name:string,args:Record<string,unknown>,signal?:AbortSignal):Promise<{content:unknown[];isError?:boolean;structuredContent?:unknown}>;}
-export interface ActiveOptions {restrictedIrc?:boolean;partialSaveIntervalMs?:number;allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;modelFetchFor?:(api:string)=>typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
+export interface ActiveOptions {managedJs?:boolean;restrictedIrc?:boolean;partialSaveIntervalMs?:number;allowUnauthenticatedCommands?:boolean;slice?:{capacity:number;durationMs:number};turnLimits?:{models:number;tools:number};snapshot:Snapshot;fence:Fence;models:Models;gateway:ToolGateway;desktop?:DesktopToolLock;modelFetch?:typeof fetch;modelFetchFor?:(api:string)=>typeof fetch;wake:(at:number)=>Promise<void>;report:(code:string)=>void;automations?:Automations;peers?:PeerMailbox;control?:(command:IrcCommand,requestId:string)=>Promise<string[]>;}
 export class ActiveSession {
   readonly harness:Harness;readonly conversationId:ConversationId;readonly options:ActiveOptions;
   private running=false;
@@ -42,7 +44,8 @@ export class ActiveSession {
   static async open(storage:Storage,options:ActiveOptions):Promise<ActiveSession>{
     const interval=partialSaveIntervalMs(options.partialSaveIntervalMs);
     const {snapshot:s,models}=options;
-    const runtimeTools=options.restrictedIrc?restrictedRuntimeTools(s.tools):s.tools;
+    if(options.managedJs && !options.restrictedIrc)throw Error('managed_js_requires_restricted_irc');
+    const runtimeTools=options.managedJs?managedRuntimeTools(s.tools,true):options.restrictedIrc?restrictedRuntimeTools(s.tools):s.tools;
     // Validate the reviewed model before import. Owner host commands can repair
     // missing credentials; actual model requests still require provider auth.
     let model=models.getModel(s.model.provider,s.model.modelId);
@@ -192,8 +195,9 @@ export class ActiveSession {
       const id=await importSnapshot(harness,s,options.fence);
       options.automations?.restoreControls(s.retainedState,await snapshotHash(s));
       const conversation=(await harness.conversation(id,context))!;
-      // Preserve the original import/hash; explicit session attenuation changes only
-      // the runtime selection and cannot introduce capabilities absent from export.
+      // Preserve original import/hash. Attenuation only removes capabilities;
+      // the separately authorized managed-JS overlay has its own durable receipt.
+      if(options.managedJs)await harness.commit(async tx=>{const receipt=await tx.doc(ManagedJsGrant,key,null);const names=runtimeTools.filter(t=>isManagedJsTool(t.name)).map(t=>t.name);if(receipt.firstEnabledAt===null){receipt.tools=names;receipt.firstEnabledAt=Date.now();}else if(JSON.stringify(receipt.tools)!==JSON.stringify(names))throw Error('managed_js_grant_conflict');},context);
       await conversation.configure({tools,extensions:[extension]},context);
       await harness.commit(async tx=>{const marker=await tx.doc(Intent,`budget-import:${await snapshotHash(s)}`,null);if(!marker.completed){const b=await tx.doc(Budget,key,null);b.peerTurns=s.policy.peerTurns;marker.completed=true;}},context);
       await harness.commit(async tx=>{await tx.doc(Mention,key,s.policy.mentionRequired);},context);
