@@ -9,6 +9,7 @@ import ingress,{AgentSession,DesktopCoordinator,type Env,type Binding} from '../
 import {createModels} from '@earendil-works/pi-ai/models';
 import {fauxProvider,fauxAssistantMessage,fauxToolCall} from '@earendil-works/pi-ai/providers/faux';
 import {objectKey} from '../src/protocol.ts';
+import {queueRecoveryNotices} from '../src/recovery-notice.ts';
 import type {Snapshot,Fence} from '../src/migration.ts';
 import type {ToolGateway} from '../src/active.ts';
 export {DesktopCoordinator};
@@ -17,6 +18,16 @@ export class TestAgentSession extends AgentSession {
   protected async inspectRecoveryBinding(binding:Binding|undefined){this.count('diagnostic');return {configuredFullControl:binding?.access?.fullControl??null,identityMatch:true,requiredToolPresent:false,toolsComplete:true,failure:'none' as const};}
   async seedDiagnosticFence(){this.ctx.storage.sql.exec("INSERT INTO cuse_effects(id,event,payload,state,error) VALUES ('synthetic-uncertain','synthetic-uncertain','{}','uncertain','send_uncertain')");}
   async diagnosticStats(){const exists=this.ctx.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE name='cuse_recovery_diagnostic'").toArray().length;return {...await this.stats(),diagnostic:exists?this.ctx.storage.sql.exec('SELECT * FROM cuse_recovery_diagnostic').toArray():[]};}
+  async seedGapAcknowledgment(){
+    this.ctx.storage.sql.exec('INSERT INTO cuse_grant_gap_audit VALUES (?,?,?,?)','a'.repeat(32),1,'legacy_unknown',Date.now());
+    queueRecoveryNotices(this.sql,JSON.parse((this.env as TestEnv).TEST_SNAPSHOT).route);
+    this.ctx.storage.sql.exec("UPDATE cuse_effects SET state='uncertain',error='send_uncertain' WHERE id LIKE '%:recovery-gap:%'");
+  }
+  async gapAcknowledgmentStats(){
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_gap_replies(text TEXT,full_control INTEGER)');
+    const exists=this.ctx.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE name='cuse_gap_notice_ack'").toArray().length;
+    return {...await this.stats(),acks:exists?this.ctx.storage.sql.exec('SELECT * FROM cuse_gap_notice_ack').toArray():[],effectRows:this.ctx.storage.sql.exec('SELECT * FROM cuse_effects ORDER BY rowid').toArray(),jobs:this.ctx.storage.sql.exec('SELECT id,payload,state,attempts FROM cuse_inbox ORDER BY position').toArray(),replies:this.ctx.storage.sql.exec('SELECT * FROM test_gap_replies').toArray()};
+  }
   private sendsThisAlarm=0;
   override async alarm():Promise<void>{this.sendsThisAlarm=0;return super.alarm();}
   async operatorStats(){return {receipts:this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM cuse_manifest WHERE key LIKE 'operator:%'").toArray()[0].n,grant:this.ctx.storage.sql.exec('SELECT attempts,due FROM cuse_grant').toArray()};}
@@ -69,7 +80,7 @@ export class TestAgentSession extends AgentSession {
   }
   protected createPeers(snapshot:Snapshot,access:Access){if((this.env as any).TEST_LEGACY!=='true')return super.createPeers(snapshot,access);return new PeerMailbox(this.sql,snapshot.route,snapshot.compatibility!.peers!,{busy:async()=>false,send:async()=>{this.count('peer-send');}});}
   protected createGateway():ToolGateway{return {call:async(_target,_name,args)=>{this.count('tool');if((this.env as any).TEST_READ_RECOVERY==='true' && String(args.code).includes('browser_execute'))throw Error('synthetic_read_timeout');if((this.env as TestEnv & {TEST_HOLD_TOOL?:string}).TEST_HOLD_TOOL==='true')await new Promise(()=>{});return {content:[{type:'text',text:'synthetic result'}]};}};}
-  protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_READ_RECOVERY==='true'||(this.env as any).TEST_SUBSCRIPTION_RECOVERY){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_replies VALUES (?)',_text);}if((this.env as any).TEST_NATIVE_RESPONSES==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_native_replies VALUES (?)',_text);}if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
+  protected async sendReply(_binding:Binding,_text:string):Promise<void>{if((this.env as any).TEST_GAP_ACK==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_gap_replies(text TEXT,full_control INTEGER)');this.ctx.storage.sql.exec('INSERT INTO test_gap_replies VALUES (?,?)',_text,_binding.access?.fullControl?1:0);}if((this.env as any).TEST_READ_RECOVERY==='true'||(this.env as any).TEST_SUBSCRIPTION_RECOVERY){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_replies VALUES (?)',_text);}if((this.env as any).TEST_NATIVE_RESPONSES==='true'){this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS test_native_replies(text TEXT)');this.ctx.storage.sql.exec('INSERT INTO test_native_replies VALUES (?)',_text);}if((this.env as any).TEST_SINGLE_REPLY_ALARM==='true' && ++this.sendsThisAlarm>12)throw Error('external_request_budget_exhausted');this.count('send');}
   protected async renew(binding:Binding,method:string,params:Record<string,unknown>):Promise<unknown>{
     if((this.env as any).TEST_SUBSCRIPTION_RECOVERY){
       if(method!=='events/subscribe' || params.cursor!=='producer-ack-1')throw Error('recovery_cursor_required');
@@ -108,6 +119,8 @@ export default {async fetch(request:Request,env:TestEnv){
     case '/test/setup':await stub.prepare(s,f);return Response.json({prepared:true});
     case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true' || (env as any).TEST_LONG_GRANT==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
     case '/test/subscription-recovery-id':return Response.json({id:stub.id.toString()});
+    case '/test/gap-ack-seed':await stub.seedGapAcknowledgment();return Response.json({seeded:true});
+    case '/test/gap-ack-stats':return Response.json(await stub.gapAcknowledgmentStats());
     case '/test/diagnostic-seed':await stub.seedDiagnosticFence();return Response.json({seeded:true});
     case '/test/diagnostic-stats':return Response.json(await stub.diagnosticStats());
     case '/test/subscription-recovery-seed':await stub.seedSubscriptionRecovery();return Response.json({seeded:true});

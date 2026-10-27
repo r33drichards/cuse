@@ -105,7 +105,8 @@ export class InboxStore {
   job(id: string): Job | undefined { return this.sql.all("SELECT * FROM cuse_inbox WHERE id=?",id)[0] as Job | undefined; }
   async sendOne(send: (payload: string, effectId: string) => Promise<void>): Promise<void> {
     const effect = this.sql.transaction(() => {
-      const row = this.sql.all("SELECT * FROM cuse_effects WHERE state NOT IN ('dispatched','cancelled') ORDER BY rowid LIMIT 1")[0];
+      // An explicitly acknowledged advisory uncertainty is terminal, never resent.
+      const row = this.sql.all("SELECT * FROM cuse_effects WHERE state NOT IN ('dispatched','cancelled','acknowledged_uncertain') ORDER BY rowid LIMIT 1")[0];
       if (row?.state !== "pending") return;
       this.sql.all("UPDATE cuse_effects SET state='sending' WHERE id=?",row.id);
       return row;

@@ -5,6 +5,7 @@ export interface Peer {channel:string;nick:string;buffer:string;}
 export interface PeerInput {text:string;requestId:string;source:string;kind:'question'|'answer';ancestry:string[];rootId:string;}
 export interface PeerIO {send(peer:Peer,text:string,signal?:AbortSignal):Promise<void>;busy(peer:Peer):Promise<boolean>;}
 const prefix='cuse-peer-v1 ';
+export const hasPeerEnvelope=(text:string):boolean=>text.includes(prefix);
 export const foldPeer=(s:string)=>s.toLowerCase().replace(/[\[\]\\^]/g,c=>({'[':'{',']':'}','\\':'|','^':'~'})[c]!);
 const lower=foldPeer;
 /** Private mailbox semantics carried only over MCP IRC sends and signed webhook intake.

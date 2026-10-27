@@ -1,5 +1,7 @@
 import {objectKey,type Route} from './protocol.ts';
 import type {Sql} from './store.ts';
+export const recoveryGapNoticeText='Automatic recovery resumed after a history gap. Some older messages may not have been processed. Already-queued work is preserved; uncertain actions are not repeated.';
+export function recoveryGapNoticePayload(route:Route):string{return JSON.stringify({agent:route.agent,channel:route.channel,profile:route.profile,text:recoveryGapNoticeText});}
 
 /** Project audited loss into the existing no-replay outbox, never into a model prompt. */
 export function queueRecoveryNotices(sql:Sql,route:Route):number {
@@ -10,10 +12,7 @@ export function queueRecoveryNotices(sql:Sql,route:Route):number {
       WHERE e.id IS NULL ORDER BY a.recorded_at,a.incarnation,a.generation LIMIT 16`,prefix);
     for(const row of missing){
       const id=prefix+String(row.incarnation)+':'+Number(row.generation);
-      sql.all("INSERT INTO cuse_effects(id,event,payload,state) VALUES (?,?,?,'pending')",id,id,JSON.stringify({
-        agent:route.agent,channel:route.channel,profile:route.profile,
-        text:'Automatic recovery resumed after a history gap. Some older messages may not have been processed. Already-queued work is preserved; uncertain actions are not repeated.',
-      }));
+      sql.all("INSERT INTO cuse_effects(id,event,payload,state) VALUES (?,?,?,'pending')",id,id,recoveryGapNoticePayload(route));
     }
     return missing.length;
   });
