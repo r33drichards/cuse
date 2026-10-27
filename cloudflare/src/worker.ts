@@ -1,3 +1,4 @@
+import {managedJsForSession} from './managed-js.ts';
 import {restrictedIrcForSession} from './restricted-irc.ts';
 import {gapAcknowledgment,acknowledgeGapNotice,type GapAcknowledgment} from './gap-acknowledgment.ts';
 import {queueRecoveryNotices} from './recovery-notice.ts';
@@ -36,6 +37,7 @@ import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
 export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;activationPending?:boolean;}
 export interface Env extends RecoveryEnvironment {
+  CUSE_MANAGED_JS_SESSION_IDS?:string;
   CUSE_RESTRICTED_IRC_SESSION_IDS?:string;
   CUSE_RECOVERY_GAP_ACK_REQUEST?:string;
   CUSE_RECOVERY_DIAGNOSTIC_REQUEST?:string;
@@ -124,6 +126,7 @@ export class AgentSession extends DurableObject<Env> {
   private renewal:Renewal;
   private diagnostic?:DiagnosticRequest;
   private readonly restrictedIrc:boolean;
+  private readonly managedJs:boolean;
   private readonly gapAck?:GapAcknowledgment;
   private busy?:Promise<void>;
   private renewing?:Promise<void>;
@@ -140,6 +143,7 @@ export class AgentSession extends DurableObject<Env> {
     this.renewal=new Renewal(this.sql,subscriptionRecovery(env,ctx.id.toString()));
     this.diagnostic=recoveryDiagnostic(env,ctx.id.toString(),Date.now());
     this.restrictedIrc=restrictedIrcForSession(env,ctx.id.toString());
+    this.managedJs=managedJsForSession(env,ctx.id.toString());
     this.gapAck=gapAcknowledgment(env,ctx.id.toString(),Date.now());
     ctx.blockConcurrencyWhile(async()=>{
       this.sql.all("CREATE TABLE IF NOT EXISTS cuse_manifest (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
@@ -249,7 +253,7 @@ export class AgentSession extends DurableObject<Env> {
     const desktop=prepared.snapshot.desktopId?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(prepared.snapshot.desktopId)):undefined;
     this.active=await ActiveSession.open(await openDurableObjectSqliteStorage(this.ctx.storage),{
       ...prepared,automations:this.automation(),peers:this.createPeers(prepared.snapshot,binding.access),control:(command,id)=>this.control(command,id),models:this.createModels(),gateway:this.createGateway(prepared.snapshot,binding.access),desktop,
-      partialSaveIntervalMs:interval,restrictedIrc:this.restrictedIrc,
+      partialSaveIntervalMs:interval,restrictedIrc:this.restrictedIrc,managedJs:this.managedJs,
       slice:{capacity:30,durationMs:150000},turnLimits:{models:64,tools:256},
       allowUnauthenticatedCommands:!!this.env.CUSE_OWNER_PROFILE,modelFetchFor:api=>this.createModelFetch(api),wake:at=>this.ctx.storage.setAlarm(at),report:code=>console.error(JSON.stringify({code})),
     });
@@ -320,7 +324,7 @@ export class AgentSession extends DurableObject<Env> {
     const settings=modelSettings(this.env,this.inbox?.route);return configuredModels(settings.secrets,settings.config,undefined,(authority||this.env.CUSE_OWNER_PROFILE)?provider=>provider==='openai' && this.env.CUSE_OWNER_PROFILE?this.ownerAuthority().resolveOpenAI():authority?.resolve(provider)??Promise.resolve(undefined):undefined);
   }
   protected createModelFetch(api:string):typeof fetch{return modelRequestFetch(api,workerCodexFetch);}
-  protected createGateway(snapshot:Snapshot,access:Access){return gateway(snapshot,access,snapshot.desktopId?()=>this.desktopState():undefined,fetch,this.restrictedIrc);}
+  protected createGateway(snapshot:Snapshot,access:Access){return gateway(snapshot,access,snapshot.desktopId?()=>this.desktopState():undefined,fetch,this.restrictedIrc,this.managedJs);}
   private desktopCoordinator(){const id=this.prepared()?.snapshot.desktopId;return id?this.env.DESKTOPS.get(this.env.DESKTOPS.idFromName(id)):undefined;}
   private async desktopState():Promise<{id:string|null;paused:boolean}>{const id=this.prepared()?.snapshot.desktopId;return id?this.desktopCoordinator()!.current(id):{id:null,paused:false};}
   private async control(command:IrcCommand,id:string):Promise<string[]>{
