@@ -92,6 +92,25 @@ fences and are never automatically repeated by subscription recovery. Callback
 failures and expired leases can recover without an operator, but this does not
 repair missing credentials, corrupt storage, or unknown external side effects.
 
+## Optional one-shot recovery diagnostic
+
+`CUSE_RECOVERY_DIAGNOSTIC_REQUEST` is disabled when absent. An operator may supply
+JSON `{ "id": "<32 lowercase hex>", "sessionId": "<full 64-hex DO ID>",
+"expiresAt": <epoch milliseconds> }` with a lifetime of at most 30 minutes.
+It runs only for that exact already-recovery-allowlisted session. Remove the
+variable after observing the result; reusing the same request ID never reruns it.
+
+The diagnostic reserves its attempt before I/O, then performs only a bounded
+MCP tool-list and one-line buffer identity read (10-second per-request limits).
+It never invokes a message, command, model or tool effect. The separate
+`cuse_recovery_diagnostic` table contains only timestamps, booleans for configured
+adapter/identity/required-tool presence, listing completeness, and fixed failure
+categories. No credentials, endpoints, chat text, tool payloads or exception
+strings are stored or logged. A paginated listing cannot prove a tool absent.
+A crash leaves a reservation, not an automatic retry. Existing uncertain effects,
+queued work and history-gap audits are unchanged. This is current preflight
+evidence, **not proof of whether an earlier uncertain send reached IRC**.
+
 ## GitHub Actions deployment on main
 
 `.github/workflows/deploy-cloudflare.yml` runs on pushes to `main` (including
