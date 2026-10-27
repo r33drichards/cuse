@@ -3,6 +3,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { z } from "zod";
 import type { Rpc } from "./subscriptions.ts";
 import type { Route } from "./protocol.ts";
+import type {DiagnosticResult} from './recovery-diagnostic.ts';
 export interface McpAccess {endpoint: string; bearer: string;}
 /** Uses pre-existing approved credentials only. No OAuth, dynamic registration,
  * resource listener, IRC socket, subprocess, or automatic write retry. */
@@ -22,6 +23,23 @@ export async function withMcp<T>(access: McpAccess,operation: (client: Client,rp
   finally { await client.close().catch(()=>{}); }
 }
 export interface ToolClient {callTool(request:{name:string;arguments:Record<string,unknown>}):Promise<unknown>;}
+/** Read-only capability/identity probe. Never calls a send or command tool. */
+export async function inspectReplyAdapter(client:ToolClient & {listTools():Promise<unknown>},route:Route,fullControl:boolean):Promise<DiagnosticResult>{
+ const report:DiagnosticResult={configuredFullControl:fullControl,identityMatch:null,requiredToolPresent:null,toolsComplete:null,failure:'none'};
+ try{
+  const value=await client.listTools() as {tools?:{name?:unknown}[];nextCursor?:unknown};
+  if(!Array.isArray(value?.tools) || value.tools.length>4096 || value.tools.some(t=>typeof t?.name!=='string'))throw Error();
+  report.toolsComplete=value.nextCursor===undefined;
+  const present=value.tools.some(t=>t.name===(fullControl?'weechat_command_manifest':'weechat_msg'));
+  report.requiredToolPresent=present?true:report.toolsComplete?false:null;
+ }catch{report.failure='tool_listing';}
+ let value:unknown;
+ try{value=await readChannel(client,route,1);}catch{if(report.failure==='none')report.failure='buffer_read';return report;}
+ const b=(value as {buffer?:Record<string,unknown>})?.buffer;
+ if(!b || ['full_name','localvar_nick','localvar_channel','localvar_type'].some(k=>typeof b[k]!=='string')){if(report.failure==='none')report.failure='buffer_shape';return report;}
+ report.identityMatch=b.full_name===route.buffer && b.localvar_nick===route.nick && b.localvar_channel===route.channel && b.localvar_type==='channel';
+ return report;
+}
 function result(value:unknown):unknown {
   const r=value as {isError?:boolean;content?:{type:string;text?:string}[]};
   if (!r || r.isError || !Array.isArray(r.content) || r.content.length!==1 || r.content[0].type!=="text" || typeof r.content[0].text!=="string") throw Error("mcp_tool_failed");

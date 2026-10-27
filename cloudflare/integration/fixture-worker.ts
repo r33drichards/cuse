@@ -14,6 +14,9 @@ import type {ToolGateway} from '../src/active.ts';
 export {DesktopCoordinator};
 interface TestEnv extends Env {TEST_SNAPSHOT:string;TEST_FENCE:string;TEST_LEGACY?:string;}
 export class TestAgentSession extends AgentSession {
+  protected async inspectRecoveryBinding(binding:Binding|undefined){this.count('diagnostic');return {configuredFullControl:binding?.access?.fullControl??null,identityMatch:true,requiredToolPresent:false,toolsComplete:true,failure:'none' as const};}
+  async seedDiagnosticFence(){this.ctx.storage.sql.exec("INSERT INTO cuse_effects(id,event,payload,state,error) VALUES ('synthetic-uncertain','synthetic-uncertain','{}','uncertain','send_uncertain')");}
+  async diagnosticStats(){const exists=this.ctx.storage.sql.exec("SELECT 1 FROM sqlite_master WHERE name='cuse_recovery_diagnostic'").toArray().length;return {...await this.stats(),diagnostic:exists?this.ctx.storage.sql.exec('SELECT * FROM cuse_recovery_diagnostic').toArray():[]};}
   private sendsThisAlarm=0;
   override async alarm():Promise<void>{this.sendsThisAlarm=0;return super.alarm();}
   async operatorStats(){return {receipts:this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM cuse_manifest WHERE key LIKE 'operator:%'").toArray()[0].n,grant:this.ctx.storage.sql.exec('SELECT attempts,due FROM cuse_grant').toArray()};}
@@ -105,6 +108,8 @@ export default {async fetch(request:Request,env:TestEnv){
     case '/test/setup':await stub.prepare(s,f);return Response.json({prepared:true});
     case '/test/arm':await stub.armRenewal({id:s.route.subscriptionId,refreshBefore:new Date(Date.now()+(env.TEST_LEGACY==='true' || (env as any).TEST_LONG_GRANT==='true'?3600000:6000)).toISOString(),cursor:null,truncated:false});return Response.json({armed:true});
     case '/test/subscription-recovery-id':return Response.json({id:stub.id.toString()});
+    case '/test/diagnostic-seed':await stub.seedDiagnosticFence();return Response.json({seeded:true});
+    case '/test/diagnostic-stats':return Response.json(await stub.diagnosticStats());
     case '/test/subscription-recovery-seed':await stub.seedSubscriptionRecovery();return Response.json({seeded:true});
     case '/test/subscription-recovery-stats':return Response.json(await stub.subscriptionRecoveryStats());
     case '/test/recovery-stats':return Response.json(await stub.recoveryStats());

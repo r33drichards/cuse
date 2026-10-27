@@ -1,4 +1,5 @@
 import {queueRecoveryNotices} from './recovery-notice.ts';
+import {recoveryDiagnostic,runRecoveryDiagnostic,type DiagnosticRequest,type DiagnosticResult} from './recovery-diagnostic.ts';
 import {subscriptionRecovery,type RecoveryEnvironment} from './recovery-config.ts';
 import {partialSaveIntervalMs} from './progress.ts';
 import {modelRequestFetch} from './model-fetch.ts';
@@ -26,13 +27,14 @@ import {dryRun,type Snapshot,type Fence} from "./migration.ts";
 import {DesktopLedger,type Ticket,type AcquireResult} from "./desktop-coordinator.ts";
 import {configuredModels} from "./models.ts";
 import {gateway,type Access} from "./gateway.ts";
-import {withMcp,dispatchReply,dispatchChannelAction,readTopic,verifyJoined,readChannel} from "./mcp.ts";
+import {withMcp,dispatchReply,dispatchChannelAction,readTopic,verifyJoined,readChannel,inspectReplyAdapter} from "./mcp.ts";
 import {Renewal} from "./renewal.ts";
 import type {Grant,SubscriptionSpec} from "./subscriptions.ts";
 import {Runner} from "./runner.ts";
 import { ShadowJournal } from "./journal.ts";
 export interface Binding {route: Route; secret: string; access?:Access; subscription?:Omit<SubscriptionSpec,"secret">;activationPending?:boolean;}
 export interface Env extends RecoveryEnvironment {
+  CUSE_RECOVERY_DIAGNOSTIC_REQUEST?:string;
   /** In-flight model checkpoint interval, milliseconds; defaults to 1000. */
   CUSE_PARTIAL_SAVE_INTERVAL_MS?:string;
   /** One trusted IRC owner; channels are sessions, never user identities. */
@@ -116,6 +118,7 @@ export class AgentSession extends DurableObject<Env> {
   private recovering=true;
   private automation():Automations {if(!this.inbox)throw Error("route_required");const a=this.automations??=new Automations(this.inbox);if(this.prepared()?.snapshot.compatibility?.legacyGoals)a.enableLegacyGoals();return a;}
   private renewal:Renewal;
+  private diagnostic?:DiagnosticRequest;
   private busy?:Promise<void>;
   private renewing?:Promise<void>;
   private serial: Promise<unknown> = Promise.resolve();
@@ -129,6 +132,7 @@ export class AgentSession extends DurableObject<Env> {
     super(ctx,env);
     this.sql={all:(query,...params)=>ctx.storage.sql.exec(query,...params).toArray() as Row[],transaction:fn=>ctx.storage.transactionSync(fn)};
     this.renewal=new Renewal(this.sql,subscriptionRecovery(env,ctx.id.toString()));
+    this.diagnostic=recoveryDiagnostic(env,ctx.id.toString(),Date.now());
     ctx.blockConcurrencyWhile(async()=>{
       this.sql.all("CREATE TABLE IF NOT EXISTS cuse_manifest (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
       const saved=this.sql.all("SELECT value FROM cuse_manifest WHERE key='route'")[0];
@@ -343,8 +347,15 @@ export class AgentSession extends DurableObject<Env> {
   }
   protected async sendReply(binding:Binding,text:string):Promise<void>{await withMcp(binding.access!.mcp,client=>dispatchReply(client,this.inbox!.route,text,binding.access!.fullControl));}
   protected async renew(binding:Binding,method:string,params:Record<string,unknown>):Promise<unknown>{return withMcp(binding.access!.mcp,(_client,rpc)=>rpc(method,params));}
+  protected async inspectRecoveryBinding(binding:Binding|undefined):Promise<DiagnosticResult>{
+    const base={configuredFullControl:typeof binding?.access?.fullControl==='boolean'?binding.access.fullControl:null,identityMatch:null,requiredToolPresent:null,toolsComplete:null};
+    if(!binding?.access || !this.inbox || typeof binding.access.fullControl!=='boolean')return {...base,failure:'configuration'};
+    try{return await withMcp(binding.access.mcp,client=>inspectReplyAdapter({listTools:()=>client.listTools(undefined,{timeout:10000}),callTool:request=>client.callTool(request,{timeout:10000})},this.inbox!.route,binding.access!.fullControl));}
+    catch{return {...base,failure:'connect'};}
+  }
   async alarm():Promise<void>{
     const binding=this.binding();
+    if(this.diagnostic)await runRecoveryDiagnostic(this.sql,this.diagnostic,()=>this.inspectRecoveryBinding(binding),Date.now());
     if(binding?.subscription && binding.access){
       this.renewing??=this.renewal.alarm((method,params)=>this.renew(binding,method,params),{...binding.subscription,secret:binding.secret},Date.now()).finally(()=>{this.renewing=undefined;});
       await this.renewing;
